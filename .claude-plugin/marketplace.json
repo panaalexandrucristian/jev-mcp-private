@@ -1,0 +1,16 @@
+{
+  "name": "jev-private",
+  "description": "Private marketplace for the Jev plugin.",
+  "owner": {
+    "name": "Alexandru-Cristian Pana",
+    "url": "https://github.com/panaalexandrucristian"
+  },
+  "plugins": [
+    {
+      "name": "jev",
+      "source": "./",
+      "description": "Jev MCP tools and the Jev agent skill.",
+      "category": "productivity"
+    }
+  ]
+}

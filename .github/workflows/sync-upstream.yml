@@ -1,0 +1,122 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Merge upstream
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+        run: |
+          set -eu
+
+          issue_title="Upstream sync needs manual action"
+
+          find_manual_issue() {
+            gh issue list --state open --search "\"${issue_title}\" in:title" --limit 1000 --json number,title --jq ".[] | select(.title == \"${issue_title}\") | .number" | head -n 1
+          }
+
+          fail_sync() {
+            reason=$1
+            upstream_sha=$(git rev-parse upstream/main)
+            body=$(cat <<EOF
+          Upstream SHA: ${upstream_sha}
+
+          Reason: ${reason}
+
+          Resolve manually:
+
+              git switch main
+              scripts/sync-upstream.sh
+              # Resolve conflicts if necessary.
+              npm ci
+              npm run typecheck
+              npm run build
+              npm test
+              git push origin main
+              git push origin --tags
+          EOF
+          )
+            issue_number=$(find_manual_issue)
+            if [ -n "$issue_number" ]; then
+              gh issue comment "$issue_number" --body "$body"
+            else
+              gh issue create --title "$issue_title" --body "$body"
+            fi
+            exit 1
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/jkudish/jev-mcp.git
+          git fetch upstream main --tags
+          git fetch origin main
+
+          git push origin --tags || fail_sync "Pushing upstream tags to origin failed. If upstream changed .github/workflows, add the SYNC_TOKEN secret or run scripts/sync-upstream.sh locally and push tags manually."
+
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "Private main already contains upstream/main."
+            issue_number=$(find_manual_issue)
+            if [ -n "$issue_number" ]; then
+              gh issue close "$issue_number" --comment "Private main already contains the current upstream main."
+            fi
+            exit 0
+          fi
+
+          if [ "$HAS_SYNC_TOKEN" != "true" ] && [ -n "$(git diff --name-only origin/main...upstream/main -- .github/workflows)" ]; then
+            fail_sync "Upstream changed workflow files. Add the SYNC_TOKEN secret or run scripts/sync-upstream.sh locally."
+          fi
+
+          upstream_sha=$(git rev-parse upstream/main)
+          short_sha=$(git rev-parse --short=12 upstream/main)
+          branch="sync/upstream-${short_sha}"
+          git switch -C "$branch" origin/main
+
+          if ! git merge --no-ff --no-edit upstream/main; then
+            git merge --abort
+            fail_sync "The upstream merge has conflicts."
+          fi
+
+          npm ci
+          npm run typecheck
+          npm run build
+          npm test
+
+          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+
+          pr_body="Automated weekly merge of jkudish/jev-mcp main at ${upstream_sha}. Tests passed in the sync workflow; review and merge manually."
+          pr_number=$(gh pr list --state open --base main --head "$branch" --json number --jq '.[0].number // empty')
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" --title "Sync upstream jkudish/jev-mcp" --body "$pr_body"
+          else
+            gh pr create --base main --head "$branch" --title "Sync upstream jkudish/jev-mcp" --body "$pr_body"
+          fi
+
+          issue_number=$(find_manual_issue)
+          if [ -n "$issue_number" ]; then
+            gh issue close "$issue_number" --comment "Upstream synchronization succeeded via ${branch}."
+          fi
