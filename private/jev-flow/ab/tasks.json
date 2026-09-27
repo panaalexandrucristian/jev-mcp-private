@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "experiment": "jev-flow A/B",
+  "source": "docs/jev-flow-design.md §9",
+  "status": "not_ready",
+  "seed": null,
+  "seed_note": "Recorded when the experiment starts; the arm order (A/B vs B/A) per task and repetition is derived from it.",
+  "arms": {
+    "A": "Current private plugin with the upstream jev skill; jev-flow not installed.",
+    "B": "Same plugin and the same resolved MCP version, plus jev-flow."
+  },
+  "repetitions": 3,
+  "clients": ["claude", "opencode"],
+  "controls": {
+    "same_model_and_effort_for_main_and_locator": true,
+    "fresh_session_per_run": true,
+    "separate_working_copy_per_run": true,
+    "no_concurrent_runs": true,
+    "pin_resolved_mcp_version": true,
+    "clients_not_mixed": true
+  },
+  "adoption": {
+    "metric": "main_exploration_bytes",
+    "min_reduction": 0.3,
+    "aggregation": "median over the 3 repetitions per task and arm, then the median of the relative reductions over the 6 task pairs",
+    "quality_guard": "the oracle pass rate of B must not be lower than A",
+    "always_report": ["per_pair_reduction", "total_bytes", "total_tokens_main", "total_tokens_descendants", "jev_tokens", "wall_time"]
+  },
+  "tasks": [
+    {
+      "id": "M1",
+      "kind": "bugfix",
+      "repo": "jev-mcp",
+      "repo_url": "https://github.com/panaalexandrucristian/jev-mcp-private",
+      "base_sha": "9d4c768924abac45d76720efb5d3d0daa889bda4",
+      "base_note": "Parent of 8ff16ff (historical replay in an isolated copy).",
+      "prompt": "Fix the regex flag normalization so that `gi` does not become `gig`.",
+      "acceptance_hidden_from_agent": [
+        "An independent test with two matches that differ only in letter case passes.",
+        "No invalid_pattern result.",
+        "The existing test suites pass."
+      ],
+      "oracle": { "status": "not_ready", "command": null, "tests": [] }
+    },
+    {
+      "id": "M2",
+      "kind": "refactor",
+      "repo": "jev-mcp",
+      "repo_url": "https://github.com/panaalexandrucristian/jev-mcp-private",
+      "base_sha": "69ffb4b49c88802ec6e49b883f4a36b91d23197e",
+      "base_note": "Parent of ac76f19 (historical replay in an isolated copy).",
+      "prompt": "Unify the JSON object check into a shared helper used by both the tools and the transport.",
+      "acceptance_hidden_from_agent": [
+        "Objects are accepted; null, arrays and primitives are rejected.",
+        "Public contracts and the existing tests stay identical."
+      ],
+      "oracle": { "status": "not_ready", "command": null, "tests": [] }
+    },
+    {
+      "id": "A1",
+      "kind": "feature",
+      "repo": "jev-agent-tools",
+      "repo_url": "https://github.com/jkudish/jev-agent-tools",
+      "base_sha": "56b6e6f08fa4d87a1041e596e0a222f15f1fe438",
+      "prompt": "Add a root URL override for the OpenRouter transport, keeping the default endpoint and normalizing a trailing slash.",
+      "acceptance_hidden_from_agent": [
+        "A mocked fetch sees the default URL when no override is set and the custom URL when it is.",
+        "Authentication is unchanged.",
+        "Error handling is unchanged."
+      ],
+      "context_for_reviewers": "The current implementation uses a fixed URL: src/transports/openrouter.ts:17-29.",
+      "oracle": { "status": "not_ready", "command": null, "tests": [] }
+    },
+    {
+      "id": "A2",
+      "kind": "refactor",
+      "repo": "jev-agent-tools",
+      "repo_url": "https://github.com/jkudish/jev-agent-tools",
+      "base_sha": "56b6e6f08fa4d87a1041e596e0a222f15f1fe438",
+      "prompt": "Extract the shared JSON reading and parsing logic from the OpenRouter and Cloudflare transports, keeping their envelope differences.",
+      "acceptance_hidden_from_agent": [
+        "Public behavior is unchanged.",
+        "Redacted error messages are unchanged.",
+        "The usage and envelope cases in the tests are unchanged."
+      ],
+      "context_for_reviewers": "src/transports/openrouter.ts:35-59, src/transports/cloudflare.ts:26-56.",
+      "oracle": { "status": "not_ready", "command": null, "tests": [] }
+    },
+    {
+      "id": "H1",
+      "kind": "bugfix",
+      "repo": "handoff-test-kit",
+      "repo_url": "https://github.com/panaalexandrucristian/handoff-test-kit",
+      "base_sha": "6056be4431dfdbe6e74e4d387a56090bfdcdd321",
+      "prompt": "Accept a sentence-final period in numeric case C17, without accepting different numbers or version components as the same value.",
+      "acceptance_hidden_from_agent": [
+        "C17 passes semantically.",
+        "Independent negative controls stay rejected.",
+        "Previously gating cases still pass."
+      ],
+      "context_for_reviewers": "tests/test_verification.py:41-52, README.md:114-118.",
+      "oracle": { "status": "not_ready", "command": null, "tests": [] }
+    },
+    {
+      "id": "H2",
+      "kind": "feature",
+      "repo": "handoff-test-kit",
+      "repo_url": "https://github.com/panaalexandrucristian/handoff-test-kit",
+      "base_sha": "6056be4431dfdbe6e74e4d387a56090bfdcdd321",
+      "prompt": "Recognize inline-code paths with the `.txt` extension in path verification.",
+      "acceptance_hidden_from_agent": [
+        "An existing file passes; a missing file fails.",
+        "Names with spaces or Unicode work.",
+        "Shell expressions and proposed paths keep the existing rules."
+      ],
+      "context_for_reviewers": "README.md:81-85, README.md:132-134.",
+      "oracle": { "status": "not_ready", "command": null, "tests": [] }
+    }
+  ]
+}

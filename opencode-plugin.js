@@ -64,5 +64,14 @@ export default {
         content: skill.content
       });
     });
+
+    // Private jev-flow extension. Any failure is isolated here so the jev MCP
+    // server and skill registered above keep working exactly as before.
+    try {
+      const { setupFlow } = await import("./private/jev-flow/opencode.mjs");
+      await setupFlow(ctx);
+    } catch (error) {
+      console.warn(`[jev-flow] disabled: ${error?.message ?? error}`);
+    }
   }
 };
