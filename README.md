@@ -128,9 +128,25 @@ args = ["-y", "@jkudish/jev-mcp"]
 
 Some MCP clients filter the environment before spawning servers, which silently drops `TYPESAFE_API_KEY`. If the server reports a missing key, pass it explicitly as shown above.
 
+### Remote / HTTP
+
+Stdio is the default. To host one shared server for a team or a remote agent, run it in stateless HTTP mode:
+
+```bash
+JEV_MCP_AUTH_TOKEN="$(openssl rand -hex 32)" TYPESAFE_API_KEY=ts_... npx -y @jkudish/jev-mcp --http
+```
+
+It listens on `PORT` (default `8080`) and serves MCP at `/mcp`, with a health check at `/health`. `HOST` defaults to `127.0.0.1`; set `HOST=0.0.0.0` explicitly to serve beyond your machine. `--http` and `JEV_MCP_TRANSPORT=http` are equivalent, so containers and service units can select the transport without argv. It speaks MCP 2026-07-28 and falls back to stateless serving for 2025-era clients, so it keeps no sessions and scales behind any load balancer. Every call spends your Jev key, so `JEV_MCP_AUTH_TOKEN` is required unless `HOST` is loopback. Clients send it as a bearer token:
+
+```bash
+claude mcp add --transport http jev https://jev.example.com/mcp --header "Authorization: Bearer $JEV_MCP_AUTH_TOKEN"
+```
+
+The server itself speaks plain HTTP: terminate TLS at a reverse proxy or load balancer before exposing it beyond loopback, and put connection limits and request rate limits at that ingress. The process bounds admitted `/mcp` requests (`JEV_MCP_MAX_CONCURRENCY`, default 16; excess shed with `429`) and caps request bodies at 4 MiB, but it does not limit sockets waiting to finish headers or repeatedly rejected requests. The tool list is static: the server advertises no `listChanged` capability and refuses `subscriptions/listen` requests, so an idle listener cannot hold one of the concurrency slots. Clients that never open a listener, the common case, see no difference.
+
 ### Agent skill
 
-The package ships an agent skill (`skills/jev/`) that teaches coding agents when to reach for each tool instead of answering from their own reading — the difference between tools that sit registered-but-unused and tools that get called. Copy it into your client's skills directory:
+The package ships an agent skill (`skills/jev/`) that teaches coding agents when to reach for each tool instead of answering from their own reading: the difference between tools that sit registered-but-unused and tools that get called. Copy it into your client's skills directory:
 
 ```bash
 npm pack @jkudish/jev-mcp@latest
@@ -701,6 +717,8 @@ export JEV_MCP_MODEL=openjev
 ```
 
 The server sends `POST` requests with `{ model, state, questions }` and requires the standard response shape: an `answers` object plus a `usage` object reporting `input_tokens` and `output_tokens`, with an optional `model` string echoing the model that answered. Envelope problems (a non-object body or `answers`, malformed `usage` counts, a non-string `model`) are rejected at the transport boundary. Individual answers are not judged here: each tool validates them under its own `invalid_response` contract, so a missing or malformed answer fails closed in the tool instead of aborting the call. `JEV_API_BASE_URL` must be the full endpoint URL including the `/v1/systemone` path; it is used verbatim, with no trailing-slash or path normalization. The endpoint and credentials are kept in the local process environment. This adapter is provider-neutral; OpenJEV is one example, not a hard-coded dependency.
+
+One compatibility note: the default model is `jev-latest`, and not every endpoint implements that alias. If calls fail against your endpoint with a client-error status, set `JEV_MCP_MODEL` to the model id your endpoint supports (bare, without a provider prefix like `opencode/`).
 
 ## Also in the family
 

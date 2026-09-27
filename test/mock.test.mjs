@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const serverPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 
@@ -184,9 +184,9 @@ test("compatible provider rejects a malformed response", async () => {
   );
 });
 
-test("compatible provider reports non-2xx status with the body redacted", async () => {
-  // The 401 body echoes the Authorization header; the key must not survive
-  // into the MCP-visible error, while the status and harmless text remain.
+test("compatible provider reports non-2xx status without upstream body text", async () => {
+  // The 401 body echoes the Authorization header; nothing from the upstream
+  // body may reach the MCP-visible error — fixed provider name and status only.
   await withMock(
     {},
     async (client) => {
@@ -195,8 +195,8 @@ test("compatible provider reports non-2xx status with the body redacted", async 
         arguments: { claims: ["The patch is ready"], evidence: "The tests pass" },
       });
       assert.equal(result.isError, true);
-      assert.match(result.content[0].text, /401/);
-      assert.match(result.content[0].text, /Unauthorized client/);
+      assert.match(result.content[0].text, /Jev-compatible endpoint 401/);
+      assert.ok(!result.content[0].text.includes("Unauthorized client"));
       assert.ok(!result.content[0].text.includes("compatible-test-key"));
     },
     compatibleEnv,
@@ -325,7 +325,6 @@ test("caller cancellation aborts the in-flight request without retrying and the 
       const pending = client
         .callTool(
           { name: "jev_verify", arguments: { claims: ["The patch is ready"], evidence: "The tests pass" } },
-          undefined,
           { signal: controller.signal },
         )
         .then(
@@ -461,6 +460,30 @@ test("the retry allowlist is 408, 409, 429, and 500 through 599", async () => {
   );
 });
 
+test("openrouter provider keeps a malformed 200 body out of client-visible errors", async () => {
+  // Node's parse errors quote the malformed input; a 200 body reflecting the
+  // key must not leak even a snippet. The error is fixed-string status only.
+  await withMock(
+    {},
+    async (client) => {
+      const result = await client.callTool({
+        name: "jev_verify",
+        arguments: { claims: ["The patch is ready"], evidence: "The tests pass" },
+      });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /OpenRouter decisions API 200 returned an unparseable response/);
+      assert.ok(!result.content[0].text.includes("sk-or-v1-echo-secret"));
+      assert.ok(!result.content[0].text.includes("garbage"));
+    },
+    (port) => ({
+      JEV_PROVIDER: "openrouter",
+      OPENROUTER_API_KEY: "sk-or-v1-echo-secret",
+      JEV_OPENROUTER_BASE_URL: `http://127.0.0.1:${port}/`,
+    }),
+    { status: 200, raw: "garbage sk-or-v1-echo-secret {{{not json" },
+  );
+});
+
 test("openrouter provider redacts a reflected key from error bodies", async () => {
   await withMock(
     {},
@@ -472,6 +495,7 @@ test("openrouter provider redacts a reflected key from error bodies", async () =
       assert.equal(result.isError, true);
       assert.match(result.content[0].text, /OpenRouter decisions API 401/);
       assert.ok(!result.content[0].text.includes("sk-or-v1-echo-secret"));
+      assert.ok(!result.content[0].text.includes("invalid key"));
       assert.equal(requests[0].path, "/alpha/decisions");
       assert.equal(requests[0].headers.authorization, "Bearer sk-or-v1-echo-secret");
     },
@@ -505,6 +529,7 @@ test("cloudflare provider redacts the token on every error path", async () => {
       assert.equal(result.isError, true);
       assert.match(result.content[0].text, /Cloudflare AI run 200/);
       assert.ok(!result.content[0].text.includes("cf-echo-token"));
+      assert.ok(!result.content[0].text.includes("bad token"));
       assert.match(requests[0].path, /\/accounts\/test-account\/ai\/run$/);
     },
     cfEnv,
@@ -519,8 +544,9 @@ test("cloudflare provider redacts the token on every error path", async () => {
         arguments: { claims: ["The patch is ready"], evidence: "The tests pass" },
       });
       assert.equal(result.isError, true);
-      assert.match(result.content[0].text, /state failed/);
+      assert.match(result.content[0].text, /Cloudflare AI run 200 did not complete/);
       assert.ok(!result.content[0].text.includes("cf-echo-token"));
+      assert.ok(!result.content[0].text.includes("failed"));
     },
     cfEnv,
     { raw: JSON.stringify({ success: true, errors: ["token cf-echo-token echoed"], result: { state: "failed", result: {} } }) },
@@ -539,7 +565,6 @@ test("typesafe provider cancellation aborts promptly through the SDK without cra
       const pending = client
         .callTool(
           { name: "jev_verify", arguments: { claims: ["The patch is ready"], evidence: "The tests pass" } },
-          undefined,
           { signal: controller.signal },
         )
         .then(
@@ -993,6 +1018,70 @@ test("jev_classify applies the 1e-9 argmax tolerance", async () => {
     assert.equal(body.results[0].classification, "sales");
     assert.equal(body.results[0].status, undefined);
     assert.deepEqual(body.results[1], { ...INVALID_CLASSIFICATION, id: "outside" });
+  });
+});
+
+test("jev_classify fallback item ids never collide with explicit ones", async () => {
+  // The first item omits its id (fallback item0); the second explicitly
+  // claims "item0". The fallback must yield, so both result ids stay unique.
+  await withMock(() => ({
+    i0: pick("c0", CLASSIFY_KEYS),
+    i1: pick("c1", CLASSIFY_KEYS),
+  }), async (client) => {
+    const body = payload(await client.callTool({ name: "jev_classify", arguments: {
+      ...CLASSIFY_ARGS,
+      items: [{ text: "I was charged twice." }, { id: "item0", text: "Do you offer discounts?" }],
+    } }));
+    assert.deepEqual(body.results.map((r) => r.id), ["item0_2", "item0"]);
+    assert.deepEqual(body.results.map((r) => r.classification), ["billing", "sales"]);
+    assert.deepEqual(body.summary.by_class, { billing: 1, sales: 1 });
+  });
+});
+
+test("jev_classify fallback class ids never collide with explicit ones", async () => {
+  // The first class omits its id (fallback class0); the second explicitly
+  // claims "class0". Probabilities keys must stay unique and map to the
+  // right class.
+  await withMock(() => ({
+    i0: pick("c0", ["c0", "c1"]),
+  }), async (client) => {
+    const body = payload(await client.callTool({ name: "jev_classify", arguments: {
+      items: [{ id: "message", text: "I was charged twice." }],
+      classes: [
+        { description: "Payments and refunds" },
+        { id: "class0", description: "Pricing and discounts" },
+      ],
+    } }));
+    assert.equal(body.results[0].classification, "class0_2");
+    assert.deepEqual(Object.keys(body.results[0].probabilities), ["class0_2", "class0"]);
+    assert.deepEqual(body.summary.by_class, { class0_2: 1 });
+  });
+});
+
+test("jev_classify tallies __proto__ and constructor class ids as plain keys", async () => {
+  // A null-prototype tally keeps prototype-named class ids countable instead
+  // of swallowing them (__proto__) or reading inherited values (constructor).
+  // The expected object is JSON.parsed because an object literal would not
+  // create an own "__proto__" key — the very trap this test pins down.
+  await withMock(() => ({
+    i0: pick("c0", ["c0", "c1"]),
+    i1: pick("c1", ["c0", "c1"]),
+    i2: pick("c0", ["c0", "c1"]),
+  }), async (client) => {
+    const body = payload(await client.callTool({ name: "jev_classify", arguments: {
+      items: [
+        { id: "first", text: "I was charged twice." },
+        { id: "second", text: "Do you offer discounts?" },
+        { id: "third", text: "How do I export an invoice?" },
+      ],
+      classes: [
+        { id: "__proto__", description: "Payments and refunds" },
+        { id: "constructor", description: "Pricing and discounts" },
+      ],
+    } }));
+    assert.equal(body.results[0].classification, "__proto__");
+    assert.equal(body.results[1].classification, "constructor");
+    assert.deepEqual(body.summary.by_class, JSON.parse('{"__proto__":2,"constructor":1}'));
   });
 });
 
@@ -1563,6 +1652,65 @@ test("jev_verify still returns verified verdicts on a complete response", async 
       }],
       usage: { input_tokens: 10, output_tokens: 10 },
     });
+  });
+});
+
+test("jev_verify keeps a real evidence id named none distinct from its no-source option", async () => {
+  await withMock((request) => {
+    const criteria = request.questions.source_claim0.criteria;
+    assert.equal(criteria.none, null);
+    const noSourceKey = Object.entries(criteria).find(([, description]) =>
+      description === "No single evidence item contains the content the claim depends on"
+    )?.[0];
+    assert.ok(noSourceKey);
+    assert.notEqual(noSourceKey, "none");
+    return {
+      relation_claim0: pick("supports", Object.keys(request.questions.relation_claim0.criteria)),
+      source_claim0: pick("none", Object.keys(criteria)),
+    };
+  }, async (client) => {
+    const result = await client.callTool({
+      name: "jev_verify",
+      arguments: {
+        claims: ["The release is ready."],
+        evidence: [
+          { id: "none", text: "The release checks passed." },
+          { id: "notes", text: "Unrelated planning notes." },
+        ],
+      },
+    });
+    const body = payload(result);
+    assert.equal(body.results[0].supporting_evidence, "none");
+  });
+});
+
+test("jev_verify skips occupied none_N keys and maps the no-source option to null", async () => {
+  await withMock((request) => {
+    const criteria = request.questions.source_claim0.criteria;
+    assert.equal(criteria.none, null);
+    assert.equal(criteria.none_1, null);
+    const noSourceKey = Object.entries(criteria).find(([, description]) =>
+      description === "No single evidence item contains the content the claim depends on"
+    )?.[0];
+    assert.equal(noSourceKey, "none_2");
+    return {
+      relation_claim0: pick("supports", Object.keys(request.questions.relation_claim0.criteria)),
+      source_claim0: pick("none_2", Object.keys(criteria)),
+    };
+  }, async (client) => {
+    const result = await client.callTool({
+      name: "jev_verify",
+      arguments: {
+        claims: ["The release is ready."],
+        evidence: [
+          { id: "none", text: "The release checks passed." },
+          { id: "none_1", text: "More release checks." },
+          { id: "notes", text: "Unrelated planning notes." },
+        ],
+      },
+    });
+    const body = payload(result);
+    assert.equal(body.results[0].supporting_evidence, null);
   });
 });
 
