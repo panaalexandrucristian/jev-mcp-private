@@ -24,7 +24,7 @@ Nothing obliges you to call every tool. Known files and a clear change: skip sem
 | 4. Implement | Edit with the native tools after reading the returned ranges and checking their `sha256`. | — No Jev call is required while editing. |
 | 5. Real checks | Always after code changes, on the final snapshot: the repo's own test/build/typecheck/lint commands, run by the gate runner (`--check '["npm","test"]'`, argv without a shell) in step 7; a failing check prevents acceptance. | Never skipped after code changes. |
 | 6. Review | Risky patch, or feedback wanted before the final checks: `jev_review`. | The gate follows immediately on the same patch and evidence. |
-| 7. Gate | Always after code changes: `/jev:jev-done`. You write claims with evidence ids (hunks, excerpts, `cmd-N`); the gate runner `scripts/jev-gate-run.mjs` collects the diff, runs the checks, builds the bounded payload, calls `jev_gate` itself (one part unless the patch exceeds a call's limits) and returns a compact verdict with a signed receipt. Never copy gate payloads. | No code changed. |
+| 7. Gate | Always after code changes: `/jev:jev-done`. You write claims with evidence ids (hunks, excerpts, `cmd-N`); the gate runner `scripts/jev-gate-run.mjs` collects the diff, runs the checks, builds the bounded payload, calls `jev_gate` itself on every part (one part unless the patch exceeds a call's limits; only a contradicted claim stops a batch early) and returns one aggregated report with a signed receipt of the whole batch. Read the whole report and answer once. Never copy gate payloads. | No code changed. |
 | 8. Report | After the gate or an explicit fallback. No further Jev call. | — |
 
 ## Budgets
@@ -56,17 +56,19 @@ A PreToolUse hook denies Jev calls that violate rules 1–2 or carry a recogniza
 1. **Valid contradicted claim** (any Jev tool): stop and ask the user, quoting the verdict and the numbers. An invalid answer elsewhere does not cancel the contradiction.
 2. **Transport error or `invalid_response`**: retry once with the identical input. If it fails again, continue with the real checks and report **"Jev unavailable; gate not evaluated"**. Never record it as `auto`. A user cancellation is not a reason to retry.
 3. **`review` or low confidence on a routine step**: inspect manually and continue with a stated reason. Do not re-call with the same input hoping for a nicer verdict.
-4. **Gate `escalate` or low confidence, or an inconclusive consequential `jev_decide`** (confidence missing or below 0.8, an escape hatch, or warnings): stop and ask the user. A gate `review` caused only by missing evidence may be resolved with new evidence and a new call; if it stays unresolved, do not declare completion.
+4. **Gate `escalate` or low confidence, or an inconclusive consequential `jev_decide`** (confidence missing or below 0.8, an escape hatch, or warnings): stop and ask the user. A gate `review` caused only by missing evidence may be resolved once with genuinely new evidence and a new run; if it stays unresolved, do not declare completion. A new gate is also due after a failed check is fixed or the snapshot changed. Never re-run the gate for `review`, `ask_user` or `escalate` without such a change, and never for a more favourable verdict.
 5. **Valid `auto`**: applies only to the evaluated snapshot and claims. It does not replace the user's explicit criteria or the real tests.
 
 `jev_gate` alone does not escalate every contradiction regardless of confidence; this flow deliberately applies the stricter rule 1.
+
+**`review` on correct claims is frequent.** With the default upstream thresholds (`auto_accept` 0.8, `review_at` 0.5, `composite_floor` 0.7), `jev_gate` often answers `review` even when every claim is `verified` (a trivial correct fix measured `safe_to_apply` 0.59). Report it as "gate: review (not auto)" with the real `safe_to_apply`, reason codes, claim verdicts and confidences and the limits; it is neither acceptance nor a contradiction. Keep the thresholds, do not re-run, and end with `Incomplete:` or ask the user.
 
 ## Completion
 
 - A result counts only for the snapshot it was produced on. Any later edit invalidates earlier checks and gates.
 - Changes present before you started are not your work; do not claim them.
 - If completion cannot be verified, end the report with a line starting with `Incomplete:` and say what is missing.
-- When the gate ran as a batch of parts, completion needs every part accepted on the same snapshot; the report says that verification was partitioned and that no single call evaluated the whole patch. A missing or unaccepted part means `Incomplete:`.
+- When the gate ran as a batch of parts, the runner evaluates every part and aggregates one report: the semantic `verdict` is the most severe part, the operational `status` is reported separately, and each claim's overall verdict is the most severe of its occurrences (a contradiction is never hidden). Completion needs every part accepted on the same snapshot; the report says that verification was partitioned and that no single call evaluated the whole patch. An unavailable, unevaluated or unaccepted part means `Incomplete:`.
 - Completion evidence is the runner's signed receipt for this session, request and snapshot (or a direct `jev_gate` re-read from the transcript); a verdict printed or pasted any other way does not count.
 - With `JEV_FLOW_STRICT=1`, the Stop hook redirects once per snapshot to `/jev:jev-done` when code changed without an accepted gate. It never blocks a question to the user, a line starting with `Incomplete:`, or the two fixed phrases above.
 

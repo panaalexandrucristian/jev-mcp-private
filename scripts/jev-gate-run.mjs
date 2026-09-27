@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // jev-flow direct gate runner. Node stdlib only. The runner collects the diff,
 // runs the checks, reads the cited excerpts, calls jev_gate itself through the
-// jev MCP server on stdio and prints one compact JSON summary (at most ~4 KB).
+// jev MCP server on stdio for every part of the batch (only a contradicted
+// claim stops it early) and prints one aggregated JSON report (at most 8 KB).
 // The model never copies payloads.
 //
 //   node jev-gate-run.mjs --root <repo> --list-hunks
@@ -22,8 +23,10 @@
 // before any validation, so an invalid or interrupted run supersedes an
 // earlier accepted gate.
 //
-// Exit codes: 0 accepted, 2 review/escalate/contradicted/checks failed/not accepted,
-// 3 Jev unavailable or disabled for the repo, 4 invalid input or not ready,
+// Exit codes (from `outcome`: a contradiction first, then snapshot_changed,
+// checks_failed, unavailable, then the verdict): 0 accepted, 2 contradicted /
+// checks failed / escalate / ask_user / needs_evidence, 3 Jev unavailable or
+// disabled for the repo, 4 invalid input, not ready or snapshot changed,
 // 1 internal error.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

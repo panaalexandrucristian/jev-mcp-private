@@ -46,7 +46,7 @@ const EXPLORATION_TOOLS = new Set(["read", "grep", "glob", "list", "ls"]);
 export const DIRECTIVE =
   "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
   `When the files are not known, delegate broad discovery to the ${NAMES_LOCATOR} subagent (/jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. ` +
-  "After any code change, finish with /jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself before you report completion.";
+  "After any code change, finish with /jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself on every part and returns one aggregated report; answer once from it, without re-running for a more favourable verdict.";
 
 /** A shell command that runs the gate runner for a gate (not a hunk listing). */
 export function isRunnerGateCommand(command) {
@@ -131,7 +131,7 @@ export const LIMITATIONS = Object.freeze([
   "Locator permissions are not set: V2 permission action names are unverified.",
   "Strict /jev-done only instructs the agent with the gate status; nothing technically blocks a completion message in OpenCode.",
   "The jev-locator model is applied through the V2 Agent.Info.model field (Model.Ref); that the runtime honours it on 2.0.12 is not verified.",
-  "Gate-runner results are recognised from bash tool calls whose command runs scripts/jev-gate-run.mjs; the runner's receipt and session metadata (key, baseline, request number) live in the jev-flow cache, not in memory.",
+  "Gate-runner results are recognised from bash tool calls whose command runs scripts/jev-gate-run.mjs; the runner's receipt (of the whole batch) and session metadata (key, baseline, request number) live in the jev-flow cache, not in memory. The aggregated report reaches the agent as that bash call's output; the adapter does not re-evaluate it.",
   "jev-locator hits are read from the result of a subagent tool call whose input names jev-locator; the V2 subagent tool's result shape is not verified.",
 ]);
 
@@ -362,6 +362,7 @@ export async function setupFlow(ctx, options = {}) {
       text +=
         `\n\nStrict mode (JEV_FLOW_STRICT=1). Gate status from the jev-flow plugin: ${status.reason}. ` +
         "Do not report completion unless the gate runner (or jev_gate) returned an accepted result on the current snapshot in this request; " +
+        "read the runner's aggregated report of every part and answer once, without re-running it for a more favourable verdict; " +
         `otherwise end with a line starting with "Incomplete:", report "${FIXED_PHRASES.unavailable}" or "${FIXED_PHRASES.disabled}" when applicable, or ask the user.`;
     }
     return text;

@@ -526,3 +526,51 @@ runner ran through 3 Bash calls; R1 is fixed (no model copying).
 Decision (jev_decide 1.00): the runner evaluates **all** parts and aggregates one complete report
 (it stops early only on a contradicted claim). Locator logic is unchanged. Next measurement: A vs B on
 a behaviour-only task variant.
+
+### Resolution of R5 and R6 (plugin 0.3.0)
+
+- **R5.** `private/jev-flow/gate-run.mjs` now sends every part of a batch and stops early only at a
+  contradicted claim; later parts are listed as `unevaluated` (`not_sent_after_contradiction`).
+  `escalate`, `review`/`ask_user` and `needs_evidence` parts no longer stop the batch. After a part
+  fails for good (after the per-call retry), the next part gets one reconnection; if it fails, the
+  remaining parts are listed as `unevaluated` (`reconnect_failed`) and nothing more is sent. The
+  single report (JSON on stdout, at most 8,192 characters) separates the semantic `verdict`
+  (`contradicted` > `escalate` > `ask_user` > `needs_evidence` > `accepted`) from the operational
+  `status` (`snapshot_changed` > `checks_failed` > `unavailable` > `ok`); `outcome` decides the exit
+  code (a contradiction first, then `snapshot_changed`, `checks_failed`, `unavailable`, then the
+  verdict). Each claim gets an overall verdict over its occurrences (`contradicted` > `unevaluated` >
+  `unsupported` > `verified`), next to the per-occurrence `{c, part, verdict, confidence}` detail,
+  which is the first thing dropped when the report would exceed 8 KB. The HMAC receipt (v2) lists
+  every planned part (`part_ids`, per-part actions or states, verdict codes, coverage) and is
+  accepted only for a complete batch: parts 1..n each once, all `auto`, all evaluated, `verdict`
+  `accepted`, `status` `ok`. `/jev:jev-done`, the `jev-flow` skill, `workflow.md` and the OpenCode
+  adapter tell the agent to read the whole report and answer once; a new run is allowed only once
+  with genuinely new evidence for `needs_evidence`, or after a failed check is fixed or the snapshot
+  changed.
+- **R6.** Documented in `/jev:jev-done`, the skill and `workflow.md` §3: with the default upstream
+  thresholds (`auto_accept` 0.8, `review_at` 0.5, `composite_floor` 0.7) `review` is frequent even
+  when every claim is `verified`; it is reported as "gate: review (not auto)" with the real numbers,
+  never as acceptance or contradiction, the thresholds stay unchanged and there is no re-run.
+
+Real output of the runner against the local fake MCP server (`private/jev-flow/test/fixtures/fake-mcp-server.mjs`,
+`FAKE_MCP_MODES` sets each call's answer), on a three-file patch that the runner splits into 3 parts,
+after the council's fixes (a batch without credentials goes through the same aggregation; the 8 KB
+compaction never drops a part, a check, a limit or a claim verdict):
+
+```text
+FAKE_MCP_MODES=escalate,accepted,accepted: exit=2 tools/call=3
+{"outcome":"escalate","verdict":"escalate","status":"ok","conditions":[],"exit":2,"parts":[{"part":1,"verdict":"escalate","action":"escalate","reason_codes":["review_escalated"],"safe_to_apply":0.95},{"part":2,"verdict":"accepted","action":"auto","reason_codes":["accepted"],"safe_to_apply":0.95},{"part":3,"verdict":"accepted","action":"auto","reason_codes":["accepted"],"safe_to_apply":0.95}],"claims":[{"c":1,"verdict":"verified"},{"c":2,"verdict":"verified"},{"c":3,"verdict":"verified"}],"coverage":{"planned":3,"sent":3,"evaluated":3,"unavailable":0,"unevaluated":0},"jev_calls":3}
+FAKE_MCP_MODES=accepted,contradicted,accepted: exit=2 tools/call=2
+{"outcome":"contradicted","verdict":"contradicted","status":"ok","conditions":[],"exit":2,"parts":[{"part":1,"verdict":"accepted","action":"auto","reason_codes":["accepted"],"safe_to_apply":0.95},{"part":2,"verdict":"contradicted","action":"review","reason_codes":["claims_contradicted"],"safe_to_apply":0.95},{"part":3,"state":"unevaluated","reason":"not_sent_after_contradiction","action":null,"reason_codes":[]}],"claims":[{"c":1,"verdict":"verified"},{"c":2,"verdict":"contradicted"},{"c":3,"verdict":"contradicted"}],"coverage":{"planned":3,"sent":2,"evaluated":2,"unavailable":0,"unevaluated":1},"jev_calls":2}
+no credentials, failing check: exit=2 tools/call=0
+{"outcome":"checks_failed","verdict":null,"status":"checks_failed","conditions":["checks_failed","unavailable"],"exit":2,"parts":[{"part":1,"state":"unevaluated","reason":"jev_unavailable","action":null,"reason_codes":[]},{"part":2,"state":"unevaluated","reason":"jev_unavailable","action":null,"reason_codes":[]},{"part":3,"state":"unevaluated","reason":"jev_unavailable","action":null,"reason_codes":[]}],"claims":[{"c":1,"verdict":"unevaluated"},{"c":2,"verdict":"unevaluated"},{"c":3,"verdict":"unevaluated"}],"coverage":{"planned":3,"sent":0,"evaluated":0,"unavailable":0,"unevaluated":3},"jev_calls":0}
+```
+
+(Report fields `occurrences`, `checks`, `limits`, `batch`, `receipt`, `message` and `reason` are
+omitted above for brevity.) `node --test private/jev-flow/test/`: 315 tests, 0 failures; `npm test`: 224 tests, 0 failures.
+
+**Limits of this verification.** Everything above ran offline against the fake MCP server and
+simulated OpenCode contexts; no live provider, no live Claude Code plugin session and no live
+OpenCode runtime was exercised. The R6 numbers (0.59) come from the round 3 smoke test, not from a
+new measurement. Whether aggregated reports change agent behaviour (one answer, no re-runs) is not
+measured; the next A/B run should check it.

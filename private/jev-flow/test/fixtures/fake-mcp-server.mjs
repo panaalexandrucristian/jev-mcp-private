@@ -13,10 +13,18 @@
 // FAKE_MCP_CRASH=once|always|once_then_dead: tools/call kills the server;
 //   once_then_dead also makes every later server exit at startup.
 // FAKE_MCP_STATE=<file>: cross-process counter file used by the two above.
+// FAKE_MCP_MODES=m1,m2,...: the mode of the Nth tools/call (the last one
+//   repeats); counted across processes through FAKE_MCP_STATE when set (a
+//   reconnection starts a new server), otherwise within this process.
+//   FAKE_MCP_MODE stays the default for everything else.
+// FAKE_MCP_LOG_STARTS=1: every server start (connection) is also logged as
+//   {method: "start"} ({dead: true} when once_then_dead makes it exit at once).
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { acceptedGate } from "../helpers.mjs";
 
-const mode = process.env.FAKE_MCP_MODE ?? "accepted";
+const baseMode = process.env.FAKE_MCP_MODE ?? "accepted";
+const modes = (process.env.FAKE_MCP_MODES ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+let mode = baseMode;
 const stateFile = process.env.FAKE_MCP_STATE;
 const counter = (name) => {
   if (!stateFile) return 0;
@@ -25,13 +33,16 @@ const counter = (name) => {
   writeFileSync(stateFile, JSON.stringify(data));
   return data[name];
 };
-if (process.env.FAKE_MCP_CRASH === "once_then_dead" && stateFile && existsSync(stateFile) && JSON.parse(readFileSync(stateFile, "utf8")).crash) process.exit(4);
 const log = process.env.FAKE_MCP_LOG;
 let calls = 0;
 
 function record(entry) {
   if (log) appendFileSync(log, `${JSON.stringify({ ...entry, provider: process.env.JEV_PROVIDER ?? null, openrouter_set: Boolean(process.env.OPENROUTER_API_KEY) })}\n`);
 }
+
+const dead = process.env.FAKE_MCP_CRASH === "once_then_dead" && stateFile && existsSync(stateFile) && JSON.parse(readFileSync(stateFile, "utf8")).crash;
+if (process.env.FAKE_MCP_LOG_STARTS === "1") record({ method: "start", ...(dead ? { dead: true } : {}) });
+if (dead) process.exit(4);
 
 function send(message) {
   const text = `${JSON.stringify(message)}\n`;
@@ -89,8 +100,12 @@ function handle(msg) {
   if (msg.method === "notifications/initialized") return record({ method: "notifications/initialized" });
   if (msg.method === "tools/call") {
     calls += 1;
+    if (modes.length) {
+      const nth = stateFile ? counter("modes") : calls;
+      mode = modes[Math.min(nth, modes.length) - 1];
+    }
     const { name, arguments: args } = msg.params ?? {};
-    record({ method: "tools/call", name, claims: args?.claims?.length ?? null, evidence: Array.isArray(args?.evidence) ? args.evidence.map((e) => e.id) : null, request_first_line: String(args?.request ?? "").split("\n", 1)[0], args });
+    record({ method: "tools/call", mode, name, claims: args?.claims?.length ?? null, evidence: Array.isArray(args?.evidence) ? args.evidence.map((e) => e.id) : null, request_first_line: String(args?.request ?? "").split("\n", 1)[0], args });
     if (process.env.FAKE_MCP_TOUCH) appendFileSync(process.env.FAKE_MCP_TOUCH, "changed during the gate\n");
     const crash = process.env.FAKE_MCP_CRASH;
     if (crash === "always" || ((crash === "once" || crash === "once_then_dead") && counter("crash") === 1)) process.exit(3);

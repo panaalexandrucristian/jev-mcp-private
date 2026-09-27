@@ -154,15 +154,31 @@ export function verifyReceipt(dir, id, expected) {
   if (expected.req !== undefined && body.req !== expected.req) return { accepted: false, reason: "receipt_other_request" };
   if (expected.boot !== undefined && body.boot !== expected.boot) return { accepted: false, reason: "receipt_other_boot" };
   if (!expected.snapshot || body.snap !== expected.snapshot || body.snap_after !== expected.snapshot) return { accepted: false, reason: "receipt_snapshot_mismatch" };
-  if (body.accepted !== true || body.status !== "accepted") return { accepted: false, reason: `receipt_not_accepted_${body.status ?? "unknown"}` };
+  // Semantic verdict and operational status are separate; both must be clean.
+  if (body.accepted !== true || body.verdict !== "accepted" || body.status !== "ok" || body.outcome !== "accepted") {
+    return { accepted: false, reason: `receipt_not_accepted_${body.outcome ?? body.status ?? "unknown"}` };
+  }
   // Every real check must have passed: exit 0, no timeout, started.
   if (!Array.isArray(body.checks) || body.checks.some((c) => !c || c.exit !== 0 || c.timed_out === true || c.start_failed === true)) {
     return { accepted: false, reason: "receipt_checks_failed" };
   }
-  if (!Number.isInteger(body.parts) || body.parts < 1 || !Array.isArray(body.actions) || body.actions.length !== body.parts || body.actions.some((a) => a !== "auto")) {
-    return { accepted: false, reason: "receipt_incomplete" };
-  }
+  if (!completeBatch(body)) return { accepted: false, reason: "receipt_incomplete" };
   return { accepted: true, receipt: body };
+}
+
+/**
+ * The receipt covers the whole batch: parts 1..n each exactly once, in order,
+ * every one evaluated and auto, and the coverage counters agree (R5, F3).
+ */
+function completeBatch(body) {
+  const n = body.parts;
+  if (!Number.isInteger(n) || n < 1) return false;
+  const ids = body.part_ids;
+  if (!Array.isArray(ids) || ids.length !== n || ids.some((id, i) => id !== i + 1)) return false;
+  if (!Array.isArray(body.actions) || body.actions.length !== n || body.actions.some((a) => a !== "auto")) return false;
+  if (!Array.isArray(body.verdicts) || body.verdicts.length !== n) return false;
+  const c = body.coverage;
+  return Boolean(c) && c.planned === n && c.sent === n && c.evaluated === n && c.unavailable === 0 && c.unevaluated === 0;
 }
 
 export { sessionKey };

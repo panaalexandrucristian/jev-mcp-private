@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { isRunnerGateCommand, setupFlow } from "../opencode.mjs";
-import { ensureReceiptKey, newReceiptId, RECEIPTS_DIR, verifyReceipt, writeReceipt } from "../runner-receipt.mjs";
+import { ensureReceiptKey, newReceiptId, RECEIPTS_DIR, sessionDirFromKey, verifyReceipt, writeReceipt } from "../runner-receipt.mjs";
 import { collectPatch } from "../gate-run.mjs";
 import { loadDenylist } from "../paths.mjs";
 import { sanitizeDiff } from "../sanitize.mjs";
@@ -121,6 +121,19 @@ describe("receipts: Claude Code Stop recognises the gate runner", () => {
     assert.match(out.systemMessage, /completion is not verified/);
   });
 
+  it("a partitioned batch counts only when every part is evaluated and auto (R5)", () => {
+    const big = (tag) => Array.from({ length: 600 }, (_, i) => `export const ${tag}${i} = "${"x".repeat(50)}";`).join("\n") + "\n";
+    const three = { request: "set a to 2", claims: ["a", "b", "c"].map((f) => ({ text: `${f}.js is regenerated`, evidence: [`file:${f}.js`] })) };
+    const s = claudeSession();
+    writeFiles(s.repo, { "a.js": big("a"), "b.js": big("b"), "c.js": big("c") });
+    const escalated = s.runner({ FAKE_MCP_MODES: "escalate,accepted,accepted" }, { input: three });
+    assert.deepEqual([escalated.code, escalated.out.outcome, escalated.out.coverage.evaluated, escalated.out.batch.parts], [2, "escalate", 3, 3]);
+    assert.equal(s.stop()?.decision, "block", "one escalated part keeps the whole batch unaccepted");
+    const all = s.runner({}, { input: three });
+    assert.equal(all.code, 0, JSON.stringify(all.out));
+    assert.equal(s.stop(), null, "every part auto on the same snapshot");
+  });
+
   it("an unfinished runner attempt (crashed run) keeps completion unverified", () => {
     const s = claudeSession();
     writeFiles(s.repo, { "a.js": "export const a = 2;\n" });
@@ -135,7 +148,7 @@ describe("receipts: Claude Code Stop recognises the gate runner", () => {
     const dir = tempDir("jev-flow-receipt-");
     ensureReceiptKey(dir);
     const id = newReceiptId();
-    const body = { v: 1, id, session: "a".repeat(16), req: 1, boot: 1, snap: "c".repeat(64), snap_after: "c".repeat(64), parts: 1, actions: ["auto"], checks: [{ n: 1, cmd: "c".repeat(32), exit: 0, timed_out: false, start_failed: false }], status: "accepted", accepted: true };
+    const body = { v: 1, id, session: "a".repeat(16), req: 1, boot: 1, snap: "c".repeat(64), snap_after: "c".repeat(64), parts: 1, part_ids: [1], actions: ["auto"], verdicts: [["verified"]], coverage: { planned: 1, sent: 1, evaluated: 1, unavailable: 0, unevaluated: 0 }, checks: [{ n: 1, cmd: "c".repeat(32), exit: 0, timed_out: false, start_failed: false }], verdict: "accepted", status: "ok", outcome: "accepted", accepted: true };
     writeReceipt(dir, body);
     const expected = { session: "a".repeat(16), req: 1, boot: 1, snapshot: "c".repeat(64) };
     assert.equal(verifyReceipt(dir, id, expected).accepted, true);
@@ -144,6 +157,25 @@ describe("receipts: Claude Code Stop recognises the gate runner", () => {
       const other = newReceiptId();
       writeReceipt(dir, { ...body, id: other, checks: [{ n: 1, cmd: "c".repeat(32), exit: 0, timed_out: false, start_failed: false, ...bad }] });
       assert.equal(verifyReceipt(dir, other, expected).reason, "receipt_checks_failed", JSON.stringify(bad));
+    }
+    // A correctly signed receipt must also cover the whole batch, with a clean verdict and status (R5).
+    const three = { ...body, parts: 3, part_ids: [1, 2, 3], actions: ["auto", "auto", "auto"], verdicts: [[], [], []], coverage: { planned: 3, sent: 3, evaluated: 3, unavailable: 0, unevaluated: 0 } };
+    const signedThree = newReceiptId();
+    writeReceipt(dir, { ...three, id: signedThree });
+    assert.equal(verifyReceipt(dir, signedThree, expected).accepted, true);
+    for (const [label, bad, reason] of [
+      ["a missing part", { part_ids: [1, 2], actions: ["auto", "auto"], verdicts: [[], []] }, "receipt_incomplete"],
+      ["a duplicate part", { part_ids: [1, 1, 3] }, "receipt_incomplete"],
+      ["an unevaluated part", { actions: ["auto", "auto", "unevaluated"], coverage: { planned: 3, sent: 2, evaluated: 2, unavailable: 0, unevaluated: 1 } }, "receipt_incomplete"],
+      ["coverage that disagrees", { coverage: { planned: 3, sent: 3, evaluated: 2, unavailable: 1, unevaluated: 0 } }, "receipt_incomplete"],
+      ["no coverage", { coverage: undefined }, "receipt_incomplete"],
+      ["an escalated verdict", { verdict: "escalate", outcome: "escalate" }, "receipt_not_accepted_escalate"],
+      ["an unavailable status", { status: "unavailable", outcome: "unavailable" }, "receipt_not_accepted_unavailable"],
+      ["a pre-0.3.0 receipt (no verdict)", { verdict: undefined, outcome: undefined, status: "accepted" }, "receipt_not_accepted_accepted"],
+    ]) {
+      const other = newReceiptId();
+      writeReceipt(dir, JSON.parse(JSON.stringify({ ...three, ...bad, id: other })));
+      assert.equal(verifyReceipt(dir, other, expected).reason, reason, label);
     }
     const other = tempDir("jev-flow-receipt-");
     ensureReceiptKey(other);
@@ -298,7 +330,7 @@ describe("receipts: OpenCode gate status recognises the gate runner", () => {
       f.hooks.tool["execute.after"]({ tool: "bash", sessionID: "oc2", id, input: { command }, status: "completed", result: { output: r.stdout } });
       return r.code;
     };
-    return { repo, done, attempt };
+    return { repo, done, attempt, receiptsDir: () => join(sessionDirFromKey(repo, key, env), RECEIPTS_DIR) };
   }
   const ACCEPTED = /signed receipt accepts/;
   const CHECK = join(import.meta.dirname, "fixtures", "check.mjs");
@@ -312,6 +344,23 @@ describe("receipts: OpenCode gate status recognises the gate runner", () => {
     assert.doesNotMatch(await o.done(), ACCEPTED);
     assert.equal(o.attempt({ args: ["--check", JSON.stringify([process.execPath, CHECK, "ok", "0"])] }), 0);
     assert.match(await o.done(), ACCEPTED);
+  });
+
+  it("a partitioned batch: an escalated part or an edited receipt is refused, a complete batch is accepted (R5)", async () => {
+    const big = (tag) => Array.from({ length: 600 }, (_, i) => `export const ${tag}${i} = "${"x".repeat(50)}";`).join("\n") + "\n";
+    const three = { request: "set a to 2", claims: ["a", "b", "c"].map((f) => ({ text: `${f}.js is regenerated`, evidence: [`file:${f}.js`] })) };
+    const o = await openCodeSession();
+    writeFiles(o.repo, { "a.js": big("a"), "b.js": big("b"), "c.js": big("c") });
+    assert.equal(o.attempt({ input: three, extraEnv: { FAKE_MCP_MODES: "escalate,accepted,accepted" } }), 2);
+    assert.match(await o.done(), /receipt_not_accepted_escalate/);
+    assert.equal(o.attempt({ input: three }), 0);
+    assert.match(await o.done(), /signed receipt accepts all 3 part\(s\)/);
+    // Edit the accepted receipt to drop a part: the HMAC no longer verifies.
+    const receipts = o.receiptsDir();
+    const file = readdirSync(receipts).map((f) => join(receipts, f)).sort((a, b) => JSON.parse(readFileSync(a, "utf8")).ts_end - JSON.parse(readFileSync(b, "utf8")).ts_end).pop();
+    const body = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify({ ...body, parts: 2, part_ids: [1, 2], actions: ["auto", "auto"] }));
+    assert.match(await o.done(), /receipt_signature_invalid/);
   });
 
   it("coverage across runner attempts, and an invalid invocation supersedes an accepted one (fixes 3 and 5)", async () => {

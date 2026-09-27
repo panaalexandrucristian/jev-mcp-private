@@ -101,6 +101,21 @@ describe("setupFlow with a full V2-shaped context", () => {
     assert.match(prompts[0].text, /Strict mode \(JEV_FLOW_STRICT=1\)\. Gate status from the jev-flow plugin: no jev_gate in this request/);
   });
 
+  it("/jev-done delivers the aggregated-report procedure: every part, one answer, no re-run for a better verdict, review reported as it is (R5, R6)", async () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const { ctx, editors, prompts } = fakeContext({ directory: repo });
+    await setupFlow(ctx, { log: () => {}, env: sandboxEnv({ JEV_FLOW_STRICT: "1" }) });
+    await editors.command.get("jev-done").execute({ sessionID: "ses_3", prompt: { text: "" }, delivery: "queue" });
+    const text = prompts[0].text;
+    assert.match(text, /for \*\*every part\*\* of the batch \(it stops early only at a contradicted claim\) and prints \*\*one aggregated JSON report\*\*/);
+    assert.match(text, /\*\*Answer once\*\*, after the whole report/);
+    assert.match(text, /\*\*No re-runs for a better verdict\.\*\*/);
+    assert.match(text, /`review` on correct claims is frequent \(R6\)/);
+    assert.match(text, /keep the thresholds as they are/);
+    assert.match(text, /answer once, without re-running it for a more favourable verdict/, "the strict note repeats the rule");
+    assert.match(DIRECTIVE, /one aggregated report; answer once from it/);
+  });
+
   it("preserves existing entries and reports collisions", async () => {
     const repo = makeRepo({ "a.ts": "a\n" });
     const mine = { id: "jev-flow", name: "jev-flow", description: "user's own" };

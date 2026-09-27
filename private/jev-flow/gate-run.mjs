@@ -5,13 +5,18 @@
 // the cited excerpts; it pairs them with the model's claims through
 // prepareGateBatch (sanitizing, jev_gate limits, partitioning only when one
 // call is not enough, manifest bound to the snapshot), calls jev_gate itself
-// over the jev MCP server on stdio, validates every part and returns only a
-// compact summary. With a jev-flow session it records the attempt in the
-// session state and writes an HMAC-signed, metadata-only receipt that the
-// Stop hook / OpenCode gate status re-verify.
+// over the jev MCP server on stdio, evaluates every part of the batch (only a
+// contradicted claim stops it early) and returns one aggregated report: a
+// semantic `verdict`, an operational `status`, the `outcome` that decides the
+// exit code, per-part and per-claim verdicts and coverage. With a jev-flow
+// session it records the attempt in the session state and writes an
+// HMAC-signed, metadata-only receipt of the whole batch that the Stop hook /
+// OpenCode gate status re-verify.
 //
-// Exit codes: 0 accepted (every part auto and valid), 2 review / escalate /
-// contradicted / not accepted, 3 Jev unavailable or disabled for the repo,
+// Exit codes (outcome precedence: contradicted, snapshot_changed,
+// checks_failed, unavailable, then the verdict): 0 accepted (every part auto
+// and valid, every check passed), 2 contradicted / checks failed / escalate /
+// ask_user / needs_evidence, 3 Jev unavailable or disabled for the repo,
 // 4 invalid input or not ready (nothing to gate, snapshot changed, sanitizing
 // removed content, ...), 1 internal error.
 import { spawn, spawnSync } from "node:child_process";
@@ -21,7 +26,7 @@ import { listHunks, prepareGateBatch } from "./gate-batch.mjs";
 import { callWithRetry, openJev } from "./mcp-client.mjs";
 import { FIXED_PHRASES, interpretGate, validateGateResult } from "./policy.mjs";
 import { newReceiptId, readReceiptKey, sessionDirFromKey, writeReceipt } from "./runner-receipt.mjs";
-import { sanitizeDiff } from "./sanitize.mjs";
+import { sanitizeDiff, sanitizeText } from "./sanitize.mjs";
 import { computeSnapshot, inputHash, pathContentHash, readBaseline, repoKey, sessionDir, sessionKey, sha256, withState } from "./state.mjs";
 
 export const EXIT = Object.freeze({ accepted: 0, internal: 1, not_accepted: 2, unavailable: 3, invalid: 4 });
@@ -33,7 +38,7 @@ export const RUN_LIMITS = Object.freeze({
   checkTailChars: 32_000, // kept from the end (test summaries are at the end)
   maxChecks: 8,
   maxExcerptLines: 400,
-  summaryChars: 4_096,
+  summaryChars: 8_192,
   gitMaxBuffer: 64 * 1024 * 1024,
 });
 
@@ -305,35 +310,106 @@ export function runnerSession(repoRoot, { sessionKeyArg, env = process.env }) {
 
 const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s));
 
-/** Compact summary, at most RUN_LIMITS.summaryChars; omissions are explicit. */
+/**
+ * Aggregation orders, least to most severe (R5). The semantic verdict of a
+ * batch is the most severe verdict of its evaluated parts; the operational
+ * status is the most severe condition of the run; a claim's overall verdict is
+ * the most severe verdict of its occurrences (a contradiction is never hidden
+ * by an occurrence that was not evaluated).
+ */
+export const VERDICT_ORDER = Object.freeze(["accepted", "needs_evidence", "ask_user", "escalate", "contradicted"]);
+export const STATUS_ORDER = Object.freeze(["ok", "unavailable", "checks_failed", "snapshot_changed"]);
+export const CLAIM_ORDER = Object.freeze(["verified", "unsupported", "unevaluated", "contradicted"]);
+
+/** The most severe of `values` under `order` (values outside the order are ignored); order[0] when none. */
+export function worst(order, values) {
+  return values.reduce((w, v) => (order.indexOf(v) > order.indexOf(w) ? v : w), order[0]);
+}
+
+/** A claim's overall verdict from its occurrences' verdicts (anything unknown counts as unevaluated). */
+export function claimVerdict(verdicts) {
+  const known = verdicts.map((v) => (CLAIM_ORDER.includes(v) && v !== "unevaluated" ? v : "unevaluated"));
+  return known.length ? worst(CLAIM_ORDER, known) : "unevaluated";
+}
+
+/** Semantic verdict of one evaluated part from its interpretGate route and gate action. */
+export function partVerdict(route, action) {
+  if (route === "accepted") return "accepted";
+  if (route === "needs_evidence") return "needs_evidence";
+  if (route === "stop_contradiction") return "contradicted";
+  return action === "escalate" ? "escalate" : "ask_user";
+}
+
+/**
+ * The label that decides the exit code, from the semantic verdict (null when
+ * no part was evaluated) and the operational status: a contradiction first,
+ * then a changed snapshot, a failed check, Jev unavailable, then any
+ * non-accepted verdict. Returns [outcome, exit].
+ */
+export function decideOutcome(verdict, status) {
+  if (verdict === "contradicted") return ["contradicted", EXIT.not_accepted];
+  if (status === "snapshot_changed") return ["snapshot_changed", EXIT.invalid];
+  if (status === "checks_failed") return ["checks_failed", EXIT.not_accepted];
+  if (status === "unavailable" || verdict === null) return ["unavailable", EXIT.unavailable];
+  if (verdict !== "accepted") return [verdict, EXIT.not_accepted];
+  return ["accepted", EXIT.accepted];
+}
+
+/**
+ * Summary within RUN_LIMITS.summaryChars (8 KB). When too large, it is
+ * compacted step by step and never loses a part, a check, a limit or a
+ * claim's overall verdict: first the per-occurrence detail is dropped
+ * (`occurrences_omitted: n`), then long limit lists become counts
+ * (`{count: n}`) and redactions are summed per kind, problems are capped
+ * (the omission is stated), then claims become verdict → claim-number ranges
+ * (`{"verified": "1-12,14", "contradicted": "13"}`), parts become tuples
+ * `[part, verdict|state, action, [reason_codes], safe_to_apply]` and checks
+ * `[n, exit, ...flags]`. `summary_truncated: true` marks any compaction; no
+ * reason code is cut.
+ */
 export function compactSummary(summary, max = RUN_LIMITS.summaryChars) {
   let out = JSON.stringify(summary);
   if (out.length <= max) return out;
   const s = structuredClone(summary);
   s.summary_truncated = true;
+  const count = (key) => {
+    if (Array.isArray(s.limits?.[key])) s.limits[key] = { count: s.limits[key].length };
+  };
   const steps = [
-    () => s.parts?.forEach((p) => {
-      if (p.route === "accepted" && Array.isArray(p.claims)) p.claims = { verified: p.claims.length };
-    }),
     () => {
-      if (Array.isArray(s.limits?.uncited_hunks)) s.limits.uncited_hunks = { count: s.limits.uncited_hunks.length };
-    },
-    () => {
-      if (Array.isArray(s.limits?.unattributed)) s.limits.unattributed = { count: s.limits.unattributed.length };
-      if (Array.isArray(s.limits?.preexisting_mixed)) s.limits.preexisting_mixed = { count: s.limits.preexisting_mixed.length };
-    },
-    () => {
-      if (Array.isArray(s.problems) && s.problems.length > 6) s.problems = [...s.problems.slice(0, 6), `… ${s.problems.length - 6} more problem(s) omitted`];
-    },
-    () => s.parts?.forEach((p) => {
-      if (Array.isArray(p.claims)) {
-        const bad = p.claims.filter((c) => c.verdict !== "verified");
-        p.claims = { verified: p.claims.length - bad.length, not_verified: bad.slice(0, 4), omitted: Math.max(0, bad.length - 4) };
+      if (Array.isArray(s.occurrences)) {
+        s.occurrences_omitted = s.occurrences.length;
+        delete s.occurrences;
       }
-    }),
+    },
     () => {
-      if (Array.isArray(s.problems)) s.problems = s.problems.map((p) => clip(p, 160));
-      if (Array.isArray(s.limits?.unevaluated)) s.limits.unevaluated = { count: s.limits.unevaluated.length };
+      for (const key of ["uncited_hunks", "unattributed", "preexisting_mixed", "unevaluated"]) count(key);
+      if (Array.isArray(s.limits?.redactions)) {
+        const byKind = {};
+        for (const r of s.limits.redactions) byKind[r?.kind ?? "unknown"] = (byKind[r?.kind ?? "unknown"] ?? 0) + (Number.isInteger(r?.count) ? r.count : 1);
+        s.limits.redactions = byKind;
+      }
+      if (Array.isArray(s.limits?.checks_output_cut)) s.limits.checks_output_cut = Object.fromEntries(s.limits.checks_output_cut.map((c) => [c.n, c.chars]));
+    },
+    () => {
+      if (Array.isArray(s.problems)) {
+        if (s.problems.length > 6) s.problems = [...s.problems.slice(0, 6), `… ${s.problems.length - 6} more problem(s) omitted`];
+        s.problems = s.problems.map((p) => clip(p, 160));
+      }
+      if (typeof s.reason === "string") s.reason = clip(s.reason, 600);
+    },
+    () => {
+      if (Array.isArray(s.claims)) s.claims = claimsByVerdict(s.claims);
+    },
+    () => {
+      if (Array.isArray(s.parts)) s.parts = s.parts.map((p) => [p.part, p.verdict ?? p.state, p.action ?? null, p.reason_codes ?? [], p.safe_to_apply ?? null]);
+      if (Array.isArray(s.checks)) {
+        s.checks = s.checks.map((c) => [c.n, c.exit, ...(c.timed_out ? ["timed_out"] : []), ...(c.start_failed ? ["start_failed"] : []), ...(c.cut_chars ? [`cut:${c.cut_chars}`] : [])]);
+      }
+    },
+    () => {
+      if (Array.isArray(s.problems)) s.problems = s.problems.map((p) => clip(p, 80));
+      if (typeof s.reason === "string") s.reason = clip(s.reason, 200);
     },
   ];
   for (const step of steps) {
@@ -341,34 +417,49 @@ export function compactSummary(summary, max = RUN_LIMITS.summaryChars) {
     out = JSON.stringify(s);
     if (out.length <= max) return out;
   }
-  return JSON.stringify({ jev_flow_gate_run: 1, status: s.status, exit: s.exit, message: s.message, receipt: s.receipt, summary_truncated: true, note: "summary too large; re-run with fewer claims or parts" });
+  // Not reached for a batch within the limits (at most 16 parts, 8 checks); nothing required is ever dropped.
+  return out;
 }
 
+/** Overall claim verdicts grouped by verdict, claim numbers as ranges ("1-12,14"). */
+function claimsByVerdict(claims) {
+  const grouped = {};
+  for (const { c, verdict } of claims) (grouped[verdict] ??= []).push(c ?? 0);
+  return Object.fromEntries(Object.entries(grouped).map(([verdict, nums]) => [verdict, ranges(nums)]));
+}
+
+function ranges(nums) {
+  const sorted = [...new Set(nums)].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(j > i ? `${sorted[i]}-${sorted[j]}` : String(sorted[i]));
+    i = j;
+  }
+  return out.join(",");
+}
+
+/** 1-based claim number by claim text as sent (sanitized and trimmed, like prepareGateBatch). */
 function claimIndex(claims) {
   const index = new Map();
   claims.forEach((c, i) => {
-    const text = typeof c?.text === "string" ? c.text.trim() : "";
+    const text = typeof c?.text === "string" ? sanitizeText(c.text.trim()).text : "";
     if (!index.has(text)) index.set(text, i + 1);
   });
   return index;
 }
 
-/** Per-part compact verdict: action, reason codes, claim verdicts by 1-based claim number. */
-function partSummary(part, of, result, route, index) {
+const round3 = (x) => (typeof x === "number" ? Number(x.toFixed(3)) : null);
+
+/** One occurrence per claim a part carried: {c, part, verdict, confidence} (confidence null when not evaluated). */
+function partOccurrences(call, result, index) {
   const results = Array.isArray(result?.verification?.results) ? result.verification.results : [];
-  return {
-    part,
-    of,
-    action: result?.action ?? null,
-    reason_codes: Array.isArray(result?.reason_codes) ? result.reason_codes : [],
-    route,
-    safe_to_apply: typeof result?.review?.safe_to_apply === "number" ? Number(result.review.safe_to_apply.toFixed(3)) : null,
-    claims: results.map((r) => ({
-      c: index.get(String(r?.claim ?? "").trim()) ?? null,
-      verdict: r?.verdict ?? null,
-      confidence: typeof r?.confidence === "number" ? Number(r.confidence.toFixed(3)) : null,
-    })),
-  };
+  return call.input.claims.map((text) => {
+    const r = result ? results.find((x) => String(x?.claim ?? "").trim() === text) : undefined;
+    const verdict = r && ["verified", "contradicted", "unsupported"].includes(r.verdict) ? r.verdict : "unevaluated";
+    return { c: index.get(text) ?? null, part: call.part, verdict, confidence: verdict === "unevaluated" ? null : round3(r?.confidence) };
+  });
 }
 
 /**
@@ -457,9 +548,10 @@ export async function runGate(opts) {
   const now = opts.now ?? Date.now;
   const handle = opts.attempt ?? startAttempt({ repoRoot, sessionKeyArg: opts.sessionKeyArg, env, now });
   const { session, s0, attempt } = handle;
-  const summary = { jev_flow_gate_run: 1, status: null, exit: null, receipt: null };
+  const summary = { jev_flow_gate_run: 1, outcome: null, verdict: null, status: null, exit: null, receipt: null };
+  // Before the gate, the operational status is also the outcome (disabled, invalid_input, not_ready, unavailable).
   const finish = (status, code, extra = {}) => {
-    Object.assign(summary, { status, exit: code }, extra);
+    Object.assign(summary, { outcome: status, status, exit: code }, extra);
     return { code, summary };
   };
   if (!session) summary.receipt_note = "no jev-flow session key: this result is not recorded as completion evidence";
@@ -546,11 +638,26 @@ export async function runGate(opts) {
   // From here the attempt carries its coverage metadata (F3): a later gate on this request and snapshot must cover it.
   handle.setPrepared({ claims: prepared.batch.claims, diff: prepared.batch.diff, rbatch: prepared.batch.id, claim_ids: sentClaims.map((t) => sha256(t).slice(0, 16)) });
 
+  const n = prepared.calls.length;
+  // One report and one receipt from the same per-part record of the whole batch (R5).
+  const parts = [];
+  const occurrences = [];
+  const index = claimIndex(input.claims);
+  const coverage = () => {
+    const count = (state) => parts.filter((p) => p.state === state).length;
+    const evaluated = parts.filter((p) => !p.state).length;
+    return { planned: n, sent: evaluated + count("unavailable"), evaluated, unavailable: count("unavailable"), unevaluated: count("unevaluated") };
+  };
+  const markUnevaluated = (call, reason) => {
+    parts.push({ part: call.part, state: "unevaluated", reason, action: null, reason_codes: [] });
+    occurrences.push(...partOccurrences(call, null, index));
+  };
+
   const writeRunReceipt = (fields) => {
     if (!session || !attempt) return;
     try {
       const receipt = writeReceipt(session.dir, {
-        v: 1,
+        v: 2,
         id: handle.id,
         session: session.key,
         repo: repoKey(repoRoot),
@@ -560,7 +667,12 @@ export async function runGate(opts) {
         base: patch.base.commit,
         base_mode: patch.base.mode,
         batch: prepared.batch.id,
-        parts: prepared.calls.length,
+        parts: n,
+        // Per planned part, in order: its number, its gate action ("auto" when accepted) or state, its verdict codes.
+        part_ids: parts.map((p) => p.part),
+        actions: parts.map((p) => p.state ?? (p.verdict === "accepted" ? "auto" : String(p.action ?? "unknown"))),
+        verdicts: parts.map((p) => p.codes ?? []),
+        coverage: coverage(),
         claims: prepared.batch.claims,
         diff: prepared.batch.diff,
         claim_ids: handle.meta.claim_ids,
@@ -576,69 +688,104 @@ export async function runGate(opts) {
   };
 
   const jev = await openJev(env);
-  if (!jev.ok) {
-    if (jev.config) {
-      handle.close({ tests: checkRecords, input });
-      return finish("invalid_input", EXIT.invalid, { problems: [jev.reason] });
-    }
-    writeRunReceipt({ snap_after: "unknown", actions: [], verdicts: [], status: "unavailable", accepted: false });
+  if (!jev.ok && jev.config) {
+    // An invalid server configuration is an input problem: nothing was evaluated or attempted.
     handle.close({ tests: checkRecords, input });
-    return finish("unavailable", EXIT.unavailable, { message: FIXED_PHRASES.unavailable, reason: clip(jev.reason, 300) });
+    return finish("invalid_input", EXIT.invalid, { problems: [jev.reason] });
   }
-  const index = claimIndex(input.claims);
-  const parts = [];
-  const actions = [];
-  const verdicts = [];
-  let status = "accepted";
-  let unavailable = null;
+  // Every part is sent, in order. Only a contradicted claim stops the batch
+  // early. After a part fails for good (after the per-call retry), the next
+  // part gets one reconnection; if it fails, the remaining parts are listed
+  // as unevaluated and nothing more is sent. Without credentials, or when the
+  // server cannot start, every part is listed as unevaluated and the run goes
+  // through the same aggregation (snapshot, checks, outcome, receipt).
+  const unavailable = [];
   let calls = 0;
-  try {
-    for (const call of prepared.calls) {
-      // interpretGate's retry_or_unavailable route (malformed or invalid answer) is retried once with identical input.
-      const reply = await callWithRetry(jev, "jev_gate", call.input, { invalid: (result) => interpretGate(result, { claims: call.input.claims }).route === "retry_or_unavailable" });
-      calls += reply.attempts ?? 0;
-      if (!reply.ok) {
-        unavailable = `${reply.kind}: ${clip(reply.message, 200)}${reply.retry ? ` (retry ${reply.retry})` : ""}; ${reply.attempts} call(s) sent for part ${call.part}`;
-        break;
+  let reconnects = 0;
+  let stopped = null;
+  let reconnect = false;
+  if (!jev.ok) {
+    unavailable.push(`the jev MCP server could not be used: ${clip(jev.reason, 300)}`);
+    for (const call of prepared.calls) markUnevaluated(call, "jev_unavailable");
+  } else {
+    try {
+      for (const call of prepared.calls) {
+        if (stopped) {
+          markUnevaluated(call, stopped);
+          continue;
+        }
+        if (reconnect) {
+          reconnect = false;
+          reconnects += 1;
+          const reopened = await jev.reopen();
+          if (!reopened.ok) {
+            stopped = "reconnect_failed";
+            unavailable.push(`reconnect before part ${call.part} failed: ${clip(reopened.reason, 200)}`);
+            markUnevaluated(call, stopped);
+            continue;
+          }
+        }
+        // interpretGate's retry_or_unavailable route (malformed or invalid answer) is retried once with identical input.
+        const reply = await callWithRetry(jev, "jev_gate", call.input, { invalid: (result) => interpretGate(result, { claims: call.input.claims }).route === "retry_or_unavailable" });
+        calls += reply.attempts ?? 0;
+        if (!reply.ok) {
+          unavailable.push(`part ${call.part}: ${reply.kind}: ${clip(reply.message, 200)}${reply.retry ? ` (retry ${reply.retry})` : ""}; ${reply.attempts} call(s) sent`);
+          parts.push({ part: call.part, state: "unavailable", action: null, reason_codes: [] });
+          occurrences.push(...partOccurrences(call, null, index));
+          reconnect = true;
+          continue;
+        }
+        let { route } = interpretGate(reply.result, { claims: call.input.claims });
+        if (route === "accepted" && !validateGateResult(reply.result, { claims: call.input.claims }).accepted) route = "ask_user";
+        if (!summary.jev) summary.jev = { provider: clip(reply.result.provider ?? "unknown", 40), model: clip(reply.result.model ?? "unknown", 60) };
+        const verdict = partVerdict(route, reply.result.action);
+        parts.push({
+          part: call.part,
+          verdict,
+          action: reply.result.action ?? null,
+          reason_codes: Array.isArray(reply.result.reason_codes) ? reply.result.reason_codes : [],
+          safe_to_apply: round3(reply.result.review?.safe_to_apply),
+          codes: (reply.result.verification?.results ?? []).map((r) => String(r?.verdict ?? "none")),
+        });
+        occurrences.push(...partOccurrences(call, reply.result, index));
+        if (verdict === "contradicted") stopped = "not_sent_after_contradiction";
       }
-      let { route } = interpretGate(reply.result, { claims: call.input.claims });
-      if (route === "accepted" && !validateGateResult(reply.result, { claims: call.input.claims }).accepted) route = "ask_user";
-      if (!summary.jev) summary.jev = { provider: clip(reply.result.provider ?? "unknown", 40), model: clip(reply.result.model ?? "unknown", 60) };
-      parts.push(partSummary(call.part, call.of, reply.result, route, index));
-      actions.push(route === "accepted" ? "auto" : String(reply.result.action ?? "unknown"));
-      verdicts.push((reply.result.verification?.results ?? []).map((r) => String(r?.verdict ?? "none")));
-      if (route === "stop_contradiction") {
-        status = "contradicted";
-        break;
-      }
-      if (route === "ask_user") {
-        status = reply.result.action === "escalate" ? "escalate" : "ask_user";
-        break;
-      }
-      if (route === "needs_evidence" && status === "accepted") status = "needs_evidence";
+    } finally {
+      await jev.close();
     }
-  } finally {
-    await jev.close();
   }
-  summary.parts = parts;
-  summary.jev_calls = calls;
-  const notSent = prepared.calls.length - parts.length;
-  if (notSent > 0) summary.limits.not_sent_parts = notSent;
-  if (unavailable) {
-    writeRunReceipt({ snap_after: "unknown", actions, verdicts, status: "unavailable", accepted: false });
-    handle.close({ tests: checkRecords, input });
-    return finish("unavailable", EXIT.unavailable, { message: FIXED_PHRASES.unavailable, reason: unavailable });
-  }
+
+  const evaluated = parts.filter((p) => !p.state);
+  const verdict = evaluated.length ? worst(VERDICT_ORDER, evaluated.map((p) => p.verdict)) : null;
   const s2 = computeSnapshot(repoRoot).hash;
-  if (s2 !== s0) status = "snapshot_changed";
+  const conditions = [];
+  if (s2 !== s0) conditions.push("snapshot_changed");
   // A failing, unknown or timed-out check forbids acceptance whatever the gate said.
-  if (status === "accepted" && !checksOk) status = "checks_failed";
-  const accepted = status === "accepted" && parts.length === prepared.calls.length;
-  writeRunReceipt({ snap_after: s2 ?? "unknown", actions, verdicts, status, accepted });
-  handle.close({ after: s2 ?? "unknown", failed: false, tests: checkRecords, input });
-  if (status === "snapshot_changed") return finish(status, EXIT.invalid, { problems: ["the work tree changed during the gate; run again on a frozen snapshot"] });
-  if (status === "checks_failed") {
-    return finish(status, EXIT.not_accepted, { problems: ["a check failed, timed out, could not start or has an unknown exit code; the gate cannot be accepted (see checks)"] });
-  }
-  return finish(status, accepted ? EXIT.accepted : EXIT.not_accepted);
+  if (!checksOk) conditions.push("checks_failed");
+  if (parts.some((p) => p.state === "unavailable" || (p.state === "unevaluated" && p.reason !== "not_sent_after_contradiction"))) conditions.push("unavailable");
+  const status = worst(STATUS_ORDER, conditions);
+  const [outcome, code] = decideOutcome(verdict, status);
+  const accepted = outcome === "accepted" && evaluated.length === n && evaluated.every((p) => p.verdict === "accepted");
+
+  const byClaim = new Map();
+  for (const o of occurrences) byClaim.set(o.c, [...(byClaim.get(o.c) ?? []), o.verdict]);
+  Object.assign(summary, {
+    parts: parts.map(({ codes, ...p }) => p),
+    claims: [...byClaim.entries()].sort(([a], [b]) => (a ?? 0) - (b ?? 0)).map(([c, vs]) => ({ c, verdict: claimVerdict(vs) })),
+    occurrences,
+    coverage: coverage(),
+    jev_calls: calls,
+    ...(reconnects ? { reconnects } : {}),
+  });
+  writeRunReceipt({ snap_after: s2 ?? "unknown", verdict, status, outcome, accepted });
+  // An attempt in which no part was evaluated is a failed attempt (no verdict).
+  handle.close({ after: s2 ?? "unknown", failed: evaluated.length === 0, tests: checkRecords, input });
+  const problems = [];
+  if (conditions.includes("snapshot_changed")) problems.push("the work tree changed during the gate; run again on a frozen snapshot");
+  if (conditions.includes("checks_failed")) problems.push("a check failed, timed out, could not start or has an unknown exit code; the gate cannot be accepted (see checks)");
+  // Every operational condition is listed, also those the outcome does not name.
+  const extra = { verdict, conditions, ...(problems.length ? { problems } : {}) };
+  if (conditions.includes("unavailable")) Object.assign(extra, { message: FIXED_PHRASES.unavailable, reason: unavailable.join("; ") });
+  Object.assign(summary, { outcome, status, exit: code }, extra);
+  return { code, summary };
 }
