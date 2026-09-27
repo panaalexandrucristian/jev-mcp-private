@@ -40,17 +40,34 @@ export function makeRepo(files = {}) {
   return root;
 }
 
-/** Environment isolated from the real HOME and cache. */
+export const FAKE_MCP_SERVER = join(REPO_ROOT, "private", "jev-flow", "test", "fixtures", "fake-mcp-server.mjs");
+export const GATE_RUN_CLI = join(REPO_ROOT, "scripts", "jev-gate-run.mjs");
+
+// Credentials and session ids of the real environment never reach a test:
+// without them nothing can call a real Jev provider over the network.
+const STRIPPED = [
+  "OPENROUTER_API_KEY", "TYPESAFE_API_KEY", "JEV_API_KEY", "JEV_API_BASE_URL", "JEV_PROVIDER", "JEV_CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "AI_GATEWAY_API_KEY", "JEV_FLOW_MCP_COMMAND", "CLAUDE_CODE_SESSION_ID",
+];
+
+/** Environment isolated from the real HOME, cache and Jev credentials. */
 export function sandboxEnv(extra = {}) {
   const home = tempDir("jev-flow-home-");
+  const env = { ...process.env };
+  for (const name of STRIPPED) delete env[name];
   return {
-    ...process.env,
+    ...env,
     HOME: home,
     JEV_FLOW_CACHE_DIR: join(home, "cache"),
     JEV_FLOW_STRICT: "",
     GIT_CONFIG_NOSYSTEM: "1",
     ...extra,
   };
+}
+
+/** Environment extras for the local fake MCP server (a fake key: no network is ever used). */
+export function fakeJevEnv(mode = "accepted", extra = {}) {
+  return { JEV_FLOW_MCP_COMMAND: JSON.stringify([process.execPath, FAKE_MCP_SERVER]), FAKE_MCP_MODE: mode, OPENROUTER_API_KEY: "sk-or-v1-test-fake", ...extra };
 }
 
 export function run(command, args, { cwd = REPO_ROOT, env = sandboxEnv(), input } = {}) {

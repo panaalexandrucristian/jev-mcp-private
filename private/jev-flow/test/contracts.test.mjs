@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { buildCandidates } from "../candidates.mjs";
 import { prepareGateBatch } from "../gate-batch.mjs";
+import { parseCheckArgv, validateRunInput } from "../gate-run.mjs";
 import { parseDenylist } from "../paths.mjs";
 import { makeRepo, REPO_ROOT } from "./helpers.mjs";
 
@@ -221,12 +222,27 @@ describe("documented payloads fit the tool contracts", () => {
     const md = readFileSync(join(REPO_ROOT, "commands", "jev-done.md"), "utf8");
     // The T2-B' regression: one {"id": "patch"} item shared by every claim.
     assert.doesNotMatch(md, /"id": "patch"/);
-    assert.match(md, /scripts\/jev-gate-payload\.mjs/);
-    assert.match(md, /every \*\*part\*\*|\*\*every\*\* part/);
     const input = JSON.parse(md.match(/```json\n([\s\S]*?)```/)[1]);
     assert.ok(input.claims.length >= 1);
     for (const claim of input.claims) assert.ok(Array.isArray(claim.evidence) && claim.evidence.length > 0, "each claim names its evidence");
-    assert.ok(input.commands.every((c) => "exit" in c && "output" in c), "commands carry the real output and exit code");
+    assert.ok(input.claims.some((c) => c.evidence.some((id) => /^cmd-\d+$/.test(id))), "check claims cite a --check output");
+  });
+
+  it("/jev-done runs the gate runner and never copies payloads through the model (R1)", () => {
+    const md = readFileSync(join(REPO_ROOT, "commands", "jev-done.md"), "utf8");
+    assert.match(md, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/jev-gate-run\.mjs" --root \. --list-hunks/);
+    assert.match(md, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/jev-gate-run\.mjs" --root \. --claims \S+ --check/);
+    assert.match(md, /Never build or copy a `jev_gate` payload yourself/);
+    assert.doesNotMatch(md, /jev-gate-payload\.mjs/);
+    assert.doesNotMatch(md, /calls\[i\]\.input/);
+    // The documented claims file is accepted by the runner's input validation.
+    const input = JSON.parse(md.match(/```json\n([\s\S]*?)```/)[1]);
+    assert.deepEqual(validateRunInput(input), []);
+    // Every documented --check is a JSON argv the runner accepts (no shell strings).
+    const checks = [...md.matchAll(/--check '([^']+)'/g)].map((m) => m[1]);
+    assert.ok(checks.length >= 1);
+    for (const c of checks) assert.ok(Array.isArray(parseCheckArgv(c)), c);
+    for (const x of input.excerpts) assert.ok(!("text" in x) && Array.isArray(x.lines), "excerpts are cited by path and lines");
   });
 
   it("gate calls prepared by the helper fit the jev_gate contract, with per-claim evidence", () => {
@@ -266,10 +282,12 @@ describe("documented payloads fit the tool contracts", () => {
     }
   });
 
-  it("the locator follows the helper's ranking rule and sends its payload unchanged (F4)", () => {
+  it("the locator gets the ranking from the helper and does not skip or redo it (F4, R3)", () => {
     const agent = readFileSync(join(REPO_ROOT, "agents", "jev-locator.md"), "utf8");
-    assert.match(agent, /Follow `recommend\.tool`\. This rule is mandatory/);
-    assert.match(agent, /`jev_payload` exactly as returned \(`\{"query", "candidates", "top_k": 5\}`\)/);
+    assert.match(agent, /The helper applies the ranking rule itself/);
+    assert.match(agent, /Do not call `jev_rerank` or `jev_find` yourself, and do not re-rank with grep or find/);
+    assert.match(agent, /with `jev_payload` exactly as returned \(only its keys\)/);
+    assert.match(agent, /--fallback/);
     assert.match(agent, /^tools: .*mcp__plugin_jev_jev__jev_rerank/m);
     assert.match(agent, /^tools: .*mcp__plugin_jev_jev__jev_find/m);
     assert.match(agent, /"jev_used"/);

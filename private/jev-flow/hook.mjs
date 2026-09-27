@@ -4,7 +4,8 @@
 // boundaries (session start, test runs, jev_gate, Stop).
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { coversEarlierBatches, parseBatchLabel, verifyBatchContents } from "./gate-batch.mjs";
+import { claimIdsOf, coversEarlierBatches, coversRunnerAttempts, diffHash, parseBatchLabel, verifyBatchContents } from "./gate-batch.mjs";
+import { extractLocatorHits, freshHits, grepCovers, HINT_RANGE_GREP, HINT_RANGE_READ, readExceedsHits, rememberHits } from "./locator-hits.mjs";
 import { loadDenylist } from "./paths.mjs";
 import {
   classifyShellCommand,
@@ -16,6 +17,7 @@ import {
   stopDecision,
   validateGateResult,
 } from "./policy.mjs";
+import { initRunnerSession, runnerCoverage, verifyReceipt } from "./runner-receipt.mjs";
 import { payloadCredentialKinds } from "./sanitize.mjs";
 import {
   cacheRoot,
@@ -26,6 +28,7 @@ import {
   inputHash,
   recordRead,
   sessionDir,
+  sessionKey,
   sha256,
   StateBusyError,
   testFreshFor,
@@ -36,13 +39,13 @@ export const HINTS = Object.freeze({
   directive: () =>
     "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
     "When the files are not known, delegate broad discovery to the jev-locator subagent (/jev:jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. " +
-    "After any code change, run the repository's real checks and finish with /jev:jev-done (jev_gate with per-claim evidence) before reporting completion.",
+    "After any code change, finish with /jev:jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself before you report completion.",
   explore: (count) =>
     `jev-flow: ${count} exploration calls in this request. Stop broad exploration in this thread: delegate the open location question to the jev-locator subagent (/jev:jev-locate <question>) and read only the ranges it returns.`,
   reread: () =>
     "jev-flow: the same file range with the same content has been re-read twice in this request. Delegate the open question to jev-locator (/jev:jev-locate) instead of re-reading.",
   finish: () =>
-    "jev-flow: code changed. Before reporting completion, run the repository's real checks on the final snapshot and finish with /jev:jev-done (jev_gate on the final diff).",
+    "jev-flow: code changed. Before reporting completion, finish with /jev:jev-done (the gate runner runs the real checks and jev_gate on the final diff).",
   disabledStart: () =>
     `jev-flow: .jev-flow-denylist disables Jev for this repo. Do not send repository data to Jev tools; run the local checks and report "${FIXED_PHRASES.disabled}".`,
 });
@@ -112,6 +115,71 @@ function fileHash(repoRoot, rel) {
   }
 }
 
+/** sha256 and line count of a repository file, or null. */
+function fileInfo(repoRoot, rel) {
+  try {
+    const data = readFileSync(join(repoRoot, rel));
+    const text = data.toString("utf8");
+    return { hash: sha256(data), lines: text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0) };
+  } catch {
+    return null;
+  }
+}
+
+/** Remember the hits of a jev-locator report for the current request (R2). */
+function recordLocatorHits(ctx, report) {
+  const { repoRoot, dir, now } = ctx;
+  const hits = extractLocatorHits(report)
+    .map((h) => ({ ...h, path: relPath(repoRoot, h.path) ?? h.path }))
+    .filter((h) => !h.path.startsWith("/") && !h.path.startsWith(".."));
+  if (hits.length === 0) return null;
+  withState(dir, (state) => {
+    const known = new Set((state.locator_hits ?? []).filter((h) => h.req === state.request.seq).map((h) => `${h.path}#${h.start}-${h.end}#${h.sha}`));
+    const added = hits.filter((h) => !known.has(`${h.path}#${h.start}-${h.end}#${h.sha}`));
+    state.locator_hits = rememberHits(state.locator_hits, added, state.request.seq);
+  }, now);
+  return null;
+}
+
+/**
+ * SubagentStop of a jev-locator (foreground or background): its report's hits
+ * become the ranges the parent should read (R2).
+ */
+function handleSubagentStop(ctx) {
+  if (!LOCATOR_TYPE.test(String(ctx.input.agent_type ?? ""))) return null;
+  return recordLocatorHits(ctx, ctx.input.last_assistant_message);
+}
+
+/** Range-only hints for a Read or Grep that re-covers fresh locator hits; mutates state. */
+function rangeHints(state, repoRoot, tool, toolInput, readInfo, cwd = null) {
+  const hitsList = state.locator_hits ?? [];
+  if (hitsList.length === 0) return [];
+  const req = state.request.seq;
+  const drop = (stale) => {
+    if (stale.length) state.locator_hits = state.locator_hits.filter((h) => !stale.includes(h));
+  };
+  if (tool === "Read" && readInfo?.hash) {
+    const { fresh, stale } = freshHits(hitsList, { path: readInfo.rel, req, sha: readInfo.hash });
+    drop(stale);
+    return readExceedsHits(fresh, { start: readInfo.start, end: readInfo.end, lineCount: readInfo.lines }) ? [HINT_RANGE_READ(readInfo.rel, fresh)] : [];
+  }
+  if (tool === "Grep") {
+    // The search scope: its path, or the working directory (the repository root by default) without one.
+    const scope = typeof toolInput?.path === "string" && toolInput.path !== "" ? toolInput.path : cwd ?? repoRoot;
+    const target = relPath(repoRoot, scope);
+    if (target === null) return [];
+    const texts = [];
+    for (const path of [...new Set(hitsList.filter((h) => h.req === req).map((h) => h.path))]) {
+      if (!grepCovers(path, { target, glob: toolInput?.glob, type: toolInput?.type })) continue;
+      const { fresh, stale } = freshHits(state.locator_hits, { path, req, sha: fileHash(repoRoot, path) });
+      drop(stale);
+      if (fresh.length) texts.push(HINT_RANGE_GREP(path, fresh));
+    }
+    return texts;
+  }
+  return [];
+}
+
 function newRequest(state, now) {
   state.request = {
     seq: (state.request?.seq ?? 0) + 1,
@@ -147,6 +215,12 @@ function handleSessionStart(ctx) {
     },
     now,
   );
+  try {
+    // Receipt secret and session baseline for the gate runner, written once per session.
+    initRunnerSession(dir, repoRoot, now);
+  } catch {
+    // Without them runner results cannot count as completion evidence; nothing else changes.
+  }
   if (denylist.disabled) return additionalContext("SessionStart", HINTS.disabledStart());
   return flowOff(env) ? null : additionalContext("SessionStart", HINTS.directive());
 }
@@ -364,6 +438,10 @@ function handlePostToolUse(ctx) {
     }, now);
     return null;
   }
+  if (AGENT_TOOLS.has(tool)) {
+    if (isChild || !LOCATOR_TYPE.test(String(input.tool_input?.subagent_type ?? ""))) return null;
+    return recordLocatorHits(ctx, input.tool_response);
+  }
 
   let kind = null;
   if (EXPLORATION_TOOLS.has(tool)) kind = "exploration";
@@ -380,7 +458,8 @@ function handlePostToolUse(ctx) {
   let readInfo = null;
   if (tool === "Read") {
     const rel = relPath(repoRoot, input.tool_input?.file_path);
-    if (rel) readInfo = { rel, ...readRange(input.tool_input), hash: fileHash(repoRoot, rel) };
+    const info = rel ? fileInfo(repoRoot, rel) : null;
+    if (rel) readInfo = { rel, ...readRange(input.tool_input), hash: info?.hash ?? null, lines: info?.lines ?? null };
   }
 
   return withState(dir, (state) => {
@@ -400,7 +479,8 @@ function handlePostToolUse(ctx) {
       if (off) return null;
       // The exploration directive repeats at every multiple of the threshold;
       // the re-read hint fires once per request. One message per event.
-      const texts = [];
+      // Range-only reading after a locator hit (R2): every time, not once per request.
+      const texts = rangeHints(state, repoRoot, tool, input.tool_input, readInfo, typeof input.cwd === "string" ? input.cwd : null);
       if (!state.request.reread_hinted && rereads >= REREAD_HINT_THRESHOLD) {
         state.request.reread_hinted = true;
         texts.push(HINTS.reread());
@@ -555,18 +635,61 @@ function earlierBatchInputs(transcriptPath, records) {
   return inputs;
 }
 
-/** Re-read whatever gateCandidate selected; never approves without a valid transcript record. */
-function candidateVerdict(transcriptPath, candidate, snapshot) {
+/**
+ * Coverage of earlier attempts on this request and snapshot (F3), whatever
+ * kind replaces them. `later` is {claims: texts as sent} or {claim_ids}, plus
+ * {diff: whole diff text} or {diffHash}. Earlier direct batches are re-read
+ * from the transcript (claims and whole diff as sent); earlier gate-runner
+ * attempts contribute their signed (or recorded) claim ids and diff hash.
+ */
+function coversSuperseded(transcriptPath, dir, later, superseded) {
+  if (!superseded?.length) return { ok: true };
+  const claimIds = later.claim_ids ?? claimIdsOf(later.claims);
+  const laterDiff = later.diffHash ?? (typeof later.diff === "string" ? diffHash(later.diff) : null);
+  const runners = superseded.filter((a) => a.runner);
+  const batches = superseded.filter((a) => !a.runner);
+  if (!coversRunnerAttempts({ claim_ids: claimIds, diff: laterDiff }, runners.map((r) => runnerCoverage(dir, r)))) return { ok: false, reason: "later_gate_misses_runner_coverage" };
+  if (batches.length === 0) return { ok: true };
+  const earlier = earlierBatchInputs(transcriptPath, batches);
+  if (earlier === null) return { ok: false, reason: "batch_claims_unavailable" };
+  if (typeof later.diff === "string" && Array.isArray(later.claims)) {
+    return coversEarlierBatches({ claims: later.claims, diff: later.diff }, earlier) ? { ok: true } : { ok: false, reason: "later_gate_misses_batch_coverage" };
+  }
+  // A runner result keeps hashes only: the same whole diff and a superset of the earlier claims.
+  const have = new Set(claimIds);
+  const covered = earlier.every((e) => {
+    const label = parseBatchLabel(e.request);
+    return label && label.diff === laterDiff && claimIdsOf(e.claims).every((id) => have.has(id));
+  });
+  return covered ? { ok: true } : { ok: false, reason: "later_gate_misses_batch_coverage" };
+}
+
+/**
+ * A gate-runner attempt: its receipt must be authentic (HMAC under this
+ * session's key) and bound to this session, the attempt's request and boot,
+ * and the current snapshot, with every part accepted and every check passed.
+ * It must also cover every earlier attempt it replaces (coversSuperseded).
+ */
+function runnerVerdict(transcriptPath, candidate, snapshot, { dir, sessionId }) {
+  const record = candidate.record;
+  const check = verifyReceipt(dir, record.runner, { session: sessionKey(sessionId), req: record.req, boot: record.boot, snapshot });
+  if (!check.accepted) return { accepted: false, reason: check.reason };
+  const cover = coversSuperseded(transcriptPath, dir, { claim_ids: check.receipt.claim_ids, diffHash: check.receipt.diff }, candidate.supersededBatch);
+  return cover.ok ? { accepted: true, runner: true } : { accepted: false, reason: cover.reason };
+}
+
+/** Re-read whatever gateCandidate selected; never approves without a valid transcript record or receipt. */
+function candidateVerdict(transcriptPath, candidate, snapshot, session) {
   let verdict;
+  if (candidate.record?.runner) return runnerVerdict(transcriptPath, candidate, snapshot, session);
   if (candidate.batch) verdict = batchVerdictFromTranscript(transcriptPath, candidate.batch, snapshot);
   else if (candidate.record) verdict = gateVerdictFromTranscript(transcriptPath, candidate.record);
   else return { accepted: false };
-  if (!verdict.accepted || !candidate.supersededBatch?.length) return verdict;
+  if (!verdict.accepted) return verdict;
   // A later gate (single or a replacement batch) on this snapshot must cover
-  // every claim and the whole patch of the earlier batch it replaces.
-  const earlier = earlierBatchInputs(transcriptPath, candidate.supersededBatch);
-  if (earlier === null) return { accepted: false, reason: "batch_claims_unavailable" };
-  return coversEarlierBatches({ claims: verdict.claims, diff: verdict.diff }, earlier) ? verdict : { accepted: false, reason: "later_gate_misses_batch_coverage" };
+  // every claim and the whole patch of the earlier attempts it replaces.
+  const cover = coversSuperseded(transcriptPath, session.dir, { claims: verdict.claims, diff: verdict.diff }, candidate.supersededBatch);
+  return cover.ok ? verdict : { accepted: false, reason: cover.reason };
 }
 
 const STOP_REASONS = {
@@ -591,7 +714,7 @@ function handleStop(ctx) {
     testsFresh: testFreshFor(state, snapshot.hash),
   }), now);
   // Phase 2 (unlocked): re-read the verdict from the native transcript, in memory.
-  const verdict = candidateVerdict(input.transcript_path, view.candidate, snapshot.hash);
+  const verdict = candidateVerdict(input.transcript_path, view.candidate, snapshot.hash, { dir, sessionId: input.session_id });
   const snapKey = snapshot.hash ?? "unknown";
   // Phase 3 (locked): decide once per snapshot, re-checking the redirect record.
   return withState(dir, (state) => {
@@ -611,7 +734,7 @@ function handleStop(ctx) {
         decision: "block",
         reason:
           `jev-flow strict mode: code changed and no accepted jev_gate exists for the current snapshot and request${view.testsFresh ? "" : " (no passing real check is recorded on it either)"}. ` +
-          "Run /jev:jev-done (real checks, then jev_gate on the final diff with per-claim evidence; for a partitioned batch every part must be accepted on this snapshot). If completion cannot be verified, end with a line starting with \"Incomplete:\", " +
+          "Run /jev:jev-done (the gate runner runs the real checks and jev_gate on the final diff with per-claim evidence; every part must be accepted on this snapshot). If completion cannot be verified, end with a line starting with \"Incomplete:\", " +
           `report "${FIXED_PHRASES.unavailable}" when Jev failed, or ask the user.` +
           disabledNote,
       };
@@ -632,6 +755,7 @@ const HANDLERS = {
   PostToolUse: handlePostToolUse,
   PostToolUseFailure: handlePostToolUseFailure,
   Stop: handleStop,
+  SubagentStop: handleSubagentStop,
 };
 
 /**

@@ -1,5 +1,5 @@
 {
-  "description": "jev-flow: route directive, exploration hints, jev-locator model selection, Jev payload guard and completion checks. Local work only; no tests or model calls.",
+  "description": "jev-flow: route directive, exploration and range-only hints, jev-locator model selection and hits, Jev payload guard and completion checks (gate runner receipts). Local work only; no tests or model calls.",
   "hooks": {
     "SessionStart": [
       {
@@ -37,7 +37,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Read|Grep|Glob|LS|Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__(plugin_jev_)?jev__jev_.*",
+        "matcher": "Read|Grep|Glob|LS|Bash|Edit|Write|MultiEdit|NotebookEdit|Agent|Task|mcp__(plugin_jev_)?jev__jev_.*",
         "hooks": [
           {
             "type": "command",
@@ -65,6 +65,18 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/jev-flow-hook.mjs\" Stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "jev-locator|jev:jev-locator",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/jev-flow-hook.mjs\" SubagentStop",
             "timeout": 15
           }
         ]

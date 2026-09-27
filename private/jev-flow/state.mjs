@@ -191,19 +191,102 @@ export function computeSnapshot(repoRoot) {
   }
 }
 
+// ── Session baseline (metadata only) ────────────────────────────────────────
+
+export const BASELINE_FILE = "baseline.json";
+export const BASELINE_DIRTY_CAP = 2000;
+
+/** Content hash of a work-tree path for the baseline: sha256, "deleted", "link:<sha>" or "not_regular". */
+export function pathContentHash(repoRoot, rel) {
+  const abs = join(repoRoot, rel);
+  let st;
+  try {
+    st = lstatSync(abs);
+  } catch {
+    return "deleted";
+  }
+  if (st.isSymbolicLink()) return `link:${sha256(readlinkSync(abs))}`;
+  if (!st.isFile()) return "not_regular";
+  try {
+    return hashFile(abs, { bytes: 0 });
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
+ * The session baseline: HEAD and the paths already changed (tracked changes
+ * and untracked non-ignored files) with their content hashes. Paths and
+ * hashes only; their original content is not kept, so pre-existing changes
+ * can be recognised, never reconstructed. `overflow` when there are more than
+ * BASELINE_DIRTY_CAP such paths (the runner then falls back to HEAD).
+ */
+export function captureBaseline(repoRoot, now = Date.now()) {
+  let head = null;
+  try {
+    head = git(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"]).trim() || null;
+  } catch {
+    head = null;
+  }
+  let paths = [];
+  try {
+    const tracked = head ? git(repoRoot, ["diff", "HEAD", "--name-only", "-z", "--ignore-submodules=dirty"]).split("\0") : [];
+    const untracked = git(repoRoot, ["ls-files", "-z", "--others", "--exclude-standard"]).split("\0");
+    paths = [...new Set([...tracked, ...untracked].filter(Boolean))].sort();
+  } catch {
+    return { v: 1, ts: now, head, dirty: [], overflow: true };
+  }
+  const overflow = paths.length > BASELINE_DIRTY_CAP;
+  const dirty = overflow ? [] : paths.map((path) => ({ path, hash: pathContentHash(repoRoot, path) }));
+  return { v: 1, ts: now, head, dirty, overflow };
+}
+
+/** Write the baseline once per session directory; an existing one is kept. */
+export function writeBaselineOnce(dir, baseline) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const target = join(dir, BASELINE_FILE);
+  try {
+    lstatSync(target);
+    return false;
+  } catch {
+    // Absent: write it.
+  }
+  assertMetadataOnly(baseline, "baseline");
+  const tmp = join(dir, `.baseline.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+  writeFileSync(tmp, JSON.stringify(baseline), { mode: 0o600 });
+  renameSync(tmp, target);
+  return true;
+}
+
+/** The session baseline, or null when absent or unreadable. */
+export function readBaseline(dir) {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, BASELINE_FILE), "utf8"));
+    if (parsed && parsed.v === 1 && Array.isArray(parsed.dirty)) return parsed;
+  } catch {
+    // Unknown baseline.
+  }
+  return null;
+}
+
 // ── Metadata-only persistence ───────────────────────────────────────────────
 
 const ALLOWED_TOP_KEYS = new Set([
   "v", "created", "updated", "boot", "baseline", "request", "reads", "pending",
-  "tests", "gates", "prior_gates", "redirected", "notified", "counters", "dirty", "parent_model",
+  "tests", "gates", "prior_gates", "redirected", "notified", "counters", "dirty", "parent_model", "locator_hits",
 ]);
 // Per-call records hold correlation metadata only: ids, hashes, snapshots,
 // sequence numbers, timestamps and exit codes. Jev verdicts, actions and
 // validity are never persisted; they are re-read from the native transcript.
 // batch/part/of come from the manifest label of a partitioned gate (hex id and integers).
-const GATE_KEYS = new Set(["id", "req", "input", "before", "after", "ts", "boot", "failed", "denied", "batch", "part", "of"]);
+// `runner` is the receipt id of a gate-runner attempt (scripts/jev-gate-run.mjs);
+// once its batch is prepared it also carries coverage metadata (hashes only):
+// `claims` (claim-set hash), `diff` (whole sanitized diff hash), `rbatch`
+// (batch id) and `claim_ids` (16-hex hashes of the claim texts sent).
+const RUNNER_KEYS = ["runner", "claims", "diff", "rbatch", "claim_ids"];
+const GATE_KEYS = new Set(["id", "req", "input", "before", "after", "ts", "boot", "failed", "denied", "batch", "part", "of", ...RUNNER_KEYS]);
 const TEST_KEYS = new Set(["cmd", "req", "boot", "before", "after", "exit", "failed", "ts"]);
-const PENDING_KEYS = new Set(["kind", "before", "input", "cmd", "req", "boot", "ts", "batch", "part", "of"]);
+const PENDING_KEYS = new Set(["kind", "before", "input", "cmd", "req", "boot", "ts", "batch", "part", "of", ...RUNNER_KEYS]);
 
 /**
  * Validate that a value is metadata only: numbers, booleans, null, and short
@@ -250,6 +333,7 @@ export function emptyState(now = Date.now()) {
     counters: { jev_calls: {}, exploration_total: 0, edits: 0, tests: 0 },
     dirty: false,
     parent_model: null,
+    locator_hits: [],
   };
 }
 

@@ -85,4 +85,12 @@ describe("plugin manifests (F5)", () => {
     assert.ok(entry, "marketplace entry for the plugin");
     assert.equal(entry.version, plugin.version);
   });
+
+  it("the gate runner, range hints and mechanical rerank ship as 0.2.0 (round 2)", () => {
+    assert.equal(plugin.version, "0.2.0");
+    const hooks = JSON.parse(readFileSync(join(REPO_ROOT, "hooks", "hooks.json"), "utf8")).hooks;
+    assert.match(hooks.PostToolUse[0].matcher, /(^|\|)Agent\|Task(\||$)/);
+    assert.equal(hooks.SubagentStop[0].matcher, "jev-locator|jev:jev-locator");
+    assert.match(hooks.SubagentStop[0].hooks[0].command, /jev-flow-hook\.mjs" SubagentStop$/);
+  });
 });

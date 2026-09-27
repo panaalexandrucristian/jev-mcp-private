@@ -79,7 +79,7 @@ The private plugin also ships `jev-flow`, an adaptive coding workflow on top of 
 | --- | --- | --- |
 | Skill | `jev-flow` (route directive injected on every prompt) | `jev-flow` (same directive through the `context` hook) |
 | Locate code in an isolated subagent | `/jev:jev-locate <question>` | `/jev-locate <question>` |
-| Real checks, `jev_gate`, final report | `/jev:jev-done [criteria]` | `/jev-done [criteria]` |
+| Real checks, `jev_gate` (through the gate runner), final report | `/jev:jev-done [criteria]` | `/jev-done [criteria]` |
 | Read-only locator subagent | `jev-locator` on `haiku` | `jev-locator` (inherits, or `JEV_FLOW_LOCATOR_MODEL=provider/model`) |
 | Hooks | `hooks/hooks.json` | `private/jev-flow/opencode.mjs` |
 
@@ -90,8 +90,10 @@ Local helpers (Node 22 and Python 3 standard library only):
 ```sh
 node scripts/jev-candidates.mjs --root . --query 'regex flag normalization' --limit 5
 git diff HEAD | node scripts/jev-candidates.mjs --sanitize --root .
-git diff HEAD | node scripts/jev-gate-payload.mjs --list-hunks --root .
-node scripts/jev-gate-payload.mjs --root . < /tmp/jev-gate-input.json
+node scripts/jev-gate-run.mjs --root . --list-hunks
+node scripts/jev-gate-run.mjs --root . --claims /tmp/claims.json --check '["npm","test"]'
+git diff HEAD | node scripts/jev-gate-payload.mjs --list-hunks --root .   # diagnostics
+node scripts/jev-gate-payload.mjs --root . < /tmp/jev-gate-input.json     # diagnostics
 python3 scripts/jev-flow-metrics.py --session <id> --cli claude|opencode --format markdown
 python3 scripts/jev-flow-metrics.py --runs runs.json --format markdown
 node private/jev-flow/ab/preflight.mjs
@@ -109,7 +111,16 @@ By default, in every session and repository where Jev is enabled, the Claude Cod
 | `JEV_FLOW_STRICT=1` | `Stop` redirects once per snapshot to `/jev:jev-done` (below). |
 | `JEV_FLOW_LOCATOR_MODEL` | Claude Code: `haiku` (the default in `agents/jev-locator.md`), `sonnet`, `opus` or `inherit` (the parent's model); applied to each `jev-locator` delegation by a `PreToolUse` hook through `updatedInput`. An invalid value is ignored with one notice. OpenCode: `provider/model[#variant]`; unset or invalid, the locator inherits the parent model and the setup notes it once. A configured model is not a cost guarantee: inheriting is fine when the parent already runs the cheapest model. |
 
-`/jev:jev-done` pairs every claim with its own evidence through `scripts/jev-gate-payload.mjs` and splits a patch that exceeds one `jev_gate` call into a batch of parts; completion then needs every part accepted on the same snapshot, and the report says that verification was partitioned.
+`/jev:jev-done` runs the **gate runner** `scripts/jev-gate-run.mjs`: the model writes only claims with evidence ids; the runner collects the diff against the session baseline (new non-ignored files included), runs the `--check` commands itself, reads the cited excerpts, pairs every claim with its own evidence, splits a patch that exceeds one `jev_gate` call into a batch of parts, calls `jev_gate` itself through the jev MCP server on stdio and prints a compact verdict (at most ~4 KB). Payloads never pass through the model (`docs/jev-flow-findings.md`, round 2, R1). Completion needs every part accepted on the same snapshot, and the report says when verification was partitioned. The candidate helper runs `jev_rerank`/`jev_find` the same way when the ranking rule applies (R3), and the hooks hint whenever a read or grep repeats what the locator already returned (R2).
+
+| Runner setting | Effect |
+| --- | --- |
+| `JEV_FLOW_MCP_COMMAND` | The jev MCP server command as a JSON argv array (no shell), for example `["node","/path/to/dist/index.js"]`. Default: `["npx","-y","--package=@jkudish/jev-mcp@latest","jev-mcp"]`, as in `.claude-plugin/plugin.json`. |
+| Credentials | Inherited from the environment only (never read from `~/.claude.json`): `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY` + `JEV_API_BASE_URL`, a Cloudflare token + `CLOUDFLARE_ACCOUNT_ID`, or `AI_GATEWAY_API_KEY`. With `OPENROUTER_API_KEY` and no `JEV_PROVIDER`, the server gets `JEV_PROVIDER=openrouter`. None: `Jev unavailable; gate not evaluated` (exit 3). |
+| Limits | Handshake 120 s, each call 300 s, 8 MiB per server message (a larger message, complete or not, ends the session); checks 900 s by default (`--check-timeout`), at most 8, output kept as the first 8,000 + last 32,000 characters with a visible cut marker; excerpts at most 400 lines; summary at most 4,096 characters. |
+| Checks | `--check` takes a JSON array of strings, run as argv without a shell (`'["npm","test"]'`). Any check that exits non-zero, times out, cannot start or has an unknown exit code prevents acceptance (`checks_failed`), whatever Jev answers; the receipt records every check and `Stop` re-checks them. |
+| Retries | One retry with identical input after a transport failure, a JSON-RPC invalid response or a result the flow rejects as invalid (`interpretGate` route `retry_or_unavailable`; for rankings, an unusable `jev_rerank`/`jev_find` answer); a closed server is reconnected for it, or the retry is reported as not executed. A contradiction or a valid answer below the thresholds is never retried. |
+| Exit codes | `0` accepted, `2` review/escalate/contradicted/checks failed/not accepted, `3` unavailable or disabled, `4` invalid input or not ready, `1` internal error. |
 
 ### Opting a repository out: `.jev-flow-denylist`
 
@@ -142,11 +153,13 @@ By default the Claude Code `Stop` hook only shows a notice when code changed wit
 
 ### Plugin version
 
-`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver, starting at `0.1.0`, independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
+`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
 
 ### Local state and checks
 
-In Claude Code the flow stores metadata only (paths, hashes, ranges, counters, request numbers, timestamps, exit codes) in `~/.cache/jev-flow/<repo-hash>/<session-hash>/`, removed after 30 days. It never stores code, diffs, prompts, logs or Jev verdicts: at `Stop`, the gate verdict is re-read from Claude Code's own transcript, and after a restart the gate is unknown. The OpenCode adapter keeps its state in memory only. Set `JEV_FLOW_CACHE_DIR` to move the cache.
+In Claude Code the flow stores metadata only (paths, hashes, ranges, counters, request numbers, timestamps, exit codes) in `~/.cache/jev-flow/<repo-hash>/<session-hash>/`, removed after 30 days. It never stores code, diffs, prompts, logs or Jev responses: at `Stop`, a direct gate verdict is re-read from Claude Code's own transcript, and after a restart the gate is unknown. The OpenCode adapter keeps its own state in memory. Set `JEV_FLOW_CACHE_DIR` to move the cache.
+
+The gate runner adds, in both CLIs, a per-session secret `receipt.key` (0600, created at session start, never printed), `baseline.json` (HEAD and the paths already changed at session start, with content hashes) and signed receipts `receipts/<id>.json`. A receipt holds metadata only (snapshot and diff hashes, request and attempt ids, per-part actions, verdict codes, claim hashes, check command hashes and exit codes, timestamps) and an HMAC-SHA256; `Stop` and the OpenCode gate status count a runner result only when its receipt verifies for the current session, request, attempt and snapshot. **Threat model:** this stops a model from inventing, editing or replaying a gate result. A process running as the same user that can read the key or modify the runner, the cache or the server is out of scope.
 
 Checks for changes to the flow:
 

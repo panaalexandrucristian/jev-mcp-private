@@ -87,6 +87,46 @@ export function recommendNext({ disabled, query, candidates, map, exactFiles, si
   return base;
 }
 
+/**
+ * Which Jev call the helper runs itself (R3): the recommended jev_rerank /
+ * jev_find, or, with `fallback` (the locator read the exact match and it did
+ * not answer the question), the fallback's. null when no call is due.
+ */
+export function dueJevCall(result, { fallback = false } = {}) {
+  const rec = result?.recommend;
+  if (!rec || !result.jev_payload) return null;
+  const tool = fallback && rec.reason === "exact_match_in_one_file" ? rec.fallback?.tool : rec.tool;
+  return tool === "jev_rerank" || tool === "jev_find" ? { tool, payload: result.jev_payload } : null;
+}
+
+/**
+ * The helper's compact view of a jev_rerank / jev_find result: ids mapped back
+ * to path, lines and sha256 through the local map, candidate texts dropped.
+ * An invalid or unusable result is {status: "invalid_response"}; ranking is
+ * never invented.
+ */
+export function mapJevResult(tool, result, map) {
+  const locate = (id) => {
+    const m = map?.[id];
+    return m ? { path: m.path, start_line: m.start_line, end_line: m.end_line, sha256: m.sha256 } : null;
+  };
+  if (!result || result.tool !== tool || result.status === "invalid_response") return { tool, status: "invalid_response" };
+  if (tool === "jev_rerank") {
+    if (!Array.isArray(result.ranked)) return { tool, status: "invalid_response" };
+    const ranked = result.ranked.map((r) => ({ rank: r.rank, id: r.id, relevance: r.relevance, ...locate(r.id) })).filter((r) => r.path);
+    return ranked.length ? { tool, status: "ok", ranked } : { tool, status: "invalid_response" };
+  }
+  if (!Array.isArray(result.top)) return { tool, status: "invalid_response" };
+  return {
+    tool,
+    status: "ok",
+    exists: result.exists,
+    exists_verdict: result.exists_verdict,
+    top: result.top.map((r) => ({ id: r.id, probability: r.probability, ...locate(r.id) })).filter((r) => r.path),
+    note: "'absent' covers only the candidates sent, never the whole repository",
+  };
+}
+
 const STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "in", "into",
   "is", "it", "of", "on", "or", "that", "the", "this", "to", "what", "when", "where", "which", "why",

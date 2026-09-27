@@ -142,10 +142,13 @@ export function selectGateAttempts(attempts, { snapshot, requestSeq }) {
   const sorted = [...attempts].sort((a, b) => a.ts - b.ts);
   const latest = sorted[sorted.length - 1];
   if (!latest) return { reason: "no_gate" };
+  // Earlier attempts whose claims a later gate must cover (F3): partitioned
+  // direct batches, and gate-runner attempts that prepared a batch (they carry
+  // `diff` and `claim_ids`), including failed or interrupted ones.
   const earlierBatches = (until, exceptId) =>
     sorted
       .slice(0, until)
-      .filter((a) => a.batch && a.batch !== exceptId && a.req === requestSeq && (a.before === snapshot || a.after === snapshot || unknownSnap(a.after)));
+      .filter((a) => ((a.batch && a.batch !== exceptId) || (a.runner && typeof a.diff === "string")) && a.req === requestSeq && (a.before === snapshot || a.after === snapshot || unknownSnap(a.after)));
   if (!latest.batch) {
     const problem = attemptProblem(latest, { snapshot, requestSeq });
     if (problem) return { reason: SINGLE_REASONS[problem] };
@@ -170,6 +173,21 @@ export function selectGateAttempts(attempts, { snapshot, requestSeq }) {
     batch: { id: latest.batch, of, records: [...byPart.values()].sort((a, b) => a.part - b.part) },
     supersededBatch: earlierBatches(first, latest.batch),
   };
+}
+
+/** 16-hex ids of claim texts as sent (the same ids gate-runner receipts carry). */
+export function claimIdsOf(claims) {
+  return [...new Set((claims ?? []).map(String))].map((t) => sha256(t).slice(0, 16));
+}
+
+/**
+ * A later gate {claim_ids, diff (whole-diff hash)} covers earlier gate-runner
+ * attempts {claim_ids, diff}: the same whole diff and every claim of each.
+ * Hashes only: a claim dropped since an earlier attempt is never covered.
+ */
+export function coversRunnerAttempts(later, runners) {
+  const have = new Set(later?.claim_ids ?? []);
+  return runners.every((r) => Array.isArray(r?.claim_ids) && typeof r.diff === "string" && r.diff === later?.diff && r.claim_ids.every((id) => have.has(id)));
 }
 
 /** True when `claims` contains every claim in `required` (exact text). */

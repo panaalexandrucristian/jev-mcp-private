@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { exactMatcher, exactToken, recommendNext } from "../candidates.mjs";
-import { candidates, git, makeRepo, sandboxEnv, tempDir, writeFiles } from "./helpers.mjs";
+import { dueJevCall, exactMatcher, exactToken, mapJevResult, recommendNext } from "../candidates.mjs";
+import { candidates, fakeJevEnv, git, makeRepo, sandboxEnv, tempDir, writeFiles } from "./helpers.mjs";
 
 const sha = (buf) => createHash("sha256").update(buf).digest("hex");
 
@@ -500,5 +500,110 @@ describe("jev-candidates: locator ranking rule (F4)", () => {
     const long = "q".repeat(3000);
     const rec = recommendNext({ disabled: false, query: long, candidates: [1, 2, 3, 4].map((i) => ({ id: `c${i}`, text: "t" })), map: {}, exactFiles: null });
     assert.equal(rec.jev_payload.query.length, 2000, "the query fits jev_rerank's 2,000-character cap");
+  });
+});
+
+describe("candidates: the helper runs the ranking itself (R3)", () => {
+  const readLog = (path) => {
+    try {
+      return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    } catch {
+      return [];
+    }
+  };
+  const many = () => {
+    const files = {};
+    for (let i = 0; i < 6; i++) files[`src/m${i}.ts`] = `export function parseWidgetFlag${i}(value) {\n  return value.trim();\n}\n`;
+    return makeRepo(files);
+  };
+  const withFake = (mode = "accepted", extra = {}) => {
+    const log = join(tempDir("jev-flow-cand-log-"), "calls.jsonl");
+    return { log, env: sandboxEnv({ ...fakeJevEnv(mode, { FAKE_MCP_LOG: log }), ...extra }) };
+  };
+
+  it("runs jev_rerank with top_k 5 and the payload unchanged, and returns ranked ranges", () => {
+    const repo = many();
+    const { log, env } = withFake();
+    const res = candidates(["--root", repo, "--query", "parse widget flag"], { env });
+    assert.equal(res.code, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.recommend.tool, "jev_rerank");
+    const calls = readLog(log).filter((r) => r.method === "tools/call");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].name, "jev_rerank");
+    assert.deepEqual(calls[0].args, out.jev_payload, "sent exactly as returned");
+    assert.equal(calls[0].args.top_k, 5);
+    assert.equal(out.jev_result.status, "ok");
+    assert.equal(out.jev_result.ranked.length, 5);
+    for (const r of out.jev_result.ranked) {
+      assert.deepEqual([r.path, r.start_line, r.end_line, r.sha256], [out.map[r.id].path, out.map[r.id].start_line, out.map[r.id].end_line, out.map[r.id].sha256]);
+      assert.equal(r.text, undefined, "candidate texts are dropped");
+    }
+  });
+
+  it("runs jev_find for --single; makes no call for plain, exact-match or disabled results", () => {
+    const repo = many();
+    const a = withFake();
+    const single = JSON.parse(candidates(["--root", repo, "--query", "parse widget flag", "--single"], { env: a.env }).stdout);
+    assert.equal(single.jev_result.tool, "jev_find");
+    assert.equal(single.jev_result.exists_verdict, "present");
+    assert.deepEqual(readLog(a.log).filter((r) => r.method === "tools/call").map((r) => r.name), ["jev_find"]);
+
+    const few = makeRepo({ "src/a.ts": "export function widgetParser() {}\n" });
+    const b = withFake();
+    const plain = JSON.parse(candidates(["--root", few, "--query", "widget parser"], { env: b.env }).stdout);
+    assert.equal(plain.recommend.tool, "plain");
+    assert.equal(plain.jev_result, undefined);
+    assert.deepEqual(readLog(b.log), [], "no server started");
+  });
+
+  it("an exact match is read first; --fallback runs the fallback ranking itself", () => {
+    const repo = makeRepo({ "src/a.ts": "export const cache = new Map();\n", "src/b.ts": "// Cache warming\nexport function warm() {}\n", "src/c.ts": "// Cache eviction\nexport function evict() {}\n" });
+    const { log, env } = withFake();
+    const first = JSON.parse(candidates(["--root", repo, "--query", "cache"], { env }).stdout);
+    assert.equal(first.recommend.reason, "exact_match_in_one_file");
+    assert.equal(first.jev_result, undefined);
+    assert.deepEqual(readLog(log), []);
+    const second = JSON.parse(candidates(["--root", repo, "--query", "cache", "--fallback"], { env }).stdout);
+    assert.equal(second.jev_result.tool, first.recommend.fallback.tool);
+    assert.equal(second.jev_result.status, "ok");
+  });
+
+  it("reports unavailability instead of inventing a ranking: no credentials, --no-jev, invalid twice", () => {
+    const repo = many();
+    const none = withFake("accepted", { OPENROUTER_API_KEY: "" });
+    const out1 = JSON.parse(candidates(["--root", repo, "--query", "parse widget flag"], { env: none.env }).stdout);
+    assert.equal(out1.jev_result.status, "unavailable");
+    assert.deepEqual(readLog(none.log), [], "nothing spawned without credentials");
+    assert.ok(out1.jev_payload, "the payload stays for the locator's own tool");
+
+    const skip = withFake();
+    const out2 = JSON.parse(candidates(["--root", repo, "--query", "parse widget flag", "--no-jev"], { env: skip.env }).stdout);
+    assert.equal(out2.jev_result.status, "skipped");
+    assert.deepEqual(readLog(skip.log), []);
+
+    const bad = withFake("invalid");
+    const out3 = JSON.parse(candidates(["--root", repo, "--query", "parse widget flag"], { env: bad.env }).stdout);
+    assert.equal(out3.jev_result.status, "unavailable");
+    assert.equal(readLog(bad.log).filter((r) => r.method === "tools/call").length, 2, "one retry");
+
+    // An unusable ranking (ids not among the candidates) is retried once in the same loop.
+    const state = () => join(tempDir("jev-flow-state-"), "s.json");
+    const first = withFake("accepted", { FAKE_MCP_MALFORMED: "first", FAKE_MCP_STATE: state() });
+    const out4 = JSON.parse(candidates(["--root", repo, "--query", "parse widget flag"], { env: first.env }).stdout);
+    assert.deepEqual([out4.jev_result.status, out4.jev_result.calls], ["ok", 2]);
+    assert.equal(readLog(first.log).filter((r) => r.method === "tools/call").length, 2);
+    const always = withFake("accepted", { FAKE_MCP_MALFORMED: "always", FAKE_MCP_STATE: state() });
+    const out5 = JSON.parse(candidates(["--root", repo, "--query", "parse widget flag"], { env: always.env }).stdout);
+    assert.deepEqual([out5.jev_result.status, out5.jev_result.calls], ["unavailable", 2]);
+    assert.equal(readLog(always.log).filter((r) => r.method === "tools/call").length, 2);
+  });
+
+  it("maps results through the local map and rejects malformed ones", () => {
+    const map = { c0: { path: "a.ts", start_line: 1, end_line: 9, sha256: "s" } };
+    assert.deepEqual(mapJevResult("jev_rerank", { tool: "jev_rerank", ranked: [{ rank: 1, id: "c0", relevance: 0.9 }, { rank: 2, id: "zz", relevance: 0.1 }] }, map).ranked, [{ rank: 1, id: "c0", relevance: 0.9, path: "a.ts", start_line: 1, end_line: 9, sha256: "s" }]);
+    assert.equal(mapJevResult("jev_rerank", { tool: "jev_rerank", ranked: null, status: "invalid_response" }, map).status, "invalid_response");
+    assert.equal(mapJevResult("jev_rerank", { tool: "jev_find", top: [] }, map).status, "invalid_response");
+    assert.equal(dueJevCall({ recommend: { tool: "plain", reason: "few_candidates_one_file" }, jev_payload: null }), null);
   });
 });

@@ -3,14 +3,20 @@
 //
 //   node jev-candidates.mjs --root <repo> --query <text> [--limit 48] [--chunk-chars 1000]
 //                           [--window-lines 60] [--max-file-bytes 1048576] [--single]
+//                           [--fallback] [--no-jev]
 //   --single: the question asks for one definitive location (jev_find instead of jev_rerank).
-//   The output's `recommend.tool` (plain | jev_rerank | jev_find | none) is the locator's next
-//   step and `jev_payload` ({query, candidates, top_k}) is sent to that tool unchanged.
+//   When `recommend.tool` is jev_rerank or jev_find (the F4 rule), the helper runs that call
+//   itself through the jev MCP server on stdio (`jev_payload` unchanged, top_k 5) and returns
+//   the ranking mapped to paths and lines in `jev_result`; the locator makes no Jev call.
+//   --fallback: the exact match was read and did not answer; run `recommend.fallback` instead.
+//   --no-jev: do not call Jev (offline); `jev_result` is {status: "skipped"}.
+//   Without credentials or after one failed retry, `jev_result.status` is "unavailable".
 //   node jev-candidates.mjs --sanitize [--root <repo>] [--mode auto|text|diff] < input
 //
 // Exit codes: 0 success, 2 usage error or non-git root, 3 sanitize input too large.
 import { resolve } from "node:path";
-import { buildCandidates, LIMITS, UsageError } from "../private/jev-flow/candidates.mjs";
+import { buildCandidates, dueJevCall, LIMITS, mapJevResult, UsageError } from "../private/jev-flow/candidates.mjs";
+import { callWithRetry, openJev } from "../private/jev-flow/mcp-client.mjs";
 import { loadDenylist } from "../private/jev-flow/paths.mjs";
 import { FIXED_PHRASES } from "../private/jev-flow/policy.mjs";
 import { looksLikeDiff, sanitizeDiff, sanitizeText } from "../private/jev-flow/sanitize.mjs";
@@ -20,7 +26,7 @@ const SANITIZE_MAX_BYTES = 2 * 1024 * 1024;
 
 const USAGE = `Usage:
   jev-candidates.mjs --root <repo> --query <text> [--limit N<=${LIMITS.maxCandidates}] [--chunk-chars N<=${LIMITS.maxChunkChars}]
-                     [--window-lines N<=${LIMITS.maxWindowLines}] [--max-file-bytes N] [--single]
+                     [--window-lines N<=${LIMITS.maxWindowLines}] [--max-file-bytes N] [--single] [--fallback] [--no-jev]
   jev-candidates.mjs --sanitize [--root <repo>] [--mode auto|text|diff] < input`;
 
 function parseArgs(argv) {
@@ -31,6 +37,8 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") opts.help = true;
     else if (arg === "--sanitize") opts.sanitize = true;
     else if (arg === "--single") opts.single = true;
+    else if (arg === "--fallback") opts.fallback = true;
+    else if (arg === "--no-jev") opts.noJev = true;
     else if (valueFlags.has(arg)) {
       if (i + 1 >= argv.length) throw new UsageError(`${arg} needs a value`);
       opts[arg.slice(2)] = argv[++i];
@@ -91,8 +99,30 @@ async function main() {
     maxFileBytes: toInt(opts["max-file-bytes"], "--max-file-bytes"),
     single: opts.single === true,
   });
+  const due = result.disabled ? null : dueJevCall(result, { fallback: opts.fallback === true });
+  if (due) result.jev_result = opts.noJev ? { tool: due.tool, status: "skipped", reason: "--no-jev" } : await runJev(due, result.map);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
+}
+
+/**
+ * Run the due Jev call through the MCP client. An unusable ranking (per
+ * mapJevResult) is retried once with identical input in the same retry loop
+ * as transport failures; never an invented ranking.
+ */
+async function runJev(due, map) {
+  const jev = await openJev(process.env);
+  if (!jev.ok) return { tool: due.tool, status: "unavailable", reason: String(jev.reason).slice(0, 300), message: "Jev unavailable; ranking not evaluated" };
+  try {
+    const reply = await callWithRetry(jev, due.tool, due.payload, { invalid: (result) => mapJevResult(due.tool, result, map).status !== "ok" });
+    if (!reply.ok) {
+      const retry = reply.retry ? ` (retry ${reply.retry})` : "";
+      return { tool: due.tool, status: "unavailable", reason: `${reply.kind}: ${String(reply.message).slice(0, 240)}${retry}`, calls: reply.attempts, message: "Jev unavailable; ranking not evaluated" };
+    }
+    return { ...mapJevResult(due.tool, reply.result, map), calls: reply.attempts };
+  } finally {
+    await jev.close();
+  }
 }
 
 main().then(

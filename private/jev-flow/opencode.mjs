@@ -6,7 +6,8 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { coversEarlierBatches, parseBatchLabel, selectGateAttempts, verifyBatchContents } from "./gate-batch.mjs";
+import { claimIdsOf, coversEarlierBatches, coversRunnerAttempts, diffHash, parseBatchLabel, selectGateAttempts, verifyBatchContents } from "./gate-batch.mjs";
+import { extractLocatorHits, freshHits, grepCovers, HINT_RANGE_GREP, HINT_RANGE_READ, readExceedsHits, rememberHits } from "./locator-hits.mjs";
 import { loadDenylist } from "./paths.mjs";
 import {
   classifyShellCommand,
@@ -17,8 +18,9 @@ import {
   REREAD_HINT_THRESHOLD,
   validateGateResult,
 } from "./policy.mjs";
+import { initRunnerSession, runnerCoverage, verifyReceipt } from "./runner-receipt.mjs";
 import { payloadCredentialKinds } from "./sanitize.mjs";
-import { computeSnapshot, gitTopLevel, inputHash, sha256 } from "./state.mjs";
+import { computeSnapshot, gitTopLevel, inputHash, loadState, sessionDir, sessionKey, sha256, withState } from "./state.mjs";
 
 export const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -44,7 +46,13 @@ const EXPLORATION_TOOLS = new Set(["read", "grep", "glob", "list", "ls"]);
 export const DIRECTIVE =
   "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
   `When the files are not known, delegate broad discovery to the ${NAMES_LOCATOR} subagent (/jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. ` +
-  "After any code change, run the repository's real checks and finish with /jev-done (jev_gate with per-claim evidence) before reporting completion.";
+  "After any code change, finish with /jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself before you report completion.";
+
+/** A shell command that runs the gate runner for a gate (not a hunk listing). */
+export function isRunnerGateCommand(command) {
+  const text = String(command ?? "");
+  return /jev-gate-run\.mjs\b/.test(text) && !/--list-hunks\b/.test(text) && !/--help\b/.test(text);
+}
 
 /**
  * OpenCode model reference from JEV_FLOW_LOCATOR_MODEL ("provider/model" or
@@ -123,7 +131,17 @@ export const LIMITATIONS = Object.freeze([
   "Locator permissions are not set: V2 permission action names are unverified.",
   "Strict /jev-done only instructs the agent with the gate status; nothing technically blocks a completion message in OpenCode.",
   "The jev-locator model is applied through the V2 Agent.Info.model field (Model.Ref); that the runtime honours it on 2.0.12 is not verified.",
+  "Gate-runner results are recognised from bash tool calls whose command runs scripts/jev-gate-run.mjs; the runner's receipt and session metadata (key, baseline, request number) live in the jev-flow cache, not in memory.",
+  "jev-locator hits are read from the result of a subagent tool call whose input names jev-locator; the V2 subagent tool's result shape is not verified.",
 ]);
+
+function realpathSafe(path) {
+  try {
+    return realpathSync(String(path));
+  } catch {
+    return null;
+  }
+}
 
 function repoRelative(repoRoot, filePath) {
   if (!repoRoot || typeof filePath !== "string" || filePath === "") return null;
@@ -179,10 +197,12 @@ export async function setupFlow(ctx, options = {}) {
   const directory = ctx?.location?.directory ?? ctx?.location?.path ?? process.cwd();
   const repoRoot = gitTopLevel(String(directory));
   const sessions = new Map();
+  const sid = (id) => String(id ?? "unknown");
+  const metaDir = (id) => sessionDir(repoRoot, sid(id), env);
   const sessionState = (id) => {
-    const key = String(id ?? "unknown");
+    const key = sid(id);
     if (!sessions.has(key)) {
-      sessions.set(key, { req: 0, exploration: 0, rereadHinted: false, finishHinted: false, pendingHints: [], reads: new Map(), gates: [], pending: new Map() });
+      sessions.set(key, { req: 0, exploration: 0, rereadHinted: false, finishHinted: false, pendingHints: [], reads: new Map(), gates: [], pending: new Map(), hits: [], initialized: false });
     }
     return sessions.get(key);
   };
@@ -215,11 +235,35 @@ export async function setupFlow(ctx, options = {}) {
     if (selected.reason) {
       return { accepted: false, reason: REASONS[selected.reason] ?? `partitioned jev_gate batch not complete (${selected.reason})` };
     }
+    // Earlier attempts a later gate must cover (F3): direct batches (inputs in memory) and gate-runner attempts (hashes).
+    const dir = metaDir(sessionID);
+    const runnersSuperseded = selected.supersededBatch.filter((a) => a.runner).map((a) => runnerCoverage(dir, a));
+    const batchesSuperseded = selected.supersededBatch.filter((a) => !a.runner).map((a) => a.input ?? {});
+    const covers = (later) => {
+      const claimIds = later.claim_ids ?? claimIdsOf(later.claims);
+      const laterDiff = later.diffHash ?? (typeof later.diff === "string" ? diffHash(later.diff) : null);
+      if (!coversRunnerAttempts({ claim_ids: claimIds, diff: laterDiff }, runnersSuperseded)) return false;
+      if (batchesSuperseded.length === 0) return true;
+      if (Array.isArray(later.claims) && typeof later.diff === "string") return coversEarlierBatches(later, batchesSuperseded);
+      const have = new Set(claimIds);
+      return batchesSuperseded.every((e) => {
+        const label = parseBatchLabel(e.request);
+        return label && label.diff === laterDiff && claimIdsOf(e.claims).every((id) => have.has(id));
+      });
+    };
+    if (selected.record?.runner) {
+      // Gate runner: the signed receipt decides, bound to this session, the attempt's request and this snapshot.
+      const check = verifyReceipt(dir, selected.record.runner, { session: sessionKey(sid(sessionID)), req: selected.record.req, snapshot });
+      if (!check.accepted) return { accepted: false, reason: `the last gate-runner result does not count (${check.reason})` };
+      if (!covers({ claim_ids: check.receipt.claim_ids, diffHash: check.receipt.diff })) {
+        return { accepted: false, reason: "the gate-runner result does not cover every claim and the whole patch of the earlier partitioned batch it replaces, or of an earlier gate-runner attempt" };
+      }
+      return { accepted: true, reason: `the gate runner's signed receipt accepts all ${check.receipt.parts} part(s) for the current snapshot and request` };
+    }
     if (selected.record) {
       if (!selected.record.accepted) return { accepted: false, reason: "the last jev_gate was not an accepted, complete result" };
-      const later = { claims: selected.record.claims, diff: selected.record.input?.diff };
-      if (selected.supersededBatch.length && !coversEarlierBatches(later, selected.supersededBatch.map((a) => a.input ?? {}))) {
-        return { accepted: false, reason: "the last jev_gate does not cover every claim and the whole patch of the earlier partitioned batch" };
+      if (!covers({ claims: selected.record.claims, diff: selected.record.input?.diff })) {
+        return { accepted: false, reason: "the last jev_gate does not cover every claim and the whole patch of the earlier partitioned batch it replaces, or of an earlier gate-runner attempt" };
       }
       return { accepted: true, reason: "an accepted jev_gate exists for the current snapshot and request" };
     }
@@ -227,9 +271,8 @@ export async function setupFlow(ctx, options = {}) {
     if (records.some((r) => !r.accepted)) return { accepted: false, reason: "a part of the partitioned jev_gate batch was not an accepted, complete result" };
     const contents = verifyBatchContents(records.map((r) => r.input ?? {}), { snapshot });
     if (!contents.ok) return { accepted: false, reason: `the partitioned jev_gate batch is not complete (${contents.problems.join(", ")})` };
-    const later = { claims: contents.claims, diff: contents.whole };
-    if (selected.supersededBatch.length && !coversEarlierBatches(later, selected.supersededBatch.map((a) => a.input ?? {}))) {
-      return { accepted: false, reason: "the partitioned jev_gate batch does not cover every claim and the whole patch of the earlier batch it replaces" };
+    if (!covers({ claims: contents.claims, diff: contents.whole })) {
+      return { accepted: false, reason: "the partitioned jev_gate batch does not cover every claim and the whole patch of the earlier batch it replaces, or of an earlier gate-runner attempt" };
     }
     return {
       accepted: true,
@@ -309,14 +352,16 @@ export async function setupFlow(ctx, options = {}) {
     withPluginRoot(asset.body, root).split("$ARGUMENTS").join(String(invocation?.prompt?.text ?? "").trim());
 
   const doneText = (invocation) => {
-    let text = commandText(assets.done, invocation);
+    // The runner needs this session's key to sign its receipt (Claude Code passes the session id in the environment).
+    const key = sessionKey(sid(invocation?.sessionID));
+    let text = commandText(assets.done, invocation).split('scripts/jev-gate-run.mjs"').join(`scripts/jev-gate-run.mjs" --session-key ${key}`);
     if (env.JEV_FLOW_STRICT === "1" && !flowOff(env)) {
       const status = gateStatus(invocation.sessionID);
       // This is an instruction to the agent, not an enforcement point: OpenCode
       // offers no hook that can refuse a completion message.
       text +=
         `\n\nStrict mode (JEV_FLOW_STRICT=1). Gate status from the jev-flow plugin: ${status.reason}. ` +
-        "Do not report completion unless jev_gate returned an accepted result on the current snapshot in this request; " +
+        "Do not report completion unless the gate runner (or jev_gate) returned an accepted result on the current snapshot in this request; " +
         `otherwise end with a line starting with "Incomplete:", report "${FIXED_PHRASES.unavailable}" or "${FIXED_PHRASES.disabled}" when applicable, or ask the user.`;
     }
     return text;
@@ -381,6 +426,16 @@ export async function setupFlow(ctx, options = {}) {
     try {
       report.registrations.push(
         await ctx.tool.hook("execute.before", (input) => {
+          if (repoRoot && input?.id && SHELL_TOOLS.has(String(input?.tool ?? "").toLowerCase()) && isRunnerGateCommand(input?.input?.command)) {
+            // A gate-runner attempt starts now and supersedes earlier gates, even if it fails.
+            try {
+              const state = sessionState(input.sessionID);
+              state.pending.set(String(input.id), { runner: true, before: computeSnapshot(repoRoot).hash, req: state.req, ts: Date.now() });
+            } catch (error) {
+              runtimeProblem("execute.before", `execute.before bookkeeping failed: ${error?.message ?? error}`);
+            }
+            return;
+          }
           const jev = jevToolName(input?.tool);
           if (!jev || !repoRoot) return;
           // Policy refusals are thrown deliberately and are not swallowed. A
@@ -433,6 +488,28 @@ export async function setupFlow(ctx, options = {}) {
             const tool = String(input?.tool ?? "");
             const jev = jevToolName(tool);
             const state = sessionState(input?.sessionID);
+            const pendingRun = input?.id ? state.pending.get(String(input.id)) : undefined;
+            if (pendingRun?.runner) {
+              // The runner recorded its attempt and receipt id in the session metadata; the receipt is verified at status time.
+              state.pending.delete(String(input.id));
+              let rec = null;
+              try {
+                const meta = loadState(metaDir(input?.sessionID));
+                // A finished attempt, or one left pending by an interrupted run.
+                const all = [...meta.gates, ...Object.values(meta.pending ?? {}).filter((p) => p.runner)];
+                rec = all.filter((g) => g.runner && g.ts >= pendingRun.ts).sort((a, b) => a.ts - b.ts).pop() ?? null;
+              } catch {
+                rec = null;
+              }
+              const after = repoRoot ? computeSnapshot(repoRoot).hash : null;
+              // Coverage metadata (hashes) of a prepared batch stays with the attempt, even a failed one.
+              const coverage = rec && typeof rec.diff === "string" ? { runner: rec.runner, diff: rec.diff, claim_ids: rec.claim_ids } : rec ? { runner: rec.runner } : {};
+              const finished = rec && !rec.failed && rec.kind !== "gate";
+              state.gates.push(finished
+                ? { ...coverage, req: pendingRun.req, ts: pendingRun.ts, before: pendingRun.before, after, failed: false, accepted: false }
+                : { ...coverage, req: pendingRun.req, ts: pendingRun.ts, before: pendingRun.before, after: null, failed: true, accepted: false });
+              return;
+            }
             if (jev === "gate") {
               const pending = input?.id ? state.pending.get(String(input.id)) : undefined;
               if (input?.id) state.pending.delete(String(input.id));
@@ -451,8 +528,16 @@ export async function setupFlow(ctx, options = {}) {
               state.gates.push({ ...base, failed: false, before: sameCall ? pending.before : null, after, accepted, ...sent });
               return;
             }
-            if (input?.agent === NAMES.agent) return;
             const lower = tool.toLowerCase();
+            const subagent = input?.input?.subagent_type ?? input?.input?.subagent ?? input?.input?.agent;
+            if ((lower === "task" || lower === "agent") && /^(?:jev:)?jev-locator$/.test(String(subagent ?? ""))) {
+              const hits = extractLocatorHits(input?.result ?? input?.output)
+                .map((h) => ({ ...h, path: repoRelative(repoRoot, h.path) ?? h.path }))
+                .filter((h) => !h.path.startsWith("/") && !h.path.startsWith(".."));
+              if (hits.length) state.hits = rememberHits(state.hits, hits, state.req);
+              return;
+            }
+            if (input?.agent === NAMES.agent) return;
             let kind = null;
             if (EXPLORATION_TOOLS.has(lower)) kind = "exploration";
             else if (EDIT_TOOLS.has(lower)) kind = input?.status === "error" ? null : "edit";
@@ -473,6 +558,20 @@ export async function setupFlow(ctx, options = {}) {
                   }
                   const offset = Number.isInteger(input?.input?.offset) ? input.input.offset : 1;
                   const limit = Number.isInteger(input?.input?.limit) ? input.input.limit : "end";
+                  if (hash) {
+                    // Range-only reading after a locator hit (R2): every time.
+                    const { fresh, stale } = freshHits(state.hits, { path: rel, req: state.req, sha: hash });
+                    if (stale.length) state.hits = state.hits.filter((h) => !stale.includes(h));
+                    let lineCount = null;
+                    try {
+                      const text = readFileSync(join(repoRoot, rel), "utf8");
+                      lineCount = text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+                    } catch {
+                      lineCount = null;
+                    }
+                    const end = limit === "end" ? "end" : offset + limit - 1;
+                    if (readExceedsHits(fresh, { start: offset, end, lineCount })) queueHint(state, HINT_RANGE_READ(rel, fresh));
+                  }
                   const key = `${rel}#${offset}-${limit}`;
                   const entry = state.reads.get(key);
                   if (hash && entry && entry.hash === hash) entry.count += 1;
@@ -481,6 +580,23 @@ export async function setupFlow(ctx, options = {}) {
                     state.rereadHinted = true;
                     queueHint(state, `jev-flow: the same file range with the same content has been re-read twice in this request. Delegate the open question to jev-locator (/${NAMES.locate}) instead of re-reading.`);
                   }
+                }
+              }
+              if (lower === "grep" && repoRoot && state.hits.length) {
+                // The search scope: its path, or the session directory (the repository root by default) without one.
+                const scope = typeof input?.input?.path === "string" && input.input.path !== "" ? input.input.path : directory;
+                const target = repoRelative(repoRoot, scope) ?? (realpathSafe(scope) === realpathSafe(repoRoot) ? "" : null);
+                for (const path of [...new Set(state.hits.filter((h) => h.req === state.req).map((h) => h.path))]) {
+                  if (!grepCovers(path, { target, glob: input?.input?.include ?? input?.input?.glob, type: input?.input?.type })) continue;
+                  let sha = null;
+                  try {
+                    sha = sha256(readFileSync(join(repoRoot, path)));
+                  } catch {
+                    sha = null;
+                  }
+                  const { fresh, stale } = freshHits(state.hits, { path, req: state.req, sha });
+                  if (stale.length) state.hits = state.hits.filter((h) => !stale.includes(h));
+                  if (fresh.length) queueHint(state, HINT_RANGE_GREP(path, fresh));
                 }
               }
               // Repeats at every multiple of the threshold (4, 8, 12, ...).
@@ -515,6 +631,21 @@ export async function setupFlow(ctx, options = {}) {
           state.finishHinted = false;
           state.pendingHints = [];
           state.reads.clear();
+          if (repoRoot) {
+            // Session metadata for the gate runner: receipt key and baseline once, the request number every prompt.
+            try {
+              const dir = metaDir(input?.sessionID);
+              if (!state.initialized) {
+                initRunnerSession(dir, repoRoot);
+                state.initialized = true;
+              }
+              withState(dir, (meta) => {
+                meta.request = { ...meta.request, seq: state.req, started: Date.now() };
+              });
+            } catch (error) {
+              runtimeProblem("prompt", `gate-runner session metadata failed: ${error?.message ?? error}`);
+            }
+          }
           if (repoRoot && !loadDenylist(repoRoot).disabled) queueHint(state, DIRECTIVE);
         }),
       );
