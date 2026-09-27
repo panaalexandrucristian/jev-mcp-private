@@ -39,7 +39,7 @@ const L = {
 /** Top-level input keys per tool, parsed from each registerTool's strictShape. */
 function schemaKeys() {
   const keys = {};
-  const toolRe = /server\.registerTool\(\s*"(jev_\w+)"/g;
+  const toolRe = /(?:server|tools)\.registerTool\(\s*"(jev_\w+)"/g;
   let match;
   while ((match = toolRe.exec(source))) {
     const start = source.indexOf("inputSchema: strictShape({", match.index);
