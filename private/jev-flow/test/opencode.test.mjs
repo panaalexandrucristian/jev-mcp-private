@@ -71,7 +71,7 @@ describe("setupFlow with a full V2-shaped context", () => {
     assert.deepEqual(report.degraded, []);
     const skill = editors.skill.get("jev-flow");
     assert.equal(skill.name, "jev-flow");
-    assert.match(skill.description, /^Adaptive coding workflow and default route for every non-trivial code task/);
+    assert.match(skill.description, /^Opt-in adaptive coding workflow \(active only with JEV_FLOW=on/);
     assert.ok(!skill.content.includes("${CLAUDE_PLUGIN_ROOT}"));
     const agent = editors.agent.get("jev-locator");
     assert.equal(agent.mode, "subagent");
@@ -433,6 +433,18 @@ describe("JEV_FLOW=off and the locator model in OpenCode (F1, F2)", () => {
     assert.doesNotMatch(prompts[0].text, /Strict mode/);
     // The data guard is not relaxed by off.
     assert.throws(() => hooks.tool["execute.before"]({ tool: "jev:jev_verify", input: { claims: ["x"], evidence: `k=${FAKE_AWS}` } }), JevFlowPolicyError);
+  });
+
+  it("is off by default: with JEV_FLOW unset there is no directive (opt-in, round 5)", async () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const { ctx, hooks } = fakeContext({ directory: repo });
+    const env = sandboxEnv();
+    delete env.JEV_FLOW;
+    await setupFlow(ctx, { log: () => {}, env });
+    await hooks.session.prompt({ sessionID: "s1" });
+    const input = { sessionID: "s1", agent: "build", system: [], messages: [] };
+    hooks.session.context(input);
+    assert.deepEqual(input.system, []);
   });
 
   it("a disabled repo gets no route directive", async () => {

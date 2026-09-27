@@ -140,6 +140,17 @@ describe("hooks: JEV_FLOW=off (F1 opt-out)", () => {
     const out = hook("PreToolUse", { session_id: "s-off2", cwd: repo, hook_event_name: "PreToolUse", tool_name: "mcp__jev__jev_verify", tool_input: { claims: ["x"], evidence: `k=${FAKE_AWS}` } }, env);
     assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
   });
+
+  it("is off by default: with JEV_FLOW unset there is no directive or hint (opt-in, round 5)", () => {
+    const repo = makeRepo({ "a.ts": "a\n", "b.ts": "b\n" });
+    const env = sandboxEnv();
+    delete env.JEV_FLOW;
+    const base = { session_id: "s-default", cwd: repo, transcript_path: join(tempDir(), "t.jsonl") };
+    const call = (event, extra = {}) => hook(event, { ...base, hook_event_name: event, ...extra }, env);
+    assert.equal(call("SessionStart", { source: "startup" }), null);
+    assert.equal(call("UserPromptSubmit", { prompt: "do it" }), null);
+    for (let i = 0; i < 8; i++) assert.equal(call("PostToolUse", read(repo, i % 2 ? "a.ts" : "b.ts")), null);
+  });
 });
 
 describe("hooks: jev-locator model (F2)", () => {

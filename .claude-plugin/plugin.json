@@ -1,6 +1,6 @@
 {
   "name": "jev",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "displayName": "Jev",
   "description": "Jev judgment tools and the Jev agent skill.",
   "author": {
@@ -9,11 +9,19 @@
   },
   "repository": "https://github.com/panaalexandrucristian/jev-mcp-private",
   "license": "MIT",
-  "keywords": ["jev", "mcp", "verification"],
+  "keywords": [
+    "jev",
+    "mcp",
+    "verification"
+  ],
   "mcpServers": {
     "jev": {
       "command": "npx",
-      "args": ["-y", "--package=@jkudish/jev-mcp@latest", "jev-mcp"]
+      "args": [
+        "-y",
+        "--package=@jkudish/jev-mcp@latest",
+        "jev-mcp"
+      ]
     }
   }
 }

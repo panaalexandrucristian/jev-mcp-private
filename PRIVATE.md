@@ -107,7 +107,7 @@ By default, in every session and repository where Jev is enabled, the Claude Cod
 
 | Variable | Effect |
 | --- | --- |
-| `JEV_FLOW=off` | No directive, hints or `Stop` notices/redirects, even with `JEV_FLOW_STRICT=1`. The credential and denylist guard stays active. |
+| `JEV_FLOW=on` | Opt-in switch (also `1`/`true`). Without it: no directive, hints or `Stop` notices/redirects, even with `JEV_FLOW_STRICT=1`. The credential and denylist guard is always active. `/jev:jev-locate`, `/jev:jev-done` and the gate runner stay available on demand. |
 | `JEV_FLOW_STRICT=1` | `Stop` redirects once per snapshot to `/jev:jev-done` (below). |
 | `JEV_FLOW_LOCATOR_MODEL` | Claude Code: `haiku` (the default in `agents/jev-locator.md`), `sonnet`, `opus` or `inherit` (the parent's model); applied to each `jev-locator` delegation by a `PreToolUse` hook through `updatedInput`. An invalid value is ignored with one notice. OpenCode: `provider/model[#variant]`; unset or invalid, the locator inherits the parent model and the setup notes it once. A configured model is not a cost guarantee: inheriting is fine when the parent already runs the cheapest model. |
 

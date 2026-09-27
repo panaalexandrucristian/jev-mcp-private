@@ -59,6 +59,7 @@ export function sandboxEnv(extra = {}) {
     ...env,
     HOME: home,
     JEV_FLOW_CACHE_DIR: join(home, "cache"),
+    JEV_FLOW: "on",
     JEV_FLOW_STRICT: "",
     GIT_CONFIG_NOSYSTEM: "1",
     ...extra,

@@ -37,7 +37,7 @@ import {
 
 export const HINTS = Object.freeze({
   directive: () =>
-    "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
+    "jev-flow is enabled for this session (JEV_FLOW=on). For a non-trivial code task: load the jev-flow skill and follow its route. " +
     "When the files are not known, delegate broad discovery to the jev-locator subagent (/jev:jev-locate <question>) instead of searching in this thread, in the background when possible, and keep doing independent work without repeating its search; then read only the ranges it returns. An exact known path or symbol is used directly. " +
     "After any code change, finish with /jev:jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself before you report completion.",
   explore: (count) =>
@@ -55,9 +55,12 @@ const AGENT_TOOLS = new Set(["Agent", "Task"]);
 const LOCATOR_TYPE = /^(?:jev:)?jev-locator$/;
 const LOCATOR_MODELS = new Set(["haiku", "sonnet", "opus"]);
 
-/** JEV_FLOW=off: no directives, hints or Stop redirects/notices. The data guard stays. */
+/**
+ * Opt-in (round 5 decision): directives, hints and Stop notices/redirects run only with
+ * JEV_FLOW=on (also 1/true). Unset or any other value means off. The data guard always stays.
+ */
 export function flowOff(env) {
-  return String(env?.JEV_FLOW ?? "").trim().toLowerCase() === "off";
+  return !["on", "1", "true"].includes(String(env?.JEV_FLOW ?? "").trim().toLowerCase());
 }
 
 /** Claude Code model alias of a model id ("claude-opus-5-5" -> "opus"), or null. */

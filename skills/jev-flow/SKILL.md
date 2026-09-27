@@ -1,6 +1,6 @@
 ---
 name: jev-flow
-description: "Adaptive coding workflow and default route for every non-trivial code task in a repository (debugging, implementation, refactoring, finishing a change): delegate broad code discovery to the jev-locator subagent instead of searching in the main thread, use bounded Jev judgments only when they change the next action, run real checks after code changes, and verify completion with /jev:jev-done (the gate runner runs the checks and jev_gate with per-claim evidence itself). Load it at the start of such a task, before exploring."
+description: "Opt-in adaptive coding workflow (active only with JEV_FLOW=on, or when the user asks for jev-flow) for non-trivial code tasks in a repository (debugging, implementation, refactoring, finishing a change): delegate broad code discovery to the jev-locator subagent instead of searching in the main thread, use bounded Jev judgments only when they change the next action, run real checks after code changes, and verify completion with /jev:jev-done (the gate runner runs the checks and jev_gate with per-claim evidence itself). Load it at the start of such a task, before exploring."
 ---
 
 # Jev flow
@@ -38,7 +38,7 @@ Nothing obliges you to call every tool. Known files and a clear change: skip sem
 
 ## Activation
 
-The plugin injects a short route directive at session start and on every prompt, repeats the delegation directive at every 4 exploration calls in a request, and hints every time a read or grep re-covers a range the locator already returned. Follow them. `JEV_FLOW=off` turns the directives, hints and Stop notices off (the data guard stays); `JEV_FLOW_STRICT=1` makes Stop redirect once per snapshot to `/jev:jev-done`. `JEV_FLOW_LOCATOR_MODEL` (`haiku`|`sonnet`|`opus`|`inherit`; `provider/model` in OpenCode) overrides the locator's model; do not pass a model yourself.
+The plugin injects a short route directive at session start and on every prompt, repeats the delegation directive at every 4 exploration calls in a request, and hints every time a read or grep re-covers a range the locator already returned. Follow them. The flow is opt-in: directives, hints and Stop notices run only with `JEV_FLOW=on` (the data guard always stays; measured A/B results showed the default-on flow cost more time and money than it saved, see `docs/jev-flow-findings.md`, round 5); `JEV_FLOW_STRICT=1` makes Stop redirect once per snapshot to `/jev:jev-done`. `JEV_FLOW_LOCATOR_MODEL` (`haiku`|`sonnet`|`opus`|`inherit`; `provider/model` in OpenCode) overrides the locator's model; do not pass a model yourself.
 
 ## Prepare data before every Jev call
 

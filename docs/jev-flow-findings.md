@@ -653,3 +653,39 @@ candidates, the helper's old stdout carried every candidate text, the map and th
 OpenCode contexts. The smoke run exercised the helper and a live provider, not a live locator
 session: whether Haiku now finishes quickly, and whether the parent actually works in parallel, is
 for the separate A/B re-runs.
+
+## Round 5 — repeated A/B on the behaviour-only task, jev-flow 0.4.0
+
+DSE-45624 described by behaviour, with the backend-data detail restored. Opus medium, 2 reps per arm.
+All 4 runs pass the oracle (69/69).
+
+| Run | Turns | Wall | Cost | Main exploration | Locator | Gate |
+|---|---|---|---|---|---|---|
+| A1 | 14 | 94 s | $0.43 | 34 KB / 8 calls | – | – |
+| A2 | 15 | 121 s | $0.47 | 36 KB / 8 calls | – | – |
+| B1 | 20 | 150 s | $0.59 | 15 KB / 6 calls | 1 (Haiku, 48 s; was 199 s) | escalate (safe_to_apply 0.59) |
+| B2 | 17 | 130 s | $0.60 | 31 KB / 6 calls | 0 | escalate (0.71) |
+
+Means: B is **+31% time and +32% cost**, with −34% main-thread exploration. The R7 fix worked: the
+locator dropped from 199 s to 48 s, and rerank now runs inside the helper. `/jev:jev-done` took 16–27%
+of B's wall time. On these correct fixes the gate escalated both times.
+
+## Conclusion (jev_decide 1.00)
+
+Across the three tasks we ran the flow in 9 configurations. It **never reduced time or cost**
+compared with the matching no-flow run, and it cost between +6% and +41% more. It did reduce
+main-thread exploration bytes (−18% … −53%), but noise between identical-condition runs is about ±15%,
+and the saved context did not turn into less time. `jev_gate` never returned `auto` on a correct
+patch (non-auto on 5 of 5 correct patches) and also escalated the one wrong patch. As used here, it
+does not tell correct patches from wrong ones, so a default completion gate mostly adds a step and an
+"Incomplete" ending.
+
+**Decision:** the flow is **opt-in** from 0.5.0 (`JEV_FLOW=on`). By default there are no directives,
+hints or Stop notices, and the skill description says so. These stay available on demand:
+`/jev:jev-locate` (helper with mechanical rerank, Haiku locator, useful when the code must be
+discovered in an unfamiliar codebase), `/jev:jev-done` with the gate runner (an extra review signal,
+documented as non-discriminating), the metrics script and the A/B manifest. The credential and
+denylist guard is always active.
+
+Open for later, not pursued: a larger unfamiliar codebase where discovery dominates the task; gate
+policies other than a single end-of-task `jev_gate`.

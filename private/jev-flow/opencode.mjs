@@ -44,7 +44,7 @@ const EXPLORATION_TOOLS = new Set(["read", "grep", "glob", "list", "ls"]);
 
 /** Route directive sent at the start of every request (see hook.mjs HINTS.directive). */
 export const DIRECTIVE =
-  "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
+  "jev-flow is enabled for this session (JEV_FLOW=on). For a non-trivial code task: load the jev-flow skill and follow its route. " +
   `When the files are not known, delegate broad discovery to the ${NAMES_LOCATOR} subagent (/jev-locate <question>) instead of searching in this thread, in the background when possible, and keep doing independent work without repeating its search; then read only the ranges it returns. An exact known path or symbol is used directly. ` +
   "After any code change, finish with /jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself on every part and returns one aggregated report; answer once from it, without re-running for a more favourable verdict.";
 
@@ -77,7 +77,8 @@ function labelFields(toolInput) {
   return label ? { batch: label.id, part: label.part, of: label.of } : {};
 }
 
-const flowOff = (env) => String(env?.JEV_FLOW ?? "").trim().toLowerCase() === "off";
+// Opt-in, same rule as hook.mjs: only JEV_FLOW=on (also 1/true) enables directives and hints.
+const flowOff = (env) => !["on", "1", "true"].includes(String(env?.JEV_FLOW ?? "").trim().toLowerCase());
 const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit"]);
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 
