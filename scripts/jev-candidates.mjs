@@ -3,19 +3,23 @@
 //
 //   node jev-candidates.mjs --root <repo> --query <text> [--limit 48] [--chunk-chars 1000]
 //                           [--window-lines 60] [--max-file-bytes 1048576] [--single]
-//                           [--fallback] [--no-jev]
+//                           [--fallback] [--no-jev] [--full]
 //   --single: the question asks for one definitive location (jev_find instead of jev_rerank).
 //   When `recommend.tool` is jev_rerank or jev_find (the F4 rule), the helper runs that call
-//   itself through the jev MCP server on stdio (`jev_payload` unchanged, top_k 5) and returns
-//   the ranking mapped to paths and lines in `jev_result`; the locator makes no Jev call.
+//   itself through the jev MCP server on stdio (`jev_payload` unchanged, top_k 5); the
+//   locator makes no Jev call.
+//   stdout (R7) is one compact JSON object of at most 4096 bytes: at most 5 hits
+//   {path, start_line, end_line, sha256, score, reason}, `ordering` ("semantic" from a
+//   valid Jev answer, else "lexical"), `jev`, `jev_calls`, `coverage_complete`, `omitted`.
+//   No candidate texts, map or payload. Without credentials, --no-jev, or an unavailable or
+//   invalid answer after one retry: the top 5 candidates by lexical score, ordering "lexical".
 //   --fallback: the exact match was read and did not answer; run `recommend.fallback` instead.
-//   --no-jev: do not call Jev (offline); `jev_result` is {status: "skipped"}.
-//   Without credentials or after one failed retry, `jev_result.status` is "unavailable".
+//   --full: diagnostics and tests only; the full object (candidates, map, payload, jev_result).
 //   node jev-candidates.mjs --sanitize [--root <repo>] [--mode auto|text|diff] < input
 //
 // Exit codes: 0 success, 2 usage error or non-git root, 3 sanitize input too large.
 import { resolve } from "node:path";
-import { buildCandidates, dueJevCall, LIMITS, mapJevResult, UsageError } from "../private/jev-flow/candidates.mjs";
+import { buildCandidates, compactReport, dueJevCall, LIMITS, mapJevResult, UsageError } from "../private/jev-flow/candidates.mjs";
 import { callWithRetry, openJev } from "../private/jev-flow/mcp-client.mjs";
 import { loadDenylist } from "../private/jev-flow/paths.mjs";
 import { FIXED_PHRASES } from "../private/jev-flow/policy.mjs";
@@ -39,6 +43,7 @@ function parseArgs(argv) {
     else if (arg === "--single") opts.single = true;
     else if (arg === "--fallback") opts.fallback = true;
     else if (arg === "--no-jev") opts.noJev = true;
+    else if (arg === "--full") opts.full = true;
     else if (valueFlags.has(arg)) {
       if (i + 1 >= argv.length) throw new UsageError(`${arg} needs a value`);
       opts[arg.slice(2)] = argv[++i];
@@ -90,6 +95,7 @@ async function main() {
     return 0;
   }
   if (!opts.root || !opts.query) throw new UsageError("--root and --query are required");
+  const started = Date.now();
   const result = buildCandidates({
     root: opts.root,
     query: opts.query,
@@ -99,27 +105,38 @@ async function main() {
     maxFileBytes: toInt(opts["max-file-bytes"], "--max-file-bytes"),
     single: opts.single === true,
   });
-  const due = result.disabled ? null : dueJevCall(result, { fallback: opts.fallback === true });
-  if (due) result.jev_result = opts.noJev ? { tool: due.tool, status: "skipped", reason: "--no-jev" } : await runJev(due, result.map);
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  const fallback = opts.fallback === true;
+  const due = result.disabled ? null : dueJevCall(result, { fallback });
+  if (due) result.jev_result = opts.noJev ? { tool: due.tool, status: "skipped", reason: "--no-jev", calls: 0 } : await runJev(due, result.map);
+  if (opts.full) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return 0;
+  }
+  const r = result.jev_result;
+  const jev = r ? { tool: r.tool, status: r.status, calls: r.calls ?? 0, reason: r.reason, result: r.status === "ok" ? r : null } : null;
+  process.stdout.write(compactReport(result, jev, { fallback, elapsedMs: Date.now() - started }));
   return 0;
 }
 
 /**
  * Run the due Jev call through the MCP client. An unusable ranking (per
- * mapJevResult) is retried once with identical input in the same retry loop
- * as transport failures; never an invented ranking.
+ * mapJevResult: unknown or repeated ids, scores outside [0, 1], a partial
+ * answer) is retried once with identical input in the same retry loop as
+ * transport failures; never an invented ranking. A final invalid answer is
+ * status "invalid_response", any other failure "unavailable".
  */
 async function runJev(due, map) {
   const jev = await openJev(process.env);
-  if (!jev.ok) return { tool: due.tool, status: "unavailable", reason: String(jev.reason).slice(0, 300), message: "Jev unavailable; ranking not evaluated" };
+  if (!jev.ok) return { tool: due.tool, status: "unavailable", reason: String(jev.reason).slice(0, 300), calls: 0, message: "Jev unavailable; ranking not evaluated" };
+  const options = { sent: due.payload.candidates.map((c) => c.id), topK: due.payload.top_k };
   try {
-    const reply = await callWithRetry(jev, due.tool, due.payload, { invalid: (result) => mapJevResult(due.tool, result, map).status !== "ok" });
+    const reply = await callWithRetry(jev, due.tool, due.payload, { invalid: (result) => mapJevResult(due.tool, result, map, options).status !== "ok" });
     if (!reply.ok) {
       const retry = reply.retry ? ` (retry ${reply.retry})` : "";
-      return { tool: due.tool, status: "unavailable", reason: `${reply.kind}: ${String(reply.message).slice(0, 240)}${retry}`, calls: reply.attempts, message: "Jev unavailable; ranking not evaluated" };
+      const status = reply.kind === "invalid_response" ? "invalid_response" : "unavailable";
+      return { tool: due.tool, status, reason: `${reply.kind}: ${String(reply.message).slice(0, 240)}${retry}`, calls: reply.attempts, message: "Jev unavailable; ranking not evaluated" };
     }
-    return { ...mapJevResult(due.tool, reply.result, map), calls: reply.attempts };
+    return { ...mapJevResult(due.tool, reply.result, map, options), calls: reply.attempts };
   } finally {
     await jev.close();
   }

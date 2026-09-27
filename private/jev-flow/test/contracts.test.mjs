@@ -282,15 +282,28 @@ describe("documented payloads fit the tool contracts", () => {
     }
   });
 
-  it("the locator gets the ranking from the helper and does not skip or redo it (F4, R3)", () => {
+  it("the locator gets the ranking from the helper and cannot compose Jev calls (F4, R3, R7)", () => {
     const agent = readFileSync(join(REPO_ROOT, "agents", "jev-locator.md"), "utf8");
     assert.match(agent, /The helper applies the ranking rule itself/);
-    assert.match(agent, /Do not call `jev_rerank` or `jev_find` yourself, and do not re-rank with grep or find/);
-    assert.match(agent, /with `jev_payload` exactly as returned \(only its keys\)/);
+    assert.match(agent, /^tools: Read, Grep, Glob, Bash$/m, "no Jev tool in the frontmatter");
+    assert.doesNotMatch(agent, /mcp__/);
+    assert.match(agent, /\*\*Forbidden:\*\* composing, copying or editing arguments for `jev_rerank` or `jev_find`/);
+    assert.match(agent, /reading or opening any file where the CLI persisted the helper's output/);
+    assert.match(agent, /not semantically ranked/);
+    assert.doesNotMatch(agent, /jev_payload|jev_result/);
     assert.match(agent, /--fallback/);
-    assert.match(agent, /^tools: .*mcp__plugin_jev_jev__jev_rerank/m);
-    assert.match(agent, /^tools: .*mcp__plugin_jev_jev__jev_find/m);
     assert.match(agent, /"jev_used"/);
+  });
+
+  it("the parent keeps working while the locator runs, and --full stays out of agent and skill texts (R7)", () => {
+    for (const rel of ["skills/jev-flow/SKILL.md", "skills/jev-flow/reference/workflow.md", "commands/jev-locate.md"]) {
+      const text = readFileSync(join(REPO_ROOT, rel), "utf8");
+      assert.match(text, /background/, rel);
+      assert.match(text, /independent work/, rel);
+    }
+    for (const rel of ["skills/jev-flow/SKILL.md", "skills/jev-flow/reference/workflow.md", "commands/jev-locate.md", "agents/jev-locator.md"]) {
+      assert.doesNotMatch(readFileSync(join(REPO_ROOT, rel), "utf8"), /--full\b/, rel);
+    }
   });
 
   it("the locator runs on a cheaper model than the parent by default (F2)", () => {

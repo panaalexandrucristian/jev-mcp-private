@@ -601,3 +601,55 @@ Decision (jev_decide 1.00): make the locator's rerank truly mechanical (the help
 itself through the stdio client and returns only compact ranked hits; the locator never writes rerank
 arguments), and let the parent keep doing independent work while the locator runs. Then re-run A and
 B twice each, with the backend-data detail restored so the diagnosis is unambiguous.
+
+### Resolution of R7 (plugin 0.4.0)
+
+- **Helper output.** `scripts/jev-candidates.mjs` still runs `jev_rerank` (`jev_find` with `--single`)
+  itself through `private/jev-flow/mcp-client.mjs` with `top_k: 5` when the F4 rule calls for it, but
+  its stdout is now one compact JSON object of at most 4,096 bytes (newline included), for every
+  locate branch (rerank, find, plain, exact match, none, disabled): up to 5 hits
+  `{path, start_line, end_line, sha256, score, reason}` plus `ordering`, `jev`, `jev_calls`,
+  `coverage_complete` and `omitted` (`compactReport` in `private/jev-flow/candidates.mjs`). The
+  candidates, the map and the payload never reach stdout, so there is nothing large to persist or
+  copy. `reason` is a deterministic label (window kind and the query terms matched lexically, at most
+  80 characters). Over the cap, reasons are shortened, then hits dropped from the tail; paths and
+  hashes are never cut. `--full` prints the old diagnostic object for tests only.
+- **Validation and fallback.** A Jev answer with an unknown or repeated id, a missing score or one
+  outside [0, 1], or fewer than min(`top_k`, candidates) entries is invalid as a whole: one retry with
+  identical input, then the lexical order. A `jev_find` answer is also invalid when `exists` is not a
+  number in [0, 1] or `exists_verdict` is not the upstream verdict for it (`answered` / `partial` /
+  `absent`, `existsVerdict` in `src/lib.ts`); only validated values reach the report, whose every
+  field is bounded, so the line stays within 4,096 bytes even when every hit and the optional
+  metadata have to be dropped. A valid answer is sorted by score. Without credentials,
+  with `--no-jev`, or when Jev is unavailable, the helper returns the top 5 candidates by lexical
+  score with `ordering: "lexical"` and a note that they are not semantically ranked. The F4 routing
+  and the exit codes are unchanged.
+- **Locator.** `agents/jev-locator.md` grants only `Read, Grep, Glob, Bash`: the Jev tools are gone,
+  and the "unavailable → call it yourself" path with them. It explicitly forbids composing or copying
+  `jev_rerank`/`jev_find` arguments and reading a file where the CLI persisted the helper's output;
+  the locator runs the helper, confirms only the top ranges by reading and reports.
+- **Parent.** The `jev-flow` skill, `workflow.md`, `/jev:jev-locate` and the route directive (Claude
+  Code and OpenCode) tell the parent to launch the locator in the background when the CLI allows it
+  and to keep doing independent work without repeating the locator's search. OpenCode V2 has no
+  verified way to deny tools to an agent or to background a subagent call, so there both stay
+  instructions, stated in one setup diagnostic.
+
+Real smoke run (`OPENROUTER_API_KEY` from the environment, real `jev_rerank`, stdout captured in
+memory):
+
+```text
+node scripts/jev-candidates.mjs --root /Users/apana/Dev/jev-mcp --query "Where does the workflow prevent completion when verification evidence is missing or stale?"
+exit 0, wall 1,650 ms, stdout 1,299 bytes, stderr 0 bytes
+{"v":1,"mode":"rerank","ordering":"semantic","jev":"ok","jev_calls":1,"route":"candidates_in_several_files","coverage_complete":false,"coverage_reasons":["candidate_limit_reached","long_lines_truncated"],"elapsed_ms":1618,"hits":[{"path":"skills/jev-flow/SKILL.md","start_line":68,"end_line":71,"sha256":"96ace9b4…","score":0.9,"reason":"window; lexical terms: completion, verific, miss"}, … 4 more …],"omitted":43}
+same command with --single (real jev_find): exit 0, wall 893 ms, stdout 1,414 bytes
+{"v":1,"mode":"find","ordering":"semantic","jev":"ok","jev_calls":1,"exists_verdict":"answered","exists":0.96, … 5 hits …}
+```
+
+(Hashes shortened and hits elided above; each run printed 5 hits with full hashes.) With 48
+candidates, the helper's old stdout carried every candidate text, the map and the payload.
+`node --test private/jev-flow/test/`: 322 tests, 0 failures; `npm test`: 224 tests, 0 failures.
+
+**Limits of this verification.** The tests run offline against the fake MCP server and simulated
+OpenCode contexts. The smoke run exercised the helper and a live provider, not a live locator
+session: whether Haiku now finishes quickly, and whether the parent actually works in parallel, is
+for the separate A/B re-runs.

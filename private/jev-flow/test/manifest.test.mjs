@@ -86,8 +86,8 @@ describe("plugin manifests (F5)", () => {
     assert.equal(entry.version, plugin.version);
   });
 
-  it("the aggregated gate report (R5/R6) ships as 0.3.0 (round 3)", () => {
-    assert.equal(plugin.version, "0.3.0");
+  it("the mechanical locator rerank (R7) ships as 0.4.0 (round 4)", () => {
+    assert.equal(plugin.version, "0.4.0");
     const hooks = JSON.parse(readFileSync(join(REPO_ROOT, "hooks", "hooks.json"), "utf8")).hooks;
     assert.match(hooks.PostToolUse[0].matcher, /(^|\|)Agent\|Task(\||$)/);
     assert.equal(hooks.SubagentStop[0].matcher, "jev-locator|jev:jev-locator");

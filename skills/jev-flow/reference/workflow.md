@@ -18,21 +18,23 @@ Tool: `jev_classify`. Read `classification`, `decision`, `margin`.
 
 ### Step 1 — Isolated location
 
-When files are unknown or several results are semantically ambiguous. Skip for an exact known path or symbol. The parent delegates to `jev-locator` (`/jev:jev-locate` in Claude Code, `/jev-locate` in OpenCode). The locator runs on a cheaper model than the parent: `model: haiku` in its frontmatter, overridable with `JEV_FLOW_LOCATOR_MODEL` (§5). The child runs the helper (§4), which **applies the ranking rule itself**: when `recommend.tool` is `jev_rerank` or `jev_find`, the helper sends `jev_payload` unchanged (`top_k: 5`) through the jev MCP server on stdio and returns the answer, mapped to paths, lines and sha256, in `jev_result`, so the model cannot skip the step:
+When files are unknown or several results are semantically ambiguous. Skip for an exact known path or symbol. The parent delegates to `jev-locator` (`/jev:jev-locate` in Claude Code, `/jev-locate` in OpenCode). The locator runs on a cheaper model than the parent: `model: haiku` in its frontmatter, overridable with `JEV_FLOW_LOCATOR_MODEL` (§5). The child runs the helper (§4), which **applies the ranking rule itself**: when the rule calls for `jev_rerank` or `jev_find`, the helper sends its payload (`top_k: 5`) through the jev MCP server on stdio and prints only the compact hits (at most 5, at most 4 KB), mapped to paths, lines and sha256, so the model can neither skip the step nor copy candidates into a Jev call (R7). The locator has no Jev tool.
 
-| Helper result | `recommend.tool` | Next step |
+**The parent keeps working (R7).** Launch the locator in the background when the CLI allows it (Claude Code: `run_in_background` on the Agent/Task call; OpenCode: a background subagent call if the runtime supports one) and meanwhile do independent work: read the files already known, reproduce the problem, plan the checks. Do not search for the same question in the main thread while the locator runs; wait for its report before reading anywhere near its question.
+
+| Helper route (`route`) | Helper `mode` | Next step |
 | --- | --- | --- |
-| The query is an exact path (whole path suffix), or an identifier/qualified name found as a whole, case-sensitive token (not a substring: `cache` ≠ `cacheable`), in exactly one file | `plain` (`exact_match_in_one_file`, `confirm_by_reading: true`) | Read the match. Use it only if it answers the question; lexical uniqueness is not proof. Otherwise re-run the helper with `--fallback`: it runs `recommend.fallback`'s ranking itself. |
-| More than 3 candidates, or candidates from 2 or more files | `jev_rerank` (`more_than_3_candidates` / `candidates_in_several_files`) | The helper ran `jev_rerank` with `top_k: 5`; use `jev_result.ranked` in order. |
-| Same thresholds, and the question asks for one definitive location (`--single`) | `jev_find` | The helper ran `jev_find` with `top_k: 5`; check `jev_result.exists_verdict` before `top`. |
+| The query is an exact path (whole path suffix), or an identifier/qualified name found as a whole, case-sensitive token (not a substring: `cache` ≠ `cacheable`), in exactly one file | `exact_match` (`exact_match_in_one_file`, `confirm_by_reading: true`, `exact_path`, `fallback_tool`) | Read the match. Use it only if it answers the question; lexical uniqueness is not proof. Otherwise re-run the helper with `--fallback`: it runs the fallback ranking itself. |
+| More than 3 candidates, or candidates from 2 or more files | `rerank` (`more_than_3_candidates` / `candidates_in_several_files`) | The helper ran `jev_rerank` with `top_k: 5`; with `ordering: "semantic"` use `hits` in order. |
+| Same thresholds, and the question asks for one definitive location (`--single`) | `find` | The helper ran `jev_find` with `top_k: 5`; check `exists_verdict` before `hits`. |
 | 1–3 candidates in one file | `plain` (`few_candidates_one_file`) | Read them locally; a small set does not make the answer certain. |
-| No candidates, or Jev disabled for the repo | `none` (`no_candidates` / `jev_disabled`) | Rephrase or widen once, or read locally; never report absence from the repository. |
+| No candidates, or Jev disabled for the repo | `none` (`no_candidates`) / `disabled` (`jev_disabled`) | Rephrase or widen once, or read locally; never report absence from the repository. |
 
 ```json
 {"query":"<behavior sought>","candidates":[{"id":"c0","text":"<path:start-end + fragment>"}],"top_k":5}
 ```
 
-Tool: `jev_find` (the same shape goes to `jev_rerank`; the helper builds it as `jev_payload` and sends it itself). `absent` covers only the submitted candidates. With `jev_result.status: "unavailable"` (no credentials in the helper's environment, or two failures), the locator may send `jev_payload` once through its own `jev_rerank`/`jev_find` tool, otherwise it reads locally and says so. After `jev_result`, the locator only confirms the ranked ranges by reading; grep results that call for ranking are not hand-built into candidates: the locator runs the helper again with those terms (its second batch). The report states `jev_used` (`rerank`/`find`/`none`) and why.
+Tool: `jev_find` (the same shape goes to `jev_rerank`; the helper builds it and sends it itself; it never reaches stdout). `absent` covers only the submitted candidates. Without credentials in the helper's environment, with `--no-jev`, or after two failed or invalid answers, the helper returns the top 5 candidates by lexical score with `ordering: "lexical"` and `jev` `unavailable` / `skipped` / `invalid_response`: explicitly not semantically ranked. The locator never composes or copies `jev_rerank` / `jev_find` arguments (its frontmatter grants no Jev tool) and never reads a file where the CLI persisted the helper's output. It only confirms the top hits' ranges by reading; grep results that call for ranking are not hand-built into candidates: the locator runs the helper again with those terms (its second batch). The report states `jev_used` (`rerank`/`find`/`none`) and why.
 
 **Range-only reading (parent).** After the report, the parent reads only the returned ranges (Read `offset`/`limit`; up to 40 lines around them). The hooks remember the hits (§5) and hint on **every** read that overlaps a hit and is not contained in one range of the merged union of the hits widened by 40 lines (a read spanning the gap between two distant hits counts), and on every grep whose scope covers a hit's file: its path is the file or any ancestor directory, or no path (the repository root), and its `glob` / `type` filters keep that file; a partial overlap within the margin gets no hint, and a hit whose file sha256 changed is dropped silently. Hints only: nothing is blocked, in strict mode either.
 
@@ -106,7 +108,7 @@ No Jev call. Answer **once**, from the runner's complete aggregated report: the 
 
 | Element | Budget / rule |
 | --- | --- |
-| Location | One active locator per question; no duplicate parallel exploration in the main thread. |
+| Location | One active locator per question, in the background when the CLI allows it; the parent continues independent work meanwhile but never duplicates the locator's search in the main thread. Helper stdout: at most 5 hits and 4,096 bytes. |
 | Candidates | At most 48 fragments per call, each at most 1,000 characters including source identification. |
 | Results to the parent | At most 5 locations and 4,000 characters, with path, hash, range and short reason. |
 | Search extension | At most two semantically different batches per question; the second only with new scope or evidence. |
@@ -152,21 +154,24 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-candidates.mjs" --root "<repo-root>" --q
 
 Flags: `--root`, `--query` (required); `--limit` 1–48 (default 48); `--chunk-chars` 200–1000 (default 1000); `--window-lines` 1–60 (default 60); `--max-file-bytes` (default 1 MiB). Exit codes: `0` success, `2` usage error or a root outside a git work tree, `3` sanitize input too large, `1` unexpected error. Errors are JSON on stderr.
 
-Output (one JSON line on stdout):
+Output (one JSON line on stdout, at most 4,096 bytes including the newline; R7):
 
 ```json
 {
-  "query": "<query>", "root": "<git top level>", "scope": ".", "terms": ["<stemmed terms>"],
-  "limits": {"limit": 48, "chunk_chars": 1000, "window_lines": 60, "max_file_bytes": 1048576},
-  "disabled": false,
-  "candidates": [{"id": "c0", "text": "src/example.ts:20-48\n<redacted fragment>"}],
-  "map": {"c0": {"path": "src/example.ts", "sha256": "<full-file sha256>", "start_line": 20, "end_line": 48, "kind": "window"}},
-  "coverage": {"complete": false, "reasons": ["candidate_limit_reached"], "files_listed": 40, "files_considered": 40, "files_matched": 16, "windows_total": 40, "skipped": {"ignored": 0, "excluded": 0, "denylisted": 0, "symlink": 0, "outside_root": 0, "not_regular": 0, "missing": 0, "binary": 1, "too_large": 0, "invalid_utf8": 0, "unreadable": 0}, "denylist_unsupported": [], "note": "..."},
-  "omitted": [{"path": "<path>", "start_line": 1, "end_line": 20, "reason": "suspicious_content"}]
+  "v": 1, "mode": "rerank", "ordering": "semantic", "jev": "ok", "jev_calls": 1, "route": "candidates_in_several_files",
+  "coverage_complete": false, "coverage_reasons": ["candidate_limit_reached"], "elapsed_ms": 5200,
+  "hits": [{"path": "src/example.ts", "start_line": 20, "end_line": 48, "sha256": "<full-file sha256>", "score": 0.91, "reason": "window; lexical terms: flag, parse"}],
+  "omitted": 43
 }
 ```
 
-Only `candidates` (`{id, text}`) goes to `jev_find` / `jev_rerank`. The `map` stays local. The output also carries `recommend` (`{tool: "plain"|"jev_rerank"|"jev_find"|"none", reason, …}`; for `exact_match_in_one_file` also `path`, `confirm_by_reading: true` and `fallback`, the threshold-rule recommendation) and `jev_payload` (`{query, candidates, top_k: 5}` when a Jev tool is recommended or is the fallback, else `null`); the rule is in §1, step 1 (`recommendNext` in `private/jev-flow/candidates.mjs`). `--single` marks a question that asks for one definitive location. The query in the payload is cut to `jev_rerank`'s 2,000-character cap. When the rule calls for `jev_rerank` / `jev_find`, the helper sends `jev_payload` itself through the MCP client (§4c, step 8: same server, credentials and retry) and adds `jev_result`: `{tool, status: "ok", ranked: [{rank, id, relevance, path, start_line, end_line, sha256}]}` (rerank) or `{tool, status: "ok", exists, exists_verdict, top: [{id, probability, path, …}]}` (find), candidate texts dropped; `{status: "unavailable", reason}` without credentials or after a second failure (no ranking is invented); `{status: "skipped"}` with `--no-jev`. `--fallback` runs `recommend.fallback`'s ranking after an exact match that reading did not confirm.
+- `mode`: `rerank` / `find` (the rule called for Jev), `plain` (1–3 candidates in one file), `exact_match` (adds `confirm_by_reading: true`, `exact_path`, `fallback_tool`), `none` (no candidates) or `disabled` (denylist `*`). `route` is the rule's reason (`fallback:<reason>` after `--fallback`).
+- `ordering`: `semantic` only for a valid Jev answer, sorted by score (relevance or probability, descending; ties keep the server's order). Otherwise `lexical`: the top candidates by the helper's lexical score, with `note: "lexical order, not semantically ranked"`.
+- `jev`: `ok`, `unavailable` (no credentials or transport/tool failure; `jev_reason` says why), `invalid_response` (two invalid answers), `skipped` (`--no-jev`), `not_needed` or `disabled`. `jev_calls` counts the tools/call requests actually sent. A `find` answer adds `exists_verdict` (`answered` / `partial` / `absent`) and `exists`, and a note that `absent` covers only the candidates sent.
+- An answer is invalid as a whole, retried once with identical input and then replaced by the lexical order, when an id is unknown or repeated, a score is missing or outside [0, 1], or it is partial (not min(`top_k`, candidates sent) entries); a `jev_find` answer also when `exists` is not a number in [0, 1] or `exists_verdict` is not the upstream verdict for it (`existsVerdict` in `src/lib.ts`).
+- `reason` is a deterministic English label of at most 80 characters: the window kind (`window`/`outline`) and the query terms (stemmed) it matched lexically; never a semantic explanation.
+- `omitted` counts candidates not listed. Over 4,096 bytes, reasons are shortened (`reasons_shortened: true`), then hits are dropped from the tail (`size_capped: true`), then optional metadata (`metadata_dropped: true`); paths and hashes are never cut, and every other field is an enum, an integer or a short bounded string.
+- The candidates (`{id, text}`), the local `map` (id → path, sha256, lines, kind, lexical score, matched terms) and the payload `{query, candidates, top_k: 5}` stay inside the helper. Only `candidates` go to `jev_find` / `jev_rerank`; the query is cut to `jev_rerank`'s 2,000-character cap. The rule is in §1, step 1 (`recommendNext` in `private/jev-flow/candidates.mjs`); the call goes through the MCP client (§4c, step 8: same server, credentials and retry); `compactReport` builds the output. `--single` marks a question that asks for one definitive location; `--fallback` runs the fallback ranking after an exact match that reading did not confirm; `--no-jev` never calls Jev.
 
 Decisions (delegated to the executor, ratified in review):
 

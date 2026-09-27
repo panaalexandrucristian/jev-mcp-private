@@ -45,7 +45,7 @@ const EXPLORATION_TOOLS = new Set(["read", "grep", "glob", "list", "ls"]);
 /** Route directive sent at the start of every request (see hook.mjs HINTS.directive). */
 export const DIRECTIVE =
   "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
-  `When the files are not known, delegate broad discovery to the ${NAMES_LOCATOR} subagent (/jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. ` +
+  `When the files are not known, delegate broad discovery to the ${NAMES_LOCATOR} subagent (/jev-locate <question>) instead of searching in this thread, in the background when possible, and keep doing independent work without repeating its search; then read only the ranges it returns. An exact known path or symbol is used directly. ` +
   "After any code change, finish with /jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself on every part and returns one aggregated report; answer once from it, without re-running for a more favourable verdict.";
 
 /** A shell command that runs the gate runner for a gate (not a hunk listing). */
@@ -125,10 +125,19 @@ function has(ctx, path) {
   return typeof value === "function";
 }
 
+/**
+ * R7: in Claude Code the locator's frontmatter grants no Jev tool and the parent can run it in
+ * the background; OpenCode V2 exposes no verified way to deny tools to an agent or to background
+ * a subagent call, so both stay instructions (the shared agent and command texts).
+ */
+export const LOCATOR_INSTRUCTION_ONLY =
+  "jev-locator: denying jev_rerank/jev_find and launching it in the background are instructions only in OpenCode (no verified V2 agent-tool or background API)";
+
 /** Limitations of this adapter that tests cannot lift; also returned in the setup report. */
 export const LIMITATIONS = Object.freeze([
   "OpenCode V2 runtime behavior (registration, hooks, session.prompt, throw-to-block) is not verified on 2.0.12.",
   "Locator permissions are not set: V2 permission action names are unverified.",
+  LOCATOR_INSTRUCTION_ONLY,
   "Strict /jev-done only instructs the agent with the gate status; nothing technically blocks a completion message in OpenCode.",
   "The jev-locator model is applied through the V2 Agent.Info.model field (Model.Ref); that the runtime honours it on 2.0.12 is not verified.",
   "Gate-runner results are recognised from bash tool calls whose command runs scripts/jev-gate-run.mjs; the runner's receipt (of the whole batch) and session metadata (key, baseline, request number) live in the jev-flow cache, not in memory. The aggregated report reaches the agent as that bash call's output; the adapter does not re-evaluate it.",
@@ -678,6 +687,7 @@ export async function setupFlow(ctx, options = {}) {
   if (report.degraded.length) notes.push(`degraded: ${report.degraded.map((d) => `${d.capability} (${d.reason})`).join("; ")}`);
   if (report.collisions.length) notes.push(`existing entries preserved: ${report.collisions.join(", ")}`);
   if (locatorNote) notes.push(locatorNote);
+  if (report.registered.includes(`agent:${NAMES.agent}`)) notes.push(LOCATOR_INSTRUCTION_ONLY);
   if (notes.length) diagnose(notes.join(" | "));
   return report;
 }

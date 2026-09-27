@@ -79,15 +79,44 @@ function gateResult(args) {
   return base;
 }
 
+// FAKE_MCP_RANKING=duplicate|out_of_range|missing_score|partial|unsorted shapes
+// every jev_rerank / jev_find answer (R7): a repeated id, a score of 1.5, no
+// score, one entry fewer than top_k, or entries in ascending score order.
+function shapeRanking(list, scoreKey) {
+  const how = process.env.FAKE_MCP_RANKING;
+  if (!how || list.length === 0) return list;
+  if (how === "duplicate" && list.length > 1) return [list[0], { ...list[1], id: list[0].id }, ...list.slice(2)];
+  if (how === "out_of_range") return [{ ...list[0], [scoreKey]: 1.5 }, ...list.slice(1)];
+  if (how === "missing_score") return [(({ [scoreKey]: _, ...rest }) => rest)(list[0]), ...list.slice(1)];
+  if (how === "partial") return list.slice(0, -1);
+  if (how === "unsorted") return [...list].reverse();
+  return list;
+}
+
 function rerankResult(args) {
   const cands = Array.isArray(args?.candidates) ? args.candidates : [];
-  const ranked = [...cands].reverse().slice(0, args?.top_k ?? cands.length).map((c, i) => ({ rank: i + 1, id: c.id, relevance: Number((0.9 - i * 0.1).toFixed(4)), text: c.text }));
+  const ranked = shapeRanking([...cands].reverse().slice(0, args?.top_k ?? cands.length).map((c, i) => ({ rank: i + 1, id: c.id, relevance: Number((0.9 - i * 0.1).toFixed(4)), text: c.text })), "relevance");
   return { tool: "jev_rerank", model: "fake", provider: "fake", query: args?.query, summary: { candidates: cands.length, returned: ranked.length }, ranked, usage: {} };
+}
+
+// FAKE_MCP_FIND_META=missing|wrong_type|out_of_range|oversized|inconsistent shapes
+// jev_find's exists/exists_verdict (R7): both absent, exists as a string, exists
+// 1.5, a 6,000-character verdict, or "absent" with exists 0.97. Valid answers
+// carry the upstream verdict (answered/partial/absent, src/lib.ts existsVerdict).
+function findMeta() {
+  switch (process.env.FAKE_MCP_FIND_META) {
+    case "missing": return {};
+    case "wrong_type": return { exists: "0.97", exists_verdict: "answered" };
+    case "out_of_range": return { exists: 1.5, exists_verdict: "answered" };
+    case "oversized": return { exists: 0.97, exists_verdict: "answered".repeat(750) };
+    case "inconsistent": return { exists: 0.97, exists_verdict: "absent" };
+    default: return { exists: 0.97, exists_verdict: "answered" };
+  }
 }
 
 function findResult(args) {
   const cands = Array.isArray(args?.candidates) ? args.candidates : [];
-  return { tool: "jev_find", model: "fake", provider: "fake", query: args?.query, exists: 0.97, exists_verdict: "present", top: cands.slice(0, args?.top_k ?? 5).map((c, i) => ({ id: c.id, probability: Number((0.8 / (i + 1)).toFixed(4)), text: c.text })), usage: {} };
+  return { tool: "jev_find", model: "fake", provider: "fake", query: args?.query, ...findMeta(), top: shapeRanking(cands.slice(0, args?.top_k ?? 5).map((c, i) => ({ id: c.id, probability: Number((0.8 / (i + 1)).toFixed(4)), text: c.text })), "probability"), usage: {} };
 }
 
 function handle(msg) {
@@ -113,7 +142,7 @@ function handle(msg) {
     if (malformed === "always" || (malformed === "first" && counter("malformed") === 1)) {
       const bad = name === "jev_gate"
         ? { tool: "jev_gate", action: "auto", reason_codes: ["accepted"], truncated: false }
-        : { tool: name, ranked: [{ rank: 1, id: "no-such-id", relevance: 0.9 }], top: [{ id: "no-such-id", probability: 0.9 }], exists_verdict: "present" };
+        : { tool: name, ranked: [{ rank: 1, id: "no-such-id", relevance: 0.9 }], top: [{ id: "no-such-id", probability: 0.9 }], exists: 0.97, exists_verdict: "answered" };
       return send({ jsonrpc: "2.0", id: msg.id, result: content(bad) });
     }
     if (mode === "crash") process.exit(3);

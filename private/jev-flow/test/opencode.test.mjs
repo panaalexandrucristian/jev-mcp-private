@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import plugin from "../../../opencode-plugin.js";
 import { formatBatchLabel, prepareGateBatch } from "../gate-batch.mjs";
-import { DIRECTIVE, JevFlowPolicyError, locatorModelRef, setupFlow } from "../opencode.mjs";
+import { DIRECTIVE, JevFlowPolicyError, LOCATOR_INSTRUCTION_ONLY, locatorModelRef, setupFlow } from "../opencode.mjs";
 import { parseDenylist } from "../paths.mjs";
 import { computeSnapshot } from "../state.mjs";
 import { acceptedGate, makeRepo, sandboxEnv, writeFiles } from "./helpers.mjs";
@@ -61,12 +61,13 @@ function captureLog() {
 }
 
 describe("setupFlow with a full V2-shaped context", () => {
-  it("registers the skill, agent, commands and hooks; the only diagnostic is the locator-model note", async () => {
+  it("registers the skill, agent, commands and hooks; one diagnostic line: the locator-model note and the instruction-only locator limits (R7)", async () => {
     const repo = makeRepo({ "a.ts": "a\n" });
     const { ctx, editors, hooks } = fakeContext({ directory: repo });
     const { lines, log } = captureLog();
     const report = await setupFlow(ctx, { log, env: sandboxEnv() });
-    assert.deepEqual(lines, ["[jev-flow] jev-locator inherits the parent model (set JEV_FLOW_LOCATOR_MODEL=provider/model for a cheaper one)"]);
+    assert.deepEqual(lines, [`[jev-flow] jev-locator inherits the parent model (set JEV_FLOW_LOCATOR_MODEL=provider/model for a cheaper one) | ${LOCATOR_INSTRUCTION_ONLY}`]);
+    assert.ok(report.limitations.includes(LOCATOR_INSTRUCTION_ONLY));
     assert.deepEqual(report.degraded, []);
     const skill = editors.skill.get("jev-flow");
     assert.equal(skill.name, "jev-flow");
@@ -76,6 +77,10 @@ describe("setupFlow with a full V2-shaped context", () => {
     assert.equal(agent.mode, "subagent");
     assert.match(agent.system, /read-only code locator/);
     assert.equal(agent.permissions, undefined, "permissions are deliberately not set");
+    assert.equal(agent.tools, undefined, "no unverified tool-denial API is used (R7)");
+    assert.equal(agent.background, undefined);
+    assert.match(agent.system, /you have no Jev tool; only the helper calls Jev/);
+    assert.doesNotMatch(agent.system, /--full/);
     assert.deepEqual([...editors.command.entries.keys()].sort(), ["jev-done", "jev-locate"]);
     assert.deepEqual(Object.keys(hooks.tool).sort(), ["execute.after", "execute.before"]);
     assert.deepEqual(Object.keys(hooks.session).sort(), ["context", "prompt"]);
@@ -453,7 +458,7 @@ describe("JEV_FLOW=off and the locator model in OpenCode (F1, F2)", () => {
     const report = await setupFlow(set.ctx, { log: logSet.log, env: sandboxEnv({ JEV_FLOW_LOCATOR_MODEL: "anthropic/claude-haiku-4-5" }) });
     assert.deepEqual(set.editors.agent.get("jev-locator").model, { providerID: "anthropic", id: "claude-haiku-4-5" });
     assert.equal(report.locator_model, "anthropic/claude-haiku-4-5");
-    assert.deepEqual(logSet.lines, []);
+    assert.deepEqual(logSet.lines, [`[jev-flow] ${LOCATOR_INSTRUCTION_ONLY}`], "only the R7 instruction-only note");
 
     const invalid = fakeContext({ directory: repo });
     const logBad = captureLog();

@@ -38,7 +38,7 @@ import {
 export const HINTS = Object.freeze({
   directive: () =>
     "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
-    "When the files are not known, delegate broad discovery to the jev-locator subagent (/jev:jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. " +
+    "When the files are not known, delegate broad discovery to the jev-locator subagent (/jev:jev-locate <question>) instead of searching in this thread, in the background when possible, and keep doing independent work without repeating its search; then read only the ranges it returns. An exact known path or symbol is used directly. " +
     "After any code change, finish with /jev:jev-done: the gate runner (scripts/jev-gate-run.mjs) runs the real checks and jev_gate itself before you report completion.",
   explore: (count) =>
     `jev-flow: ${count} exploration calls in this request. Stop broad exploration in this thread: delegate the open location question to the jev-locator subagent (/jev:jev-locate <question>) and read only the ranges it returns.`,

@@ -100,31 +100,168 @@ export function dueJevCall(result, { fallback = false } = {}) {
 }
 
 /**
- * The helper's compact view of a jev_rerank / jev_find result: ids mapped back
- * to path, lines and sha256 through the local map, candidate texts dropped.
- * An invalid or unusable result is {status: "invalid_response"}; ranking is
- * never invented.
+ * jev_find's existence verdict as upstream derives it (`existsVerdict` in
+ * src/lib.ts, default thresholds found 0.7 / absent 0.35, as src/index.ts
+ * calls it): the only values a valid answer can carry.
  */
-export function mapJevResult(tool, result, map) {
-  const locate = (id) => {
-    const m = map?.[id];
-    return m ? { path: m.path, start_line: m.start_line, end_line: m.end_line, sha256: m.sha256 } : null;
-  };
-  if (!result || result.tool !== tool || result.status === "invalid_response") return { tool, status: "invalid_response" };
-  if (tool === "jev_rerank") {
-    if (!Array.isArray(result.ranked)) return { tool, status: "invalid_response" };
-    const ranked = result.ranked.map((r) => ({ rank: r.rank, id: r.id, relevance: r.relevance, ...locate(r.id) })).filter((r) => r.path);
-    return ranked.length ? { tool, status: "ok", ranked } : { tool, status: "invalid_response" };
+export const EXISTS_VERDICTS = Object.freeze(["answered", "partial", "absent"]);
+export function expectedExistsVerdict(exists) {
+  if (exists >= 0.7) return "answered";
+  return exists < 0.35 ? "absent" : "partial";
+}
+
+const isUnitScore = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+
+/**
+ * The helper's view of a jev_rerank / jev_find result (R7): ids mapped back to
+ * path, lines and sha256 through the local map, candidate texts dropped,
+ * entries sorted by score (descending; ties keep the server's order). The
+ * whole result is {status: "invalid_response"} when any entry has an id that
+ * was not sent or repeats, a score that is missing or outside [0, 1], or when
+ * it is partial (not min(top_k, candidates sent) entries); for jev_find also
+ * when `exists` is not a finite number in [0, 1] or `exists_verdict` is not
+ * the upstream verdict for that `exists`. With `sent` unset,
+ * the ids of `map` are the candidates sent. Ranking is never invented.
+ */
+export function mapJevResult(tool, result, map, { sent = null, topK = RANK_RULE.topK } = {}) {
+  const invalid = { tool, status: "invalid_response" };
+  const ids = new Set(sent ?? Object.keys(map ?? {}));
+  const listKey = tool === "jev_rerank" ? "ranked" : "top";
+  const scoreKey = tool === "jev_rerank" ? "relevance" : "probability";
+  if (!result || result.tool !== tool || result.status === "invalid_response" || !Array.isArray(result[listKey])) return invalid;
+  if (tool === "jev_find" && (!isUnitScore(result.exists) || !EXISTS_VERDICTS.includes(result.exists_verdict) || result.exists_verdict !== expectedExistsVerdict(result.exists))) return invalid;
+  const entries = result[listKey];
+  if (entries.length !== Math.min(topK, ids.size)) return invalid;
+  const seen = new Set();
+  for (const r of entries) {
+    const score = r?.[scoreKey];
+    if (typeof r?.id !== "string" || !ids.has(r.id) || !map?.[r.id] || seen.has(r.id)) return invalid;
+    if (!isUnitScore(score)) return invalid;
+    seen.add(r.id);
   }
-  if (!Array.isArray(result.top)) return { tool, status: "invalid_response" };
+  const sorted = entries.map((r, i) => ({ r, i })).sort((a, b) => b.r[scoreKey] - a.r[scoreKey] || a.i - b.i).map(({ r }) => r);
+  const locate = (id) => ({ path: map[id].path, start_line: map[id].start_line, end_line: map[id].end_line, sha256: map[id].sha256 });
+  if (tool === "jev_rerank") {
+    return { tool, status: "ok", ranked: sorted.map((r, i) => ({ rank: i + 1, id: r.id, relevance: r.relevance, ...locate(r.id) })) };
+  }
   return {
     tool,
     status: "ok",
     exists: result.exists,
     exists_verdict: result.exists_verdict,
-    top: result.top.map((r) => ({ id: r.id, probability: r.probability, ...locate(r.id) })).filter((r) => r.path),
+    top: sorted.map((r) => ({ id: r.id, probability: r.probability, ...locate(r.id) })),
     note: "'absent' covers only the candidates sent, never the whole repository",
   };
+}
+
+/** The helper's stdout cap in locate mode (R7): bytes of the JSON line, newline included. */
+export const COMPACT_MAX_BYTES = 4096;
+const MAX_HITS = RANK_RULE.topK;
+const MAX_REASON_CHARS = 80;
+
+/** Deterministic reason label: the window kind and the query terms it matched lexically. */
+export function reasonLabel(entry, maxChars = MAX_REASON_CHARS) {
+  const kind = entry?.kind === "outline" ? "outline" : "window";
+  const terms = Array.isArray(entry?.terms) ? entry.terms : [];
+  const label = terms.length ? `${kind}; lexical terms: ${terms.join(", ")}` : `${kind}; path match`;
+  if (label.length <= maxChars) return label;
+  return maxChars > kind.length + 1 ? `${label.slice(0, maxChars - 1)}…` : kind;
+}
+
+const byteLength = (text) => Buffer.byteLength(text, "utf8");
+
+/**
+ * The only stdout of the helper in locate mode (R7): one JSON object of at
+ * most COMPACT_MAX_BYTES (UTF-8, trailing newline included) with at most 5
+ * hits {path, start_line, end_line, sha256, score, reason}, the ordering
+ * (`semantic` from a valid Jev answer, otherwise `lexical`), the Jev status
+ * and call count, coverage and the count of candidates not listed. No query,
+ * candidate texts, map or payload. Over the cap, reasons are shortened first,
+ * then hits dropped from the tail (counted in `omitted`), then optional
+ * metadata dropped (`metadata_dropped`); paths and hashes are never cut.
+ * Every emitted field is bounded (enums, integers, short fixed-size strings),
+ * and the returned line is never over the cap.
+ * `jev`: null when no call was due, else {status, calls?, reason?, result?}
+ * where result is mapJevResult's ok answer.
+ */
+const JEV_STATUSES = new Set(["ok", "unavailable", "invalid_response", "skipped", "not_needed", "disabled"]);
+const ROUTE_MAX_CHARS = 80;
+const boundedRoute = (value) => String(value ?? "unknown").slice(0, ROUTE_MAX_CHARS);
+
+export function compactReport(result, jev = null, { fallback = false, elapsedMs } = {}) {
+  const rec = result?.recommend ?? {};
+  const map = result?.map ?? {};
+  const candidates = result?.candidates ?? [];
+  const report = { v: 1 };
+  let hits = [];
+  if (result?.disabled) {
+    Object.assign(report, { mode: "disabled", ordering: "lexical", jev: "disabled", jev_calls: 0, route: "jev_disabled" });
+  } else if (jev?.status === "ok" && jev.result) {
+    const find = jev.result.tool === "jev_find";
+    Object.assign(report, { mode: find ? "find" : "rerank", ordering: "semantic", jev: "ok", jev_calls: jev.calls ?? 1, route: boundedRoute(fallback ? `fallback:${rec.fallback?.reason ?? rec.reason}` : rec.reason) });
+    // Only values mapJevResult validated; never an arbitrary object or string from the server.
+    if (find) {
+      report.exists_verdict = EXISTS_VERDICTS.includes(jev.result.exists_verdict) ? jev.result.exists_verdict : null;
+      report.exists = isUnitScore(jev.result.exists) ? jev.result.exists : null;
+    }
+    const list = find ? jev.result.top : jev.result.ranked;
+    hits = list.map((r) => ({ id: r.id, score: find ? r.probability : r.relevance }));
+  } else {
+    const due = Boolean(jev);
+    const mode = due ? (jev.tool === "jev_find" ? "find" : "rerank") : rec.reason === "exact_match_in_one_file" ? "exact_match" : rec.tool === "plain" ? "plain" : "none";
+    const status = due ? (JEV_STATUSES.has(jev.status) && jev.status !== "ok" ? jev.status : "unavailable") : "not_needed";
+    Object.assign(report, { mode, ordering: "lexical", jev: status, jev_calls: due && Number.isInteger(jev.calls) ? jev.calls : 0, route: boundedRoute(fallback && due ? `fallback:${rec.fallback?.reason ?? rec.reason}` : rec.reason) });
+    if (due && jev.reason) report.jev_reason = String(jev.reason).slice(0, 200);
+    let pool = candidates;
+    if (mode === "exact_match") {
+      Object.assign(report, { confirm_by_reading: true, exact_path: rec.path, fallback_tool: ["jev_rerank", "jev_find", "plain", "none"].includes(rec.fallback?.tool) ? rec.fallback.tool : "none" });
+      pool = candidates.filter((c) => map[c.id]?.path === rec.path);
+    }
+    hits = pool.map((c) => ({ id: c.id, score: map[c.id]?.score ?? 0 }));
+  }
+  hits = hits.slice(0, MAX_HITS).filter((h) => map[h.id]);
+  const hit = (h, maxChars) => {
+    const m = map[h.id];
+    return { path: m.path, start_line: m.start_line, end_line: m.end_line, sha256: m.sha256, score: h.score, reason: reasonLabel(m, maxChars) };
+  };
+  const cov = result?.coverage ?? {};
+  report.coverage_complete = cov.complete === true;
+  const reasons = (Array.isArray(cov.reasons) ? cov.reasons : cov.reason ? [cov.reason] : []).filter((r) => typeof r === "string").slice(0, 12).map((r) => r.slice(0, 40));
+  if (reasons.length) report.coverage_reasons = reasons;
+  if (report.mode === "find" && report.ordering === "semantic") report.note = "'absent' covers only the candidates sent, never the whole repository";
+  else if (report.ordering === "lexical" && hits.length) report.note = "lexical order, not semantically ranked";
+  else if (!hits.length && report.mode === "none") report.note = "no lexical candidates: rephrase or widen once; not proof of absence";
+  if (Number.isFinite(elapsedMs)) report.elapsed_ms = Math.round(elapsedMs);
+
+  let maxChars = MAX_REASON_CHARS;
+  const render = () => `${JSON.stringify({ ...report, hits: hits.map((h) => hit(h, maxChars)), omitted: candidates.length - hits.length })}\n`;
+  let text = render();
+  // Over the cap: shorter reasons (down to the bare window kind), then fewer hits.
+  for (const shorter of [40, 0]) {
+    if (byteLength(text) <= COMPACT_MAX_BYTES) break;
+    maxChars = shorter;
+    report.reasons_shortened = true;
+    text = render();
+  }
+  while (byteLength(text) > COMPACT_MAX_BYTES && hits.length) {
+    hits = hits.slice(0, -1);
+    report.size_capped = true;
+    text = render();
+  }
+  // Then optional metadata (the rest is enums, integers and bounded strings).
+  for (const key of ["jev_reason", "note", "coverage_reasons", "elapsed_ms", "exact_path"]) {
+    if (byteLength(text) <= COMPACT_MAX_BYTES) break;
+    if (!(key in report)) continue;
+    delete report[key];
+    report.metadata_dropped = true;
+    text = render();
+  }
+  if (byteLength(text) > COMPACT_MAX_BYTES) {
+    // Unreachable with the bounds above; kept so the cap holds by construction.
+    const minimal = { v: 1, mode: report.mode, ordering: report.ordering, jev: report.jev, jev_calls: report.jev_calls, route: report.route, coverage_complete: report.coverage_complete, hits: [], omitted: candidates.length, size_capped: true, metadata_dropped: true };
+    text = `${JSON.stringify(minimal)}\n`;
+  }
+  return text;
 }
 
 const STOPWORDS = new Set([
@@ -193,6 +330,13 @@ function lineTermHits(line, terms) {
   const hits = [];
   for (const term of terms) if (stems.has(term)) hits.push(term);
   return hits;
+}
+
+/** Query terms matched lexically in lines start..end of a file (the window actually emitted), in query order. */
+function windowTerms(file, start, end, terms) {
+  const found = new Set();
+  for (const hit of file.lineHits) if (hit.line >= start && hit.line <= end) for (const t of hit.hits) found.add(t);
+  return terms.filter((t) => found.has(t));
 }
 
 function buildHeader(path, start, end, kind) {
@@ -387,7 +531,7 @@ export function buildCandidates(options) {
     // cut from redacted text and still maps to its original line numbers.
     const redactedLines = redact(lines.join("\n")).text.split("\n");
     if (redactedLines.length !== lines.length) throw new Error(`redaction changed the line count of ${rel}`);
-    scored.push({ rel, sha: sha256(buffer), lines, redactedLines, lineHits, fileScore, distinct: distinct.size });
+    scored.push({ rel, sha: sha256(buffer), lines, redactedLines, lineHits, pathHits, fileScore, distinct: distinct.size });
   }
 
   // Windows per file: cluster hit lines, center on the densest line.
@@ -415,14 +559,14 @@ export function buildCandidates(options) {
       let end = Math.min(file.lines.length, start + windowLines - 1);
       if (end < lastLine && lastLine - start < windowLines) end = lastLine;
       start = Math.max(1, Math.min(start, end - windowLines + 1));
-      const distinctTerms = new Set(cluster.flatMap((h) => h.hits)).size;
+      const clusterTerms = new Set(cluster.flatMap((h) => h.hits));
       windows.push({
         file,
         kind: "window",
         start,
         end,
         anchor: densest.line,
-        score: file.fileScore + 10 * distinctTerms + cluster.length,
+        score: file.fileScore + 10 * clusterTerms.size + cluster.length,
       });
     }
   }
@@ -479,7 +623,9 @@ export function buildCandidates(options) {
     }
     const id = `c${candidates.length}`;
     candidates.push({ id, text: built.text });
-    map[id] = { path: w.file.rel, sha256: w.file.sha, start_line: built.start, end_line: built.end, kind: w.kind };
+    // score and terms feed the compact report (lexical order and reason label); they never go to Jev.
+    const matched = w.kind === "window" ? windowTerms(w.file, built.start, built.end, terms) : w.file.pathHits;
+    map[id] = { path: w.file.rel, sha256: w.file.sha, start_line: built.start, end_line: built.end, kind: w.kind, score: w.score, terms: matched };
   }
   if (windowsTotal > candidates.length + omitted.length) incompleteReasons.add("candidate_limit_reached");
   if (omitted.length) incompleteReasons.add("windows_omitted");

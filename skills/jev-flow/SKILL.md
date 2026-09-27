@@ -18,7 +18,7 @@ Nothing obliges you to call every tool. Known files and a clear change: skip sem
 | Step | Do it when | Skip it when |
 | --- | --- | --- |
 | 0. Triage | A new request arrives. `jev_classify` only for a genuinely ambiguous route or a real batch. | The kind of task and the files are clear. The user's request always outranks a classification. |
-| 1. Locate | Files are unknown, or several results are semantically ambiguous: delegate to the `jev-locator` subagent (`/jev:jev-locate`). It runs on a cheaper model; its helper applies the ranking rule itself: more than 3 candidates or 2+ files → the helper runs `jev_rerank` with `top_k: 5` (`jev_find` for one definitive location) and returns the ranked ranges; an exact path or whole-token symbol in one file → plain read, used only if reading confirms it answers the question (otherwise the helper's `--fallback` ranking); 1–3 candidates in one file → plain reads. **After a hit, read only the returned ranges** (Read `offset`/`limit`, up to 40 lines around them); do not read the whole file or re-grep that area. | An exact path or symbol is already known; use it directly. |
+| 1. Locate | Files are unknown, or several results are semantically ambiguous: delegate to the `jev-locator` subagent (`/jev:jev-locate`), in the background when the CLI allows it (Claude Code: `run_in_background`), and keep doing independent work meanwhile (known files, repro, check plan) without searching for the same thing yourself. It runs on a cheaper model; its helper applies the ranking rule itself: more than 3 candidates or 2+ files → the helper runs `jev_rerank` with `top_k: 5` (`jev_find` for one definitive location) and prints only up to 5 compact ranked hits (at most 4 KB; lexical order, marked as not semantically ranked, when Jev is unavailable); an exact path or whole-token symbol in one file → plain read, used only if reading confirms it answers the question (otherwise the helper's `--fallback` ranking); 1–3 candidates in one file → plain reads. **After a hit, read only the returned ranges** (Read `offset`/`limit`, up to 40 lines around them); do not read the whole file or re-grep that area. | An exact path or symbol is already known; use it directly. |
 | 2. Hypotheses | Checkable claims about a cause exist: `jev_verify` with real code and repro text. `jev_noul` only to prioritize, never as proof. | Reproduction and cause are already clear. |
 | 3. Decide | 2–6 plausible mechanisms and explicit priorities that change the choice: `jev_decide` once. | Mechanical edits or a single obvious solution. |
 | 4. Implement | Edit with the native tools after reading the returned ranges and checking their `sha256`. | — No Jev call is required while editing. |
@@ -29,7 +29,7 @@ Nothing obliges you to call every tool. Known files and a clear change: skip sem
 
 ## Budgets
 
-- One locator per question; no duplicate parallel exploration in the main thread.
+- One locator per question, in the background when the CLI allows it; continue independent work while it runs, but no duplicate exploration of its question in the main thread.
 - Candidates: at most 48 fragments per call, each at most 1,000 characters including the source identification.
 - Locator report to the parent: at most 5 locations and 4,000 characters, each with path, sha256, line range and a short reason.
 - At most two semantically different candidate batches per question; the second only with a new scope or new evidence.
@@ -86,5 +86,6 @@ A PreToolUse hook denies Jev calls that violate rules 1–2 or carry a recogniza
 10. Hiding the subagent's cost: main-context reduction and total savings are different metrics.
 11. Caching by path or mtime, or reusing results after an edit: content hashes and evidence scope are required.
 12. Hooks that run models or tests on every read, or that prevent reporting a blocker.
-13. Copying diffs, logs or gate payloads through the model: tool arguments are model output tokens. The gate runner and the candidate helper build and send payloads themselves.
+13. Copying diffs, logs, candidates or gate payloads through the model: tool arguments are model output tokens. The gate runner and the candidate helper build and send payloads themselves; the locator has no Jev tool and never composes `jev_rerank`/`jev_find` arguments.
 14. Reading the whole file or re-grepping an area after the locator returned its ranges.
+15. Waiting idle for the locator, or searching its question in parallel: launch it in the background when possible and do other independent work.
