@@ -574,3 +574,30 @@ simulated OpenCode contexts; no live provider, no live Claude Code plugin sessio
 OpenCode runtime was exercised. The R6 numbers (0.59) come from the round 3 smoke test, not from a
 new measurement. Whether aggregated reports change agent behaviour (one answer, no re-runs) is not
 measured; the next A/B run should check it.
+
+## Round 4 — behaviour-only task (DSE-45624 without code identifiers), jev-flow 0.3.0
+
+| Run | Oracle | Turns | Wall | Cost | Main exploration | Subagents | Jev |
+|---|---|---|---|---|---|---|---|
+| A (no flow) | 69/69 | 28 | 141 s | $0.92 | 83 KB / 21 calls | 0 | 0 |
+| B (flow) | **67/69** | 26 | 327 s | $1.00 | 39 KB / 11 calls | 1 (Haiku) | 1 rerank + gate runner |
+
+This was the first end-to-end run of the flow: skill, locator, `jev_rerank`, `/jev:jev-done` and the
+gate runner (3.3 s).
+
+- **R7 — the locator stalls while composing the rerank call.** The locator took 199.5 s (61% of B's
+  wall time) while the parent waited. 115.9 s of that was a single model turn: after reading the
+  helper's large output (persisted to a file), Haiku wrote the `jev_rerank` arguments itself. The R3
+  "mechanical rerank" did not apply: candidates were copied through the model, the same class of
+  problem as R1.
+- **R8 — a wrong diagnosis passed the claim checks.** B fixed a different cause: it treated a missing
+  `totalRedemptions` as 0 instead of treating `NextRedemptionLimit: 0` as missing. The behaviour-only
+  prompt had dropped the backend-data detail, so both hypotheses were plausible (n=1). The gate
+  verified all 6 claims (0.89–0.99), because they described what the code does, yet it escalated
+  overall (`safe_to_apply` 0.68). The agent ended "Incomplete" and asked the user, so no false
+  approval.
+
+Decision (jev_decide 1.00): make the locator's rerank truly mechanical (the helper calls `jev_rerank`
+itself through the stdio client and returns only compact ranked hits; the locator never writes rerank
+arguments), and let the parent keep doing independent work while the locator runs. Then re-run A and
+B twice each, with the backend-data detail restored so the diagnosis is unambiguous.
