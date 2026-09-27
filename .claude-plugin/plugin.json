@@ -1,5 +1,6 @@
 {
   "name": "jev",
+  "version": "0.1.0",
   "displayName": "Jev",
   "description": "Jev judgment tools and the Jev agent skill.",
   "author": {

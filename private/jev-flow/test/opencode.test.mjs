@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import plugin from "../../../opencode-plugin.js";
-import { JevFlowPolicyError, setupFlow } from "../opencode.mjs";
+import { formatBatchLabel, prepareGateBatch } from "../gate-batch.mjs";
+import { DIRECTIVE, JevFlowPolicyError, locatorModelRef, setupFlow } from "../opencode.mjs";
+import { parseDenylist } from "../paths.mjs";
+import { computeSnapshot } from "../state.mjs";
 import { acceptedGate, makeRepo, sandboxEnv, writeFiles } from "./helpers.mjs";
 
 const FAKE_AWS = "AKIA" + "ZYXWVUTSRQPONMLK";
@@ -58,16 +61,16 @@ function captureLog() {
 }
 
 describe("setupFlow with a full V2-shaped context", () => {
-  it("registers the skill, agent, commands and hooks without diagnostics", async () => {
+  it("registers the skill, agent, commands and hooks; the only diagnostic is the locator-model note", async () => {
     const repo = makeRepo({ "a.ts": "a\n" });
     const { ctx, editors, hooks } = fakeContext({ directory: repo });
     const { lines, log } = captureLog();
     const report = await setupFlow(ctx, { log, env: sandboxEnv() });
-    assert.deepEqual(lines, []);
+    assert.deepEqual(lines, ["[jev-flow] jev-locator inherits the parent model (set JEV_FLOW_LOCATOR_MODEL=provider/model for a cheaper one)"]);
     assert.deepEqual(report.degraded, []);
     const skill = editors.skill.get("jev-flow");
     assert.equal(skill.name, "jev-flow");
-    assert.match(skill.description, /^Adaptive coding workflow/);
+    assert.match(skill.description, /^Adaptive coding workflow and default route for every non-trivial code task/);
     assert.ok(!skill.content.includes("${CLAUDE_PLUGIN_ROOT}"));
     const agent = editors.agent.get("jev-locator");
     assert.equal(agent.mode, "subagent");
@@ -294,7 +297,7 @@ describe("tool and session hooks", () => {
     assert.doesNotThrow(() => b.hooks.tool["execute.before"]({ tool: "jev:jev_verify", input: { claims: ["x"], evidence: "clean" } }));
   });
 
-  it("queues one exploration hint per request into system[], never messages", async () => {
+  it("queues the route directive at each request and exploration hints at 4, 8, 12 into system[], never messages", async () => {
     const repo = makeRepo({ "a.ts": "a\n" });
     const { ctx, hooks } = fakeContext({ directory: repo });
     await setupFlow(ctx, { log: () => {}, env: sandboxEnv() });
@@ -305,14 +308,23 @@ describe("tool and session hooks", () => {
       return input;
     };
     await hooks.session.prompt({ sessionID: "s1" });
+    const first = context();
+    assert.equal(first.system.length, 1);
+    assert.equal(first.system[0].text, DIRECTIVE, "the directive arrives without the prompt mentioning the flow");
     for (let i = 0; i < 3; i++) after({ tool: "read", sessionID: "s1", agent: "build", input: {}, status: "completed" });
     assert.equal(context().system.length, 0);
     after({ tool: "bash", sessionID: "s1", agent: "build", input: { command: "rg foo" }, status: "completed" });
     const withHint = context();
     assert.equal(withHint.system.length, 1);
-    assert.match(withHint.system[0].text, /\/jev-locate/);
+    assert.match(withHint.system[0].text, /4 exploration calls.*\/jev-locate/);
     assert.equal(withHint.messages.length, 1);
     assert.equal(context().system.length, 0, "delivered once");
+    for (let i = 0; i < 3; i++) after({ tool: "read", sessionID: "s1", agent: "build", input: {}, status: "completed" });
+    assert.equal(context().system.length, 0);
+    after({ tool: "grep", sessionID: "s1", agent: "build", input: {}, status: "completed" });
+    assert.match(context().system[0].text, /8 exploration calls/, "repeated at the next multiple");
+    await hooks.session.prompt({ sessionID: "s1" });
+    assert.equal(context().system[0].text, DIRECTIVE, "a new request resets the count and repeats the directive");
     for (let i = 0; i < 6; i++) after({ tool: "read", sessionID: "s2", agent: "jev-locator", input: {}, status: "completed" });
     const child = { sessionID: "s2", agent: "jev-locator", system: [], messages: [] };
     hooks.session.context(child);
@@ -332,6 +344,7 @@ describe("re-read hint", () => {
       hooks.session.context(input);
       return input.system;
     };
+    context();
     read();
     read();
     assert.deepEqual(context(), []);
@@ -360,7 +373,8 @@ describe("opencode-plugin.js keeps the existing jev registration", () => {
     assert.equal(jev.name, "jev");
     assert.match(jev.location, /skills\/jev\/SKILL\.md$/);
     assert.ok(editors.skill.get("jev-flow"));
-    assert.deepEqual(warnings, []);
+    assert.equal(warnings.length, 1, "only the one-time locator-model note");
+    assert.match(warnings[0], /^\[jev-flow\] jev-locator inherits the parent model/);
   });
 
   it("a context with only mcp and skill still registers jev and logs one flow diagnostic", async () => {
@@ -382,5 +396,196 @@ describe("opencode-plugin.js keeps the existing jev registration", () => {
     assert.ok(editors.skill.get("jev-flow"));
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /^\[jev-flow\] degraded:/);
+  });
+});
+
+describe("JEV_FLOW=off and the locator model in OpenCode (F1, F2)", () => {
+  it("JEV_FLOW=off sends no directive and no hints, and drops the strict note", async () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const { ctx, hooks, editors, prompts } = fakeContext({ directory: repo });
+    await setupFlow(ctx, { log: () => {}, env: sandboxEnv({ JEV_FLOW: "off", JEV_FLOW_STRICT: "1" }) });
+    await hooks.session.prompt({ sessionID: "s1" });
+    for (let i = 0; i < 8; i++) hooks.tool["execute.after"]({ tool: "read", sessionID: "s1", agent: "build", input: {}, status: "completed" });
+    const input = { sessionID: "s1", agent: "build", system: [], messages: [] };
+    hooks.session.context(input);
+    assert.deepEqual(input.system, []);
+    await editors.command.get("jev-done").execute({ sessionID: "s1", prompt: { text: "" }, delivery: "queue" });
+    assert.doesNotMatch(prompts[0].text, /Strict mode/);
+    // The data guard is not relaxed by off.
+    assert.throws(() => hooks.tool["execute.before"]({ tool: "jev:jev_verify", input: { claims: ["x"], evidence: `k=${FAKE_AWS}` } }), JevFlowPolicyError);
+  });
+
+  it("a disabled repo gets no route directive", async () => {
+    const repo = makeRepo({ ".jev-flow-denylist": "*\n" });
+    const { ctx, hooks } = fakeContext({ directory: repo });
+    await setupFlow(ctx, { log: () => {}, env: sandboxEnv() });
+    await hooks.session.prompt({ sessionID: "s1" });
+    const input = { sessionID: "s1", agent: "build", system: [], messages: [] };
+    hooks.session.context(input);
+    assert.deepEqual(input.system, []);
+  });
+
+  it("parses provider/model[#variant] into the V2 Model.Ref shape", () => {
+    assert.deepEqual(locatorModelRef("anthropic/claude-haiku-4-5"), { providerID: "anthropic", id: "claude-haiku-4-5" });
+    assert.deepEqual(locatorModelRef("openrouter/google/gemini-3.8-flash#low"), { providerID: "openrouter", id: "google/gemini-3.8-flash", variant: "low" });
+    for (const bad of ["", "haiku", "/x", "a/", "a b/c"]) assert.equal(locatorModelRef(bad), null, bad);
+  });
+
+  it("sets agent.model from JEV_FLOW_LOCATOR_MODEL, otherwise inherits and notes it once", async () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const set = fakeContext({ directory: repo });
+    const logSet = captureLog();
+    const report = await setupFlow(set.ctx, { log: logSet.log, env: sandboxEnv({ JEV_FLOW_LOCATOR_MODEL: "anthropic/claude-haiku-4-5" }) });
+    assert.deepEqual(set.editors.agent.get("jev-locator").model, { providerID: "anthropic", id: "claude-haiku-4-5" });
+    assert.equal(report.locator_model, "anthropic/claude-haiku-4-5");
+    assert.deepEqual(logSet.lines, []);
+
+    const invalid = fakeContext({ directory: repo });
+    const logBad = captureLog();
+    const bad = await setupFlow(invalid.ctx, { log: logBad.log, env: sandboxEnv({ JEV_FLOW_LOCATOR_MODEL: "haiku" }) });
+    assert.equal(invalid.editors.agent.get("jev-locator").model, undefined);
+    assert.equal(bad.locator_model, "inherit");
+    assert.equal(logBad.lines.length, 1);
+    assert.match(logBad.lines[0], /must be provider\/model in OpenCode/);
+    assert.ok(bad.limitations.some((l) => /must be provider\/model/.test(l)));
+  });
+
+  it("never replaces an existing jev-locator agent", async () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const mine = { id: "jev-locator", name: "jev-locator", model: { providerID: "me", id: "mine" } };
+    const { ctx, editors } = fakeContext({ directory: repo, agents: { "jev-locator": mine } });
+    await setupFlow(ctx, { log: () => {}, env: sandboxEnv({ JEV_FLOW_LOCATOR_MODEL: "anthropic/claude-haiku-4-5" }) });
+    assert.deepEqual(editors.agent.get("jev-locator").model, { providerID: "me", id: "mine" });
+  });
+});
+
+describe("partitioned gate batches in OpenCode (F3)", () => {
+  const body = (n) => Array.from({ length: 900 }, (_, i) => `+const line${n}_${i} = "${"x".repeat(40)}";`).join("\n");
+  const DIFF = ["a", "b"]
+    .map((f) => [`diff --git a/${f}.ts b/${f}.ts`, `--- a/${f}.ts`, `+++ b/${f}.ts`, "@@ -0,0 +1,900 @@", body(f)].join("\n"))
+    .join("\n") + "\n";
+  const TEXTS = ["a.ts adds 900 constants", "b.ts adds 900 constants"];
+
+  /** A diff larger than one call, so the helper must produce several parts. */
+  function bigBatch(repo, claimsOverride, diff = DIFF) {
+    return prepareGateBatch(
+      {
+        request: "add the constants",
+        diff,
+        claims: claimsOverride ?? [
+          { text: "a.ts adds 900 constants", evidence: ["hunk-1"] },
+          { text: "b.ts adds 900 constants", evidence: ["hunk-2"] },
+        ],
+      },
+      { denylist: parseDenylist(""), snapshot: computeSnapshot(repo).hash },
+    );
+  }
+
+  async function setup() {
+    const repo = makeRepo({ "a.ts": "v1\n" });
+    writeFiles(repo, { "a.ts": "v2\n" });
+    const fake = fakeContext({ directory: repo });
+    await setupFlow(fake.ctx, { log: () => {}, env: sandboxEnv({ JEV_FLOW_STRICT: "1" }) });
+    await fake.hooks.session.prompt({ sessionID: "s1" });
+    const done = async () => {
+      fake.prompts.length = 0;
+      await fake.editors.command.get("jev-done").execute({ sessionID: "s1", prompt: { text: "" }, delivery: "queue" });
+      return fake.prompts[0].text;
+    };
+    const gate = (id, input, result = acceptedGate({}, input.claims), status = "completed") => {
+      fake.hooks.tool["execute.before"]({ tool: "jev:jev_gate", sessionID: "s1", id, input });
+      fake.hooks.tool["execute.after"]({ tool: "jev:jev_gate", sessionID: "s1", id, input, status, result: { output: JSON.stringify(result) } });
+    };
+    return { repo, fake, done, gate };
+  }
+
+  it("accepts a batch only when every part is accepted on the same snapshot", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    assert.equal(batch.ok, true, JSON.stringify(batch.problems));
+    const n = batch.calls.length;
+    assert.ok(n >= 2);
+    s.gate("p1", batch.calls[0].input);
+    assert.match(await s.done(), /batch not complete \(batch_part_missing\)/, "only the first part");
+    batch.calls.slice(1).forEach((c, i) => s.gate(`p${i + 2}`, c.input));
+    assert.match(await s.done(), new RegExp(`all ${n} parts of a partitioned jev_gate batch are accepted`));
+  });
+
+  it("an escalated or failed part, or a changed snapshot, leaves the batch unverified", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    const last = batch.calls[batch.calls.length - 1].input;
+    batch.calls.slice(0, -1).forEach((c, i) => s.gate(`p${i + 1}`, c.input));
+    s.gate("pl", last, { tool: "jev_gate", action: "escalate" });
+    assert.match(await s.done(), /a part of the partitioned jev_gate batch was not an accepted/);
+    s.gate("plb", last, acceptedGate({}, last.claims), "error");
+    assert.match(await s.done(), /batch_part_failed/);
+    s.gate("plc", last);
+    assert.match(await s.done(), /all \d+ parts/);
+    writeFiles(s.repo, { "a.ts": "v3\n" });
+    assert.match(await s.done(), /batch_part_older_snapshot/);
+  });
+
+  it("a tampered manifest, or a later single gate that drops the batch's claims, is not accepted", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    const forged = { ...batch.calls[batch.calls.length - 1].input, claims: ["a different claim"] };
+    batch.calls.slice(0, -1).forEach((c, i) => s.gate(`p${i + 1}`, c.input));
+    s.gate("pl", forged);
+    assert.match(await s.done(), /not complete \(claim_set_mismatch, manifest_id_mismatch\)/);
+    const single = { request: "add the constants", diff: DIFF, claims: ["a.ts adds 900 constants"], evidence: "e" };
+    s.gate("g1", single);
+    assert.match(await s.done(), /does not cover every claim and the whole patch of the earlier partitioned batch/);
+    const full = { ...single, claims: [...TEXTS, "a different claim"] };
+    s.gate("g2", full);
+    assert.match(await s.done(), /an accepted jev_gate exists/, "all parts known: superset of claims on the same whole diff");
+  });
+
+  it("after only the first part of an a.ts+b.ts batch, a replacement for a.ts only with the same claims is not accepted", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    s.gate("p1", batch.calls[0].input);
+    const diffA = DIFF.slice(0, DIFF.indexOf("diff --git a/b.ts"));
+    const onlyA = bigBatch(s.repo, TEXTS.map((text) => ({ text, evidence: ["hunk-1"] })), diffA);
+    assert.equal(onlyA.ok, true, JSON.stringify(onlyA.problems));
+    onlyA.calls.forEach((c, i) => s.gate(`a${i}`, c.input));
+    assert.match(await s.done(), /does not cover every claim and the whole patch of the earlier batch it replaces/);
+    s.gate("singleA", { request: "add the constants", diff: diffA, claims: TEXTS, evidence: "e" });
+    assert.match(await s.done(), /does not cover every claim and the whole patch/);
+    s.gate("sameClaimsOtherDiff", { request: "add the constants", diff: "d", claims: TEXTS, evidence: "e" });
+    assert.match(await s.done(), /does not cover every claim and the whole patch/);
+  });
+
+  it("a complete a.ts+b.ts replacement counts only after all its parts; parts of two preparations do not combine", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    s.gate("p1", batch.calls[0].input);
+    const rebuilt = bigBatch(s.repo, [{ text: TEXTS[0], evidence: ["hunk-1"] }, { text: TEXTS[1], evidence: ["hunk-2", "file:a.ts"] }]);
+    assert.notEqual(rebuilt.batch.id, batch.batch.id, "new evidence makes a new batch");
+    rebuilt.calls.slice(1).forEach((c, i) => s.gate(`mix${i}`, c.input));
+    assert.match(await s.done(), /batch not complete \(batch_part_missing\)/, "the old batch's part 1 does not stand in for the new batch's part 1");
+    rebuilt.calls.slice(0, 1).forEach((c, i) => s.gate(`r${i}`, c.input));
+    assert.match(await s.done(), /all \d+ parts of a partitioned jev_gate batch are accepted/);
+  });
+
+  it("changed evidence in a sent part is detected from the real input", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    const last = batch.calls[batch.calls.length - 1].input;
+    batch.calls.slice(0, -1).forEach((c, i) => s.gate(`p${i}`, c.input));
+    s.gate("pl", { ...last, evidence: [...last.evidence.slice(0, -1), { id: "hunk-2#1", text: "other" }] });
+    assert.match(await s.done(), /not complete \(manifest_id_mismatch\)/);
+  });
+
+  it("an attempt outside the batch between its parts interleaves it", async () => {
+    const s = await setup();
+    const batch = bigBatch(s.repo);
+    s.gate("p1", batch.calls[0].input);
+    s.gate("x", { request: "other", diff: "d", claims: ["c"], evidence: "e" });
+    batch.calls.slice(1).forEach((c, i) => s.gate(`p${i + 2}`, c.input));
+    assert.match(await s.done(), /batch_interleaved/);
+    // The labels themselves are well-formed; only the sequence is wrong.
+    const { id, parts, slices, claims, diff, snapshot } = batch.batch;
+    assert.ok(batch.calls[0].input.request.startsWith(formatBatchLabel({ id, part: 1, of: parts, slice: 1, slices, claims, diff, snap: snapshot })));
   });
 });

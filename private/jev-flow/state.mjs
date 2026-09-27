@@ -21,11 +21,14 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { selectGateAttempts } from "./gate-batch.mjs";
 import { DENYLIST_FILE, PERMANENT_EXCLUSIONS } from "./paths.mjs";
 
 export const RETENTION_DAYS = 30;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const LIST_CAP = 20;
+// Gate attempts and pending calls hold whole batches (up to 16 parts) plus retries.
+const GATE_LIST_CAP = 64;
 const READS_CAP = 500;
 
 export function sha256(data) {
@@ -192,14 +195,15 @@ export function computeSnapshot(repoRoot) {
 
 const ALLOWED_TOP_KEYS = new Set([
   "v", "created", "updated", "boot", "baseline", "request", "reads", "pending",
-  "tests", "gates", "prior_gates", "redirected", "notified", "counters", "dirty",
+  "tests", "gates", "prior_gates", "redirected", "notified", "counters", "dirty", "parent_model",
 ]);
 // Per-call records hold correlation metadata only: ids, hashes, snapshots,
 // sequence numbers, timestamps and exit codes. Jev verdicts, actions and
 // validity are never persisted; they are re-read from the native transcript.
-const GATE_KEYS = new Set(["id", "req", "input", "before", "after", "ts", "boot", "failed", "denied"]);
+// batch/part/of come from the manifest label of a partitioned gate (hex id and integers).
+const GATE_KEYS = new Set(["id", "req", "input", "before", "after", "ts", "boot", "failed", "denied", "batch", "part", "of"]);
 const TEST_KEYS = new Set(["cmd", "req", "boot", "before", "after", "exit", "failed", "ts"]);
-const PENDING_KEYS = new Set(["kind", "before", "input", "cmd", "req", "boot", "ts"]);
+const PENDING_KEYS = new Set(["kind", "before", "input", "cmd", "req", "boot", "ts", "batch", "part", "of"]);
 
 /**
  * Validate that a value is metadata only: numbers, booleans, null, and short
@@ -235,7 +239,7 @@ export function emptyState(now = Date.now()) {
     updated: now,
     boot: 0,
     baseline: null,
-    request: { seq: 0, started: now, exploration: 0, explore_hinted: false, finish_hinted: false },
+    request: { seq: 0, started: now, exploration: 0, reread_hinted: false, finish_hinted: false },
     reads: {},
     pending: {},
     tests: [],
@@ -245,6 +249,7 @@ export function emptyState(now = Date.now()) {
     notified: [],
     counters: { jev_calls: {}, exploration_total: 0, edits: 0, tests: 0 },
     dirty: false,
+    parent_model: null,
   };
 }
 
@@ -278,11 +283,13 @@ export function saveState(dir, state, now = Date.now()) {
     const entries = Object.entries(state.reads).sort((a, b) => (b[1].last ?? 0) - (a[1].last ?? 0));
     state.reads = Object.fromEntries(entries.slice(0, READS_CAP));
   }
-  for (const key of ["tests", "gates", "redirected", "notified"]) {
+  for (const key of ["tests", "redirected", "notified"]) {
     if (state[key].length > LIST_CAP) state[key] = state[key].slice(-LIST_CAP);
   }
+  // A trimmed batch part is a missing part: the batch is then not accepted.
+  if (state.gates.length > GATE_LIST_CAP) state.gates = state.gates.slice(-GATE_LIST_CAP);
   const pendingEntries = Object.entries(state.pending);
-  if (pendingEntries.length > LIST_CAP) state.pending = Object.fromEntries(pendingEntries.slice(-LIST_CAP));
+  if (pendingEntries.length > GATE_LIST_CAP) state.pending = Object.fromEntries(pendingEntries.slice(-GATE_LIST_CAP));
   assertMetadataOnly(state);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tmp = join(dir, `.state.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
@@ -488,32 +495,25 @@ export function inputHash(input) {
 }
 
 /**
- * The only gate attempt that may count for completion: the most recent gate
- * attempt of this boot, by start time, including attempts that started and
- * never finished (pending, cancelled) or failed. It must belong to the current
- * request (taken when the call started), have known and equal snapshots
- * before and after the call, and match the current snapshot. Returns {record}
- * or {reason}. The verdict itself is not stored; the caller must re-read and
- * validate it.
+ * What may count for completion among this boot's gate attempts, including
+ * attempts that started and never finished (pending, cancelled) or failed.
+ * Unlabelled latest attempt: it must belong to the current request (taken
+ * when the call started), have known and equal snapshots before and after the
+ * call, and match the current snapshot; batch attempts of the same request on
+ * this snapshot are returned as `supersededBatch` (the caller requires the
+ * single gate to cover their claims). Labelled latest attempt: every part of
+ * its batch must satisfy the same conditions (selectGateAttempts). Returns
+ * {record, supersededBatch} | {batch} | {reason}. Verdicts are not stored;
+ * the caller must re-read and validate them.
  */
 export function gateCandidate(state, { snapshot, boot = state.boot, requestSeq = state.request?.seq }) {
-  if (!snapshot) return { reason: "snapshot_unknown" };
   const attempts = [
     ...state.gates.filter((g) => g.boot === boot).map((g) => ({ ...g, pending: false })),
-    ...Object.values(state.pending ?? {}).filter((p) => p.kind === "gate" && p.boot === boot).map((p) => ({ ...p, pending: true })),
-  ].sort((a, b) => a.ts - b.ts);
-  const latest = attempts.pop();
-  if (!latest) return { reason: "no_gate" };
-  if (latest.pending) return { reason: "latest_gate_unfinished" };
-  if (latest.denied) return { reason: "latest_gate_denied" };
-  if (latest.failed) return { reason: "latest_gate_failed" };
-  if (latest.req !== requestSeq) return { reason: "gate_from_other_request" };
-  if (!latest.before || latest.before === "unknown" || !latest.after || latest.after === "unknown") {
-    return { reason: "gate_snapshot_unknown" };
-  }
-  if (latest.before !== latest.after) return { reason: "changed_during_gate" };
-  if (latest.after !== snapshot) return { reason: "gate_on_older_snapshot" };
-  return { record: latest };
+    ...Object.entries(state.pending ?? {})
+      .filter(([, p]) => p.kind === "gate" && p.boot === boot)
+      .map(([id, p]) => ({ ...p, id, pending: true })),
+  ];
+  return selectGateAttempts(attempts, { snapshot, requestSeq });
 }
 
 /**

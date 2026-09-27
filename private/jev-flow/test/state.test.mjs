@@ -325,6 +325,36 @@ describe("metadata-only state", () => {
     assert.equal(gateCandidate(state, { snapshot: "s1" }).record.id, "g", "attempts from an earlier boot do not count");
   });
 
+  it("a labelled latest attempt selects the whole batch; parts are metadata only (F3)", () => {
+    const state = emptyState();
+    state.request.seq = 1;
+    const part = (id, n, over = {}) => ({ id, req: 1, input: "h", before: "s1", after: "s1", ts: n, boot: 0, failed: false, batch: "b".repeat(32), part: n, of: 2, ...over });
+    state.gates = [part("p1", 1), part("p2", 2)];
+    const selected = gateCandidate(state, { snapshot: "s1" });
+    assert.deepEqual(selected.batch.records.map((r) => r.id), ["p1", "p2"]);
+    state.gates = [part("p2", 2)];
+    assert.equal(gateCandidate(state, { snapshot: "s1" }).reason, "batch_part_missing");
+    state.gates = [part("p1", 1)];
+    state.pending = { p2: { kind: "gate", before: "s1", input: "h", req: 1, boot: 0, ts: 2, batch: "b".repeat(32), part: 2, of: 2 } };
+    assert.equal(gateCandidate(state, { snapshot: "s1" }).reason, "batch_part_unfinished");
+    state.pending = {};
+    // Batch fields are accepted by the metadata whitelist and survive a save.
+    const dir = tempDir();
+    state.gates = [part("p1", 1), part("p2", 2)];
+    saveState(dir, state);
+    assert.deepEqual(loadState(dir).gates.map((g) => [g.batch.length, g.part, g.of]), [[32, 1, 2], [32, 2, 2]]);
+  });
+
+  it("keeps up to 64 gate attempts, so a 16-part batch with retries is not trimmed", () => {
+    const state = emptyState();
+    state.gates = Array.from({ length: 70 }, (_, i) => ({ id: `g${i}`, req: 0, input: "h", before: "s", after: "s", ts: i, boot: 0, failed: false }));
+    const dir = tempDir();
+    saveState(dir, state);
+    const gates = loadState(dir).gates;
+    assert.equal(gates.length, 64);
+    assert.equal(gates[63].id, "g69");
+  });
+
   it("checks count only when the latest run of every command passed on this snapshot", () => {
     const t = (over) => ({ cmd: "npm", req: 1, boot: 0, before: "s1", after: "s1", exit: 0, failed: false, ts: 1, ...over });
     const state = emptyState();

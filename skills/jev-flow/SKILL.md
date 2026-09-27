@@ -1,6 +1,6 @@
 ---
 name: jev-flow
-description: "Adaptive coding workflow for repository tasks: delegate broad code discovery to jev-locator, use bounded Jev judgments only when they change the next action, run real checks after code changes, and verify completion with jev_gate. Use for debugging, implementation, refactoring, and finalizing code changes."
+description: "Adaptive coding workflow and default route for every non-trivial code task in a repository (debugging, implementation, refactoring, finishing a change): delegate broad code discovery to the jev-locator subagent instead of searching in the main thread, use bounded Jev judgments only when they change the next action, run real checks after code changes, and verify completion with /jev:jev-done (jev_gate with per-claim evidence). Load it at the start of such a task, before exploring."
 ---
 
 # Jev flow
@@ -18,13 +18,13 @@ Nothing obliges you to call every tool. Known files and a clear change: skip sem
 | Step | Do it when | Skip it when |
 | --- | --- | --- |
 | 0. Triage | A new request arrives. `jev_classify` only for a genuinely ambiguous route or a real batch. | The kind of task and the files are clear. The user's request always outranks a classification. |
-| 1. Locate | Files are unknown, or several results are semantically ambiguous: delegate to the `jev-locator` subagent (`/jev:jev-locate`). | An exact path or symbol is already known; use it directly. |
+| 1. Locate | Files are unknown, or several results are semantically ambiguous: delegate to the `jev-locator` subagent (`/jev:jev-locate`). It runs on a cheaper model and follows the helper's ranking rule: more than 3 candidates or 2+ files → `jev_rerank` with `top_k: 5` (`jev_find` for one definitive location); an exact path or whole-token symbol in one file → plain read, used only if reading confirms it answers the question (otherwise the threshold rule); 1–3 candidates in one file → plain reads. | An exact path or symbol is already known; use it directly. |
 | 2. Hypotheses | Checkable claims about a cause exist: `jev_verify` with real code and repro text. `jev_noul` only to prioritize, never as proof. | Reproduction and cause are already clear. |
 | 3. Decide | 2–6 plausible mechanisms and explicit priorities that change the choice: `jev_decide` once. | Mechanical edits or a single obvious solution. |
 | 4. Implement | Edit with the native tools after reading the returned ranges and checking their `sha256`. | — No Jev call is required while editing. |
 | 5. Real checks | Always after code changes, on the final snapshot: the repo's own test/build/typecheck/lint commands. | Never skipped after code changes. |
 | 6. Review | Risky patch, or feedback wanted before the final checks: `jev_review`. | The gate follows immediately on the same patch and evidence. |
-| 7. Gate | Always after code changes: `/jev:jev-done` runs checks, collects evidence and calls `jev_gate` once. | No code changed. |
+| 7. Gate | Always after code changes: `/jev:jev-done` runs checks, pairs every claim with its real evidence (diff hunks, code excerpts, command output) through `scripts/jev-gate-payload.mjs`, and calls `jev_gate` once per part (one part unless the patch exceeds a call's limits). | No code changed. |
 | 8. Report | After the gate or an explicit fallback. No further Jev call. | — |
 
 ## Budgets
@@ -34,7 +34,11 @@ Nothing obliges you to call every tool. Known files and a clear change: skip sem
 - Locator report to the parent: at most 5 locations and 4,000 characters, each with path, sha256, line range and a short reason.
 - At most two semantically different candidate batches per question; the second only with a new scope or new evidence.
 - `jev_decide`: one call per set of alternatives, evidence and priorities.
-- `jev_gate`: one call per final snapshot; call again only after the patch, evidence or claims change (or for the single operational retry below).
+- `jev_gate`: one call per part per final snapshot; call again only after the patch, evidence or claims change (or for the single operational retry below). A partitioned batch counts only when every part is accepted on the same snapshot.
+
+## Activation
+
+The plugin injects a short route directive at session start and on every prompt, and repeats the delegation directive at every 4 exploration calls in a request. Follow it. `JEV_FLOW=off` turns the directives, hints and Stop notices off (the data guard stays); `JEV_FLOW_STRICT=1` makes Stop redirect once per snapshot to `/jev:jev-done`. `JEV_FLOW_LOCATOR_MODEL` (`haiku`|`sonnet`|`opus`|`inherit`; `provider/model` in OpenCode) overrides the locator's model; do not pass a model yourself.
 
 ## Prepare data before every Jev call
 
@@ -62,6 +66,7 @@ A PreToolUse hook denies Jev calls that violate rules 1–2 or carry a recogniza
 - A result counts only for the snapshot it was produced on. Any later edit invalidates earlier checks and gates.
 - Changes present before you started are not your work; do not claim them.
 - If completion cannot be verified, end the report with a line starting with `Incomplete:` and say what is missing.
+- When the gate ran as a batch of parts, completion needs every part accepted on the same snapshot; the report says that verification was partitioned and that no single call evaluated the whole patch. A missing or unaccepted part means `Incomplete:`.
 - With `JEV_FLOW_STRICT=1`, the Stop hook redirects once per snapshot to `/jev:jev-done` when code changed without an accepted gate. It never blocks a question to the user, a line starting with `Incomplete:`, or the two fixed phrases above.
 
 ## Anti-patterns
@@ -74,7 +79,7 @@ A PreToolUse hook denies Jev calls that violate rules 1–2 or carry a recogniza
 6. `jev_review` and `jev_gate` back to back on the same input: the gate already contains the review.
 7. Reading `auto` the same way everywhere: for `jev_gate` it does not approve merge or deploy.
 8. Ticking the gate because a call happened: the valid result, the snapshot and the evidence matter.
-9. Test claims supported only by the request text or the `tests` field: in `jev_gate`, support belongs in `evidence`.
+9. Test or code claims supported only by the request text, the `diff` or the `tests` field, or all claims sharing one generic "patch" excerpt: in `jev_gate`, each claim's support belongs in `evidence` (its hunks, excerpts and command output).
 10. Hiding the subagent's cost: main-context reduction and total savings are different metrics.
 11. Caching by path or mtime, or reusing results after an edit: content hashes and evidence scope are required.
 12. Hooks that run models or tests on every read, or that prevent reporting a blocker.

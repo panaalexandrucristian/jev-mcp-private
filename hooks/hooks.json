@@ -1,5 +1,5 @@
 {
-  "description": "jev-flow: local metadata, exploration hints, Jev payload guard and completion checks. Local work only; no tests or model calls.",
+  "description": "jev-flow: route directive, exploration hints, jev-locator model selection, Jev payload guard and completion checks. Local work only; no tests or model calls.",
   "hooks": {
     "SessionStart": [
       {
@@ -25,7 +25,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__(plugin_jev_)?jev__jev_.*|Bash",
+        "matcher": "mcp__(plugin_jev_)?jev__jev_.*|Bash|Agent|Task",
         "hooks": [
           {
             "type": "command",

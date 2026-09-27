@@ -6,6 +6,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { coversEarlierBatches, parseBatchLabel, selectGateAttempts, verifyBatchContents } from "./gate-batch.mjs";
 import { loadDenylist } from "./paths.mjs";
 import {
   classifyShellCommand,
@@ -20,6 +21,8 @@ import { payloadCredentialKinds } from "./sanitize.mjs";
 import { computeSnapshot, gitTopLevel, inputHash, sha256 } from "./state.mjs";
 
 export const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+const NAMES_LOCATOR = "jev-locator";
 
 export const NAMES = Object.freeze({
   skill: "jev-flow",
@@ -36,6 +39,37 @@ export class JevFlowPolicyError extends Error {
 }
 
 const EXPLORATION_TOOLS = new Set(["read", "grep", "glob", "list", "ls"]);
+
+/** Route directive sent at the start of every request (see hook.mjs HINTS.directive). */
+export const DIRECTIVE =
+  "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
+  `When the files are not known, delegate broad discovery to the ${NAMES_LOCATOR} subagent (/jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. ` +
+  "After any code change, run the repository's real checks and finish with /jev-done (jev_gate with per-claim evidence) before reporting completion.";
+
+/**
+ * OpenCode model reference from JEV_FLOW_LOCATOR_MODEL ("provider/model" or
+ * "provider/model#variant"), in the V2 Model.Ref shape {providerID, id,
+ * variant?} (@opencode/schema model.ts Ref.parse). null when unset or invalid.
+ */
+export function locatorModelRef(value) {
+  const raw = String(value ?? "").trim();
+  const match = /^([^/\s#]+)\/([^\s#]+)(?:#([^\s#]+))?$/.exec(raw);
+  if (!match) return null;
+  return match[3] ? { providerID: match[1], id: match[2], variant: match[3] } : { providerID: match[1], id: match[2] };
+}
+
+/** The complete gate input and its claims, kept in this process's memory only. */
+function sentInput(toolInput) {
+  return { input: toolInput, claims: Array.isArray(toolInput?.claims) ? toolInput.claims.map(String) : null };
+}
+
+/** Batch manifest fields of a gate input, or {}. */
+function labelFields(toolInput) {
+  const label = parseBatchLabel(toolInput?.request);
+  return label ? { batch: label.id, part: label.part, of: label.of } : {};
+}
+
+const flowOff = (env) => String(env?.JEV_FLOW ?? "").trim().toLowerCase() === "off";
 const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit"]);
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 
@@ -88,6 +122,7 @@ export const LIMITATIONS = Object.freeze([
   "OpenCode V2 runtime behavior (registration, hooks, session.prompt, throw-to-block) is not verified on 2.0.12.",
   "Locator permissions are not set: V2 permission action names are unverified.",
   "Strict /jev-done only instructs the agent with the gate status; nothing technically blocks a completion message in OpenCode.",
+  "The jev-locator model is applied through the V2 Agent.Info.model field (Model.Ref); that the runtime honours it on 2.0.12 is not verified.",
 ]);
 
 function repoRelative(repoRoot, filePath) {
@@ -140,38 +175,66 @@ export async function setupFlow(ctx, options = {}) {
     return report;
   }
 
+  let locatorNote = null;
   const directory = ctx?.location?.directory ?? ctx?.location?.path ?? process.cwd();
   const repoRoot = gitTopLevel(String(directory));
   const sessions = new Map();
   const sessionState = (id) => {
     const key = String(id ?? "unknown");
     if (!sessions.has(key)) {
-      sessions.set(key, { req: 0, exploration: 0, hinted: false, finishHinted: false, pendingHint: null, reads: new Map(), gates: [], pending: new Map() });
+      sessions.set(key, { req: 0, exploration: 0, rereadHinted: false, finishHinted: false, pendingHints: [], reads: new Map(), gates: [], pending: new Map() });
     }
     return sessions.get(key);
   };
 
   /**
-   * In-memory gate status for the current request and snapshot. The latest
-   * gate attempt by start time decides, including unfinished and failed ones;
-   * its request is the one current when the call started.
+   * In-memory gate status for the current request and snapshot, through the
+   * attempt selection shared with the Claude hook (gate-batch.mjs): the latest
+   * attempt by start time decides, including unfinished and failed ones; its
+   * request is the one current when the call started. A partitioned batch
+   * counts only when every part is accepted on this snapshot and the parts
+   * form the complete batch of their manifest.
    */
+  const REASONS = {
+    no_gate: "no jev_gate in this request",
+    latest_gate_unfinished: "the last jev_gate call has not finished",
+    latest_gate_denied: "the last jev_gate call was refused by the jev-flow policy",
+    latest_gate_failed: "the last jev_gate call failed",
+    gate_from_other_request: "the last jev_gate belongs to another request",
+    gate_snapshot_unknown: "the snapshot changed or was unknown during the last jev_gate",
+    changed_during_gate: "the snapshot changed or was unknown during the last jev_gate",
+    gate_on_older_snapshot: "the code changed after the last jev_gate",
+  };
   const gateStatus = (sessionID) => {
     if (!repoRoot) return { accepted: false, reason: "no git work tree" };
     const state = sessionState(sessionID);
     const snapshot = computeSnapshot(repoRoot).hash;
     if (!snapshot) return { accepted: false, reason: "snapshot unknown" };
-    const attempts = [...state.gates, ...[...state.pending.values()].map((p) => ({ ...p, unfinished: true }))].sort((a, b) => a.ts - b.ts);
-    const latest = attempts[attempts.length - 1];
-    if (!latest) return { accepted: false, reason: "no jev_gate in this request" };
-    if (latest.unfinished) return { accepted: false, reason: "the last jev_gate call has not finished" };
-    if (latest.denied) return { accepted: false, reason: "the last jev_gate call was refused by the jev-flow policy" };
-    if (latest.failed) return { accepted: false, reason: "the last jev_gate call failed" };
-    if (latest.req !== state.req) return { accepted: false, reason: "the last jev_gate belongs to another request" };
-    if (!latest.before || latest.before !== latest.after) return { accepted: false, reason: "the snapshot changed or was unknown during the last jev_gate" };
-    if (latest.after !== snapshot) return { accepted: false, reason: "the code changed after the last jev_gate" };
-    if (!latest.accepted) return { accepted: false, reason: "the last jev_gate was not an accepted, complete result" };
-    return { accepted: true, reason: "an accepted jev_gate exists for the current snapshot and request" };
+    const attempts = [...state.gates, ...[...state.pending.values()].map((p) => ({ ...p, pending: true }))];
+    const selected = selectGateAttempts(attempts, { snapshot, requestSeq: state.req });
+    if (selected.reason) {
+      return { accepted: false, reason: REASONS[selected.reason] ?? `partitioned jev_gate batch not complete (${selected.reason})` };
+    }
+    if (selected.record) {
+      if (!selected.record.accepted) return { accepted: false, reason: "the last jev_gate was not an accepted, complete result" };
+      const later = { claims: selected.record.claims, diff: selected.record.input?.diff };
+      if (selected.supersededBatch.length && !coversEarlierBatches(later, selected.supersededBatch.map((a) => a.input ?? {}))) {
+        return { accepted: false, reason: "the last jev_gate does not cover every claim and the whole patch of the earlier partitioned batch" };
+      }
+      return { accepted: true, reason: "an accepted jev_gate exists for the current snapshot and request" };
+    }
+    const { records } = selected.batch;
+    if (records.some((r) => !r.accepted)) return { accepted: false, reason: "a part of the partitioned jev_gate batch was not an accepted, complete result" };
+    const contents = verifyBatchContents(records.map((r) => r.input ?? {}), { snapshot });
+    if (!contents.ok) return { accepted: false, reason: `the partitioned jev_gate batch is not complete (${contents.problems.join(", ")})` };
+    const later = { claims: contents.claims, diff: contents.whole };
+    if (selected.supersededBatch.length && !coversEarlierBatches(later, selected.supersededBatch.map((a) => a.input ?? {}))) {
+      return { accepted: false, reason: "the partitioned jev_gate batch does not cover every claim and the whole patch of the earlier batch it replaces" };
+    }
+    return {
+      accepted: true,
+      reason: `all ${records.length} parts of a partitioned jev_gate batch are accepted for the current snapshot and request; the patch was verified in parts, not by one global call`,
+    };
   };
 
   // ── Skill ────────────────────────────────────────────────────────────────
@@ -216,14 +279,24 @@ export async function setupFlow(ctx, options = {}) {
             report.collisions.push(`agent:${NAMES.agent}`);
             return;
           }
+          const model = locatorModelRef(env.JEV_FLOW_LOCATOR_MODEL);
           editor.update(NAMES.agent, (agent) => {
             agent.mode = "subagent";
             agent.description = assets.agent.fields.description;
             agent.system = withPluginRoot(assets.agent.body, root);
             agent.hidden = false;
+            if (model) agent.model = model;
             // Permissions are not set: V2 permission action names are not verified locally.
           });
           report.registered.push(`agent:${NAMES.agent}`);
+          report.locator_model = model ? `${model.providerID}/${model.id}${model.variant ? `#${model.variant}` : ""}` : "inherit";
+          if (!model) {
+            const set = String(env.JEV_FLOW_LOCATOR_MODEL ?? "").trim() !== "";
+            locatorNote = set
+              ? `JEV_FLOW_LOCATOR_MODEL must be provider/model in OpenCode; jev-locator inherits the parent model`
+              : "jev-locator inherits the parent model (set JEV_FLOW_LOCATOR_MODEL=provider/model for a cheaper one)";
+            report.limitations.push(locatorNote);
+          }
         }),
       );
     } catch (error) {
@@ -237,7 +310,7 @@ export async function setupFlow(ctx, options = {}) {
 
   const doneText = (invocation) => {
     let text = commandText(assets.done, invocation);
-    if (env.JEV_FLOW_STRICT === "1") {
+    if (env.JEV_FLOW_STRICT === "1" && !flowOff(env)) {
       const status = gateStatus(invocation.sessionID);
       // This is an instruction to the agent, not an enforcement point: OpenCode
       // offers no hook that can refuse a completion message.
@@ -300,8 +373,9 @@ export async function setupFlow(ctx, options = {}) {
   await registerCommands();
 
   // ── Tool hooks ───────────────────────────────────────────────────────────
+  const off = flowOff(env);
   const queueHint = (state, text) => {
-    state.pendingHint ??= text;
+    if (!off && !state.pendingHints.includes(text)) state.pendingHints.push(text);
   };
   if (has(ctx, "tool.hook")) {
     try {
@@ -316,7 +390,7 @@ export async function setupFlow(ctx, options = {}) {
             if (jev === "gate") {
               try {
                 const state = sessionState(input.sessionID);
-                state.gates.push({ req: state.req, ts: Date.now(), failed: true, denied: true, before: null, after: null, accepted: false });
+                state.gates.push({ req: state.req, ts: Date.now(), failed: true, denied: true, before: null, after: null, accepted: false, ...labelFields(input?.input), ...sentInput(input?.input) });
               } catch (error) {
                 runtimeProblem("execute.before", `execute.before bookkeeping failed: ${error?.message ?? error}`);
               }
@@ -334,7 +408,14 @@ export async function setupFlow(ctx, options = {}) {
             try {
               const state = sessionState(input.sessionID);
               const claims = Array.isArray(input.input?.claims) ? [...input.input.claims] : null;
-              state.pending.set(String(input.id), { before: computeSnapshot(repoRoot).hash, input: inputHash(input.input), claims, req: state.req, ts: Date.now() });
+              state.pending.set(String(input.id), {
+                before: computeSnapshot(repoRoot).hash,
+                input: inputHash(input.input),
+                claims,
+                req: state.req,
+                ts: Date.now(),
+                ...labelFields(input.input),
+              });
             } catch (error) {
               runtimeProblem("execute.before", `execute.before bookkeeping failed: ${error?.message ?? error}`);
             }
@@ -357,15 +438,17 @@ export async function setupFlow(ctx, options = {}) {
               if (input?.id) state.pending.delete(String(input.id));
               const sameCall = pending && pending.input === inputHash(input?.input);
               // Request and start time come from execute.before; without them the attempt cannot count.
-              const base = { req: sameCall ? pending.req : null, ts: pending?.ts ?? Date.now() };
+              const base = { req: sameCall ? pending.req : null, ts: pending?.ts ?? Date.now(), ...labelFields(input?.input) };
               if (input?.status !== "completed") {
-                state.gates.push({ ...base, failed: true, before: null, after: null, accepted: false });
+                state.gates.push({ ...base, failed: true, before: null, after: null, accepted: false, ...sentInput(input?.input) });
                 return;
               }
               const after = repoRoot ? computeSnapshot(repoRoot).hash : null;
               const claims = sameCall ? pending.claims : null;
               const accepted = validateGateResult(parseJevResult(input.result), { claims }).accepted;
-              state.gates.push({ ...base, failed: false, before: sameCall ? pending.before : null, after, accepted });
+              // Inputs stay in this process's memory only, for the batch check.
+              const sent = sameCall ? { claims, input: input.input } : {};
+              state.gates.push({ ...base, failed: false, before: sameCall ? pending.before : null, after, accepted, ...sent });
               return;
             }
             if (input?.agent === NAMES.agent) return;
@@ -394,15 +477,15 @@ export async function setupFlow(ctx, options = {}) {
                   const entry = state.reads.get(key);
                   if (hash && entry && entry.hash === hash) entry.count += 1;
                   else state.reads.set(key, { hash, count: 1 });
-                  if (!state.hinted && hash && state.reads.get(key).count - 1 >= REREAD_HINT_THRESHOLD) {
-                    state.hinted = true;
+                  if (!state.rereadHinted && hash && state.reads.get(key).count - 1 >= REREAD_HINT_THRESHOLD) {
+                    state.rereadHinted = true;
                     queueHint(state, `jev-flow: the same file range with the same content has been re-read twice in this request. Delegate the open question to jev-locator (/${NAMES.locate}) instead of re-reading.`);
                   }
                 }
               }
-              if (!state.hinted && state.exploration >= EXPLORATION_HINT_THRESHOLD) {
-                state.hinted = true;
-                queueHint(state, `jev-flow: ${state.exploration} exploration calls in this request. For broad discovery, delegate to the jev-locator subagent (/${NAMES.locate} <question>) and read only the ranges it returns.`);
+              // Repeats at every multiple of the threshold (4, 8, 12, ...).
+              if (state.exploration % EXPLORATION_HINT_THRESHOLD === 0) {
+                queueHint(state, `jev-flow: ${state.exploration} exploration calls in this request. Stop broad exploration in this thread: delegate the open location question to the jev-locator subagent (/${NAMES.locate} <question>) and read only the ranges it returns.`);
               }
             }
             if (kind === "edit" && !state.finishHinted) {
@@ -428,10 +511,11 @@ export async function setupFlow(ctx, options = {}) {
           const state = sessionState(input?.sessionID);
           state.req += 1;
           state.exploration = 0;
-          state.hinted = false;
+          state.rereadHinted = false;
           state.finishHinted = false;
-          state.pendingHint = null;
+          state.pendingHints = [];
           state.reads.clear();
+          if (repoRoot && !loadDenylist(repoRoot).disabled) queueHint(state, DIRECTIVE);
         }),
       );
       report.registered.push("hook:session.prompt");
@@ -444,9 +528,9 @@ export async function setupFlow(ctx, options = {}) {
           try {
             if (input?.agent === NAMES.agent) return;
             const state = sessionState(input?.sessionID);
-            if (!state.pendingHint || !Array.isArray(input?.system)) return;
-            input.system.push({ type: "text", text: state.pendingHint });
-            state.pendingHint = null;
+            if (state.pendingHints.length === 0 || !Array.isArray(input?.system)) return;
+            input.system.push({ type: "text", text: state.pendingHints.join("\n") });
+            state.pendingHints = [];
           } catch (error) {
             runtimeProblem("context", `context hook failed: ${error?.message ?? error}`);
           }
@@ -461,6 +545,7 @@ export async function setupFlow(ctx, options = {}) {
   const notes = [];
   if (report.degraded.length) notes.push(`degraded: ${report.degraded.map((d) => `${d.capability} (${d.reason})`).join("; ")}`);
   if (report.collisions.length) notes.push(`existing entries preserved: ${report.collisions.join(", ")}`);
+  if (locatorNote) notes.push(locatorNote);
   if (notes.length) diagnose(notes.join(" | "));
   return report;
 }

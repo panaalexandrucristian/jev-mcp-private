@@ -77,10 +77,10 @@ The private plugin also ships `jev-flow`, an adaptive coding workflow on top of 
 
 | Piece | Claude Code | OpenCode |
 | --- | --- | --- |
-| Skill | `jev-flow` (auto-selected by description) | `jev-flow` |
+| Skill | `jev-flow` (route directive injected on every prompt) | `jev-flow` (same directive through the `context` hook) |
 | Locate code in an isolated subagent | `/jev:jev-locate <question>` | `/jev-locate <question>` |
 | Real checks, `jev_gate`, final report | `/jev:jev-done [criteria]` | `/jev-done [criteria]` |
-| Read-only locator subagent | `jev-locator` | `jev-locator` |
+| Read-only locator subagent | `jev-locator` on `haiku` | `jev-locator` (inherits, or `JEV_FLOW_LOCATOR_MODEL=provider/model`) |
 | Hooks | `hooks/hooks.json` | `private/jev-flow/opencode.mjs` |
 
 Claude Code picks up `skills/`, `commands/`, `agents/` and `hooks/hooks.json` from the plugin automatically; update the plugin as above. OpenCode loads the flow from `opencode-plugin.js`; `git pull` and restart. If any OpenCode capability is missing, only that feature is disabled and one `[jev-flow]` line is logged; the `jev` MCP server and skill are registered first and keep working unchanged.
@@ -90,12 +90,26 @@ Local helpers (Node 22 and Python 3 standard library only):
 ```sh
 node scripts/jev-candidates.mjs --root . --query 'regex flag normalization' --limit 5
 git diff HEAD | node scripts/jev-candidates.mjs --sanitize --root .
+git diff HEAD | node scripts/jev-gate-payload.mjs --list-hunks --root .
+node scripts/jev-gate-payload.mjs --root . < /tmp/jev-gate-input.json
 python3 scripts/jev-flow-metrics.py --session <id> --cli claude|opencode --format markdown
 python3 scripts/jev-flow-metrics.py --runs runs.json --format markdown
 node private/jev-flow/ab/preflight.mjs
 ```
 
 The A/B manifest `private/jev-flow/ab/tasks.json` has its oracles marked `not_ready` and no seed; `preflight.mjs` refuses to start the experiment until both are ready.
+
+### Activation and settings
+
+By default, in every session and repository where Jev is enabled, the Claude Code hooks add a short route directive at session start and on every prompt (load `jev-flow`, delegate broad discovery to `jev-locator`, finish code changes with `/jev:jev-done`), and repeat the delegation directive at every 4 exploration calls in a request (4, 8, 12, …). This replaced the earlier advisory default after the Android A/B runs, where the advisory plugin produced no Jev calls and no subagents (`docs/jev-flow-findings.md`, F1). OpenCode sends the same directive through its `context` hook. Blocking stays opt-in (`JEV_FLOW_STRICT`, below).
+
+| Variable | Effect |
+| --- | --- |
+| `JEV_FLOW=off` | No directive, hints or `Stop` notices/redirects, even with `JEV_FLOW_STRICT=1`. The credential and denylist guard stays active. |
+| `JEV_FLOW_STRICT=1` | `Stop` redirects once per snapshot to `/jev:jev-done` (below). |
+| `JEV_FLOW_LOCATOR_MODEL` | Claude Code: `haiku` (the default in `agents/jev-locator.md`), `sonnet`, `opus` or `inherit` (the parent's model); applied to each `jev-locator` delegation by a `PreToolUse` hook through `updatedInput`. An invalid value is ignored with one notice. OpenCode: `provider/model[#variant]`; unset or invalid, the locator inherits the parent model and the setup notes it once. A configured model is not a cost guarantee: inheriting is fine when the parent already runs the cheapest model. |
+
+`/jev:jev-done` pairs every claim with its own evidence through `scripts/jev-gate-payload.mjs` and splits a patch that exceeds one `jev_gate` call into a batch of parts; completion then needs every part accepted on the same snapshot, and the report says that verification was partitioned.
 
 ### Opting a repository out: `.jev-flow-denylist`
 
@@ -126,6 +140,10 @@ Diffs, logs and candidate fragments are redacted with `[REDACTED:<kind>]` marker
 
 By default the Claude Code `Stop` hook only shows a notice when code changed without an accepted `jev_gate` on the final snapshot. "Accepted" means the latest gate call of the current request (unfinished, failed and locally refused calls included) returned a complete, consistent `auto` result for exactly the claims it was sent, meeting the flow minimums (confidence and `safe_to_apply` ≥ 0.8, composite ≥ 0.7), with the snapshot unchanged during the call and since. A well-formed `auto` that only misses those minimums is not retried; the agent asks the user. Set `JEV_FLOW_STRICT=1` in the environment that starts Claude Code to let it block such a stop once per snapshot and redirect to `/jev:jev-done`. It honors `stop_hook_active` and never blocks a final message that asks the user a question (last non-empty line ends with `?`), starts its last non-empty line with `Incomplete:`, or contains `Jev unavailable; gate not evaluated` or `Jev disabled for this repo; gate not evaluated`. In OpenCode, strict mode only affects `/jev-done`: the command adds the plugin's gate status for the current snapshot and request and instructs the agent not to report completion without an accepted gate. This is an instruction, not enforcement; nothing blocks a completion message, because OpenCode 2.0.12 offers no hook at that boundary (no equivalent of the Claude Code `Stop` hook).
 
+### Plugin version
+
+`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver, starting at `0.1.0`, independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
+
 ### Local state and checks
 
 In Claude Code the flow stores metadata only (paths, hashes, ranges, counters, request numbers, timestamps, exit codes) in `~/.cache/jev-flow/<repo-hash>/<session-hash>/`, removed after 30 days. It never stores code, diffs, prompts, logs or Jev verdicts: at `Stop`, the gate verdict is re-read from Claude Code's own transcript, and after a restart the gate is unknown. The OpenCode adapter keeps its state in memory only. Set `JEV_FLOW_CACHE_DIR` to move the cache.
@@ -136,6 +154,7 @@ Checks for changes to the flow:
 node --test private/jev-flow/test/
 npm test
 claude plugin validate .
+node -e "import('./opencode-plugin.js').then(m=>console.log(typeof m.default.setup))"
 git diff --stat private-main -- src skills/jev README.md package.json package-lock.json test
 ```
 

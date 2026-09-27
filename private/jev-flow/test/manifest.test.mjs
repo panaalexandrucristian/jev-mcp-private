@@ -69,3 +69,20 @@ describe("A/B manifest", () => {
     assert.ok(preflight(dup).reasons.includes("missing agreed tasks: H2"));
   });
 });
+
+describe("plugin manifests (F5)", () => {
+  const plugin = JSON.parse(readFileSync(join(REPO_ROOT, ".claude-plugin", "plugin.json"), "utf8"));
+  const marketplace = JSON.parse(readFileSync(join(REPO_ROOT, ".claude-plugin", "marketplace.json"), "utf8"));
+  const upstream = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
+
+  it("plugin.json carries an independent semver version", () => {
+    assert.match(plugin.version ?? "", /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+    assert.notEqual(plugin.version, upstream.version, "the private plugin version is independent of the upstream package");
+  });
+
+  it("the marketplace entry for jev declares the same version", () => {
+    const entry = marketplace.plugins.find((p) => p.name === plugin.name);
+    assert.ok(entry, "marketplace entry for the plugin");
+    assert.equal(entry.version, plugin.version);
+  });
+});

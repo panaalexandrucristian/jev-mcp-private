@@ -8,7 +8,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { REPO_ROOT } from "./helpers.mjs";
+import { buildCandidates } from "../candidates.mjs";
+import { prepareGateBatch } from "../gate-batch.mjs";
+import { parseDenylist } from "../paths.mjs";
+import { makeRepo, REPO_ROOT } from "./helpers.mjs";
 
 const source = readFileSync(join(REPO_ROOT, "src", "index.ts"), "utf8");
 const lib = readFileSync(join(REPO_ROOT, "src", "lib.ts"), "utf8");
@@ -214,11 +217,47 @@ describe("documented payloads fit the tool contracts", () => {
     for (const { tool, json } of list) checkPayload(tool, JSON.parse(json), keys);
   });
 
-  it("the /jev-done gate example is valid and carries evidence ids", () => {
+  it("/jev-done pairs every claim with its own evidence instead of one generic patch item (F3)", () => {
     const md = readFileSync(join(REPO_ROOT, "commands", "jev-done.md"), "utf8");
-    const payload = JSON.parse(md.match(/```json\n([\s\S]*?)```/)[1]);
-    checkPayload("jev_gate", payload, keys);
-    assert.deepEqual(payload.evidence.map((e) => e.id), ["test-log", "patch"]);
+    // The T2-B' regression: one {"id": "patch"} item shared by every claim.
+    assert.doesNotMatch(md, /"id": "patch"/);
+    assert.match(md, /scripts\/jev-gate-payload\.mjs/);
+    assert.match(md, /every \*\*part\*\*|\*\*every\*\* part/);
+    const input = JSON.parse(md.match(/```json\n([\s\S]*?)```/)[1]);
+    assert.ok(input.claims.length >= 1);
+    for (const claim of input.claims) assert.ok(Array.isArray(claim.evidence) && claim.evidence.length > 0, "each claim names its evidence");
+    assert.ok(input.commands.every((c) => "exit" in c && "output" in c), "commands carry the real output and exit code");
+  });
+
+  it("gate calls prepared by the helper fit the jev_gate contract, with per-claim evidence", () => {
+    const diff = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1,2 +1,2 @@",
+      "-export const a = 1;",
+      "+export const a = 2;",
+      "",
+    ].join("\n");
+    const out = prepareGateBatch(
+      {
+        request: "set a to 2",
+        diff,
+        claims: [
+          { text: "src/a.ts exports a = 2", evidence: ["hunk-1"] },
+          { text: "npm test passed", evidence: ["cmd-1"] },
+        ],
+        commands: [{ command: "npm test", exit: 0, output: "# pass 3\n# fail 0" }],
+      },
+      { denylist: parseDenylist(""), snapshot: "a".repeat(64) },
+    );
+    assert.equal(out.ok, true, JSON.stringify(out.problems));
+    for (const call of out.calls) {
+      checkPayload("jev_gate", call.input, keys);
+      const ids = call.input.evidence.map((e) => e.id);
+      assert.ok(ids.includes("hunk-1") && ids.includes("cmd-1"));
+      assert.match(call.input.evidence.find((e) => e.id === "cmd-1").text, /\$ npm test\nexit: 0\n# pass 3/);
+    }
   });
 
   it("no distributed file sends invented keys such as file_path to Jev", () => {
@@ -227,10 +266,30 @@ describe("documented payloads fit the tool contracts", () => {
     }
   });
 
-  it("the locator is told to send only query, candidates and top_k", () => {
+  it("the locator follows the helper's ranking rule and sends its payload unchanged (F4)", () => {
     const agent = readFileSync(join(REPO_ROOT, "agents", "jev-locator.md"), "utf8");
-    assert.match(agent, /\{"query": "<behavior sought>", "candidates": <the helper's candidates array>, "top_k": 5\}/);
+    assert.match(agent, /Follow `recommend\.tool`\. This rule is mandatory/);
+    assert.match(agent, /`jev_payload` exactly as returned \(`\{"query", "candidates", "top_k": 5\}`\)/);
+    assert.match(agent, /^tools: .*mcp__plugin_jev_jev__jev_rerank/m);
     assert.match(agent, /^tools: .*mcp__plugin_jev_jev__jev_find/m);
-    assert.match(agent, /^model: inherit$/m);
+    assert.match(agent, /"jev_used"/);
+  });
+
+  it("the locator runs on a cheaper model than the parent by default (F2)", () => {
+    const agent = readFileSync(join(REPO_ROOT, "agents", "jev-locator.md"), "utf8");
+    assert.match(agent, /^model: haiku$/m);
+    assert.doesNotMatch(agent, /^model: inherit$/m);
+  });
+
+  it("the helper's jev_payload fits the jev_rerank and jev_find contracts", () => {
+    const files = {};
+    for (let i = 0; i < 6; i++) files[`src/m${i}.ts`] = `export function parseWidgetFlag${i}(value) {\n  return value.trim();\n}\n`;
+    const repo = makeRepo(files);
+    for (const single of [false, true]) {
+      const out = buildCandidates({ root: repo, query: "parse widget flag", single });
+      assert.equal(out.recommend.tool, single ? "jev_find" : "jev_rerank");
+      assert.deepEqual(Object.keys(out.jev_payload), ["query", "candidates", "top_k"]);
+      checkPayload(single ? "jev_find" : "jev_rerank", out.jev_payload, keys);
+    }
   });
 });

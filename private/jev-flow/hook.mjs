@@ -4,6 +4,7 @@
 // boundaries (session start, test runs, jev_gate, Stop).
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { coversEarlierBatches, parseBatchLabel, verifyBatchContents } from "./gate-batch.mjs";
 import { loadDenylist } from "./paths.mjs";
 import {
   classifyShellCommand,
@@ -32,8 +33,12 @@ import {
 } from "./state.mjs";
 
 export const HINTS = Object.freeze({
+  directive: () =>
+    "jev-flow is the default route for code tasks in this repository (opt out: JEV_FLOW=off). For a non-trivial code task: load the jev-flow skill and follow its route. " +
+    "When the files are not known, delegate broad discovery to the jev-locator subagent (/jev:jev-locate <question>) instead of searching in this thread, then read only the ranges it returns; an exact known path or symbol is used directly. " +
+    "After any code change, run the repository's real checks and finish with /jev:jev-done (jev_gate with per-claim evidence) before reporting completion.",
   explore: (count) =>
-    `jev-flow: ${count} exploration calls in this request. For broad discovery, delegate to the jev-locator subagent (/jev:jev-locate <question>) and read only the ranges it returns.`,
+    `jev-flow: ${count} exploration calls in this request. Stop broad exploration in this thread: delegate the open location question to the jev-locator subagent (/jev:jev-locate <question>) and read only the ranges it returns.`,
   reread: () =>
     "jev-flow: the same file range with the same content has been re-read twice in this request. Delegate the open question to jev-locator (/jev:jev-locate) instead of re-reading.",
   finish: () =>
@@ -43,6 +48,36 @@ export const HINTS = Object.freeze({
 });
 
 const EXPLORATION_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
+const AGENT_TOOLS = new Set(["Agent", "Task"]);
+const LOCATOR_TYPE = /^(?:jev:)?jev-locator$/;
+const LOCATOR_MODELS = new Set(["haiku", "sonnet", "opus"]);
+
+/** JEV_FLOW=off: no directives, hints or Stop redirects/notices. The data guard stays. */
+export function flowOff(env) {
+  return String(env?.JEV_FLOW ?? "").trim().toLowerCase() === "off";
+}
+
+/** Claude Code model alias of a model id ("claude-opus-5-5" -> "opus"), or null. */
+export function modelAlias(modelId) {
+  const match = /(opus|sonnet|haiku|fable)/i.exec(String(modelId ?? ""));
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Model for a jev-locator delegation from JEV_FLOW_LOCATOR_MODEL. Unset: null
+ * (the agent frontmatter, haiku, applies). haiku|sonnet|opus: that alias.
+ * inherit: the parent's alias recorded at SessionStart. Anything else, or an
+ * inherit that cannot be mapped: {model: null, problem}.
+ */
+export function locatorModel(env, parentAlias) {
+  const raw = String(env?.JEV_FLOW_LOCATOR_MODEL ?? "").trim().toLowerCase();
+  if (raw === "") return { model: null };
+  if (LOCATOR_MODELS.has(raw)) return { model: raw };
+  if (raw === "inherit") {
+    return parentAlias ? { model: parentAlias } : { model: null, problem: "inherit_unknown_parent" };
+  }
+  return { model: null, problem: "invalid_value" };
+}
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 function additionalContext(event, text) {
@@ -82,7 +117,7 @@ function newRequest(state, now) {
     seq: (state.request?.seq ?? 0) + 1,
     started: now,
     exploration: 0,
-    explore_hinted: false,
+    reread_hinted: false,
     finish_hinted: false,
   };
   state.reads = {};
@@ -106,21 +141,70 @@ function handleSessionStart(ctx) {
         state.boot += 1;
       }
       if (state.baseline === null) state.baseline = snapshot.hash;
+      const alias = modelAlias(input.model);
+      if (alias) state.parent_model = alias;
       newRequest(state, now);
     },
     now,
   );
-  return denylist.disabled ? additionalContext("SessionStart", HINTS.disabledStart()) : null;
+  if (denylist.disabled) return additionalContext("SessionStart", HINTS.disabledStart());
+  return flowOff(env) ? null : additionalContext("SessionStart", HINTS.directive());
 }
 
+/** Every request gets the route directive, unless the flow is off or Jev is disabled for the repo. */
 function handleUserPromptSubmit(ctx) {
   withState(ctx.dir, (state) => newRequest(state, ctx.now), ctx.now);
-  return null;
+  if (flowOff(ctx.env) || loadDenylist(ctx.repoRoot).disabled) return null;
+  return additionalContext("UserPromptSubmit", HINTS.directive());
+}
+
+/**
+ * PreToolUse on Agent/Task: apply JEV_FLOW_LOCATOR_MODEL to jev-locator
+ * delegations through updatedInput (Claude Code applies an updatedInput
+ * without a permissionDecision and keeps the normal permission flow). An
+ * unusable value leaves the call unchanged and is reported once per session.
+ */
+function handleAgentPreToolUse(ctx) {
+  const { input, env, dir, now } = ctx;
+  const toolInput = input.tool_input;
+  if (!toolInput || typeof toolInput !== "object" || !LOCATOR_TYPE.test(String(toolInput.subagent_type ?? ""))) return null;
+  if (String(env?.JEV_FLOW_LOCATOR_MODEL ?? "").trim() === "") return null;
+  let parent = null;
+  let notify = null;
+  const choice = withState(dir, (state) => {
+    parent = state.parent_model ?? null;
+    const result = locatorModel(env, parent);
+    if (result.problem) {
+      const key = `locator_model:${result.problem}`;
+      if (!state.notified.includes(key)) {
+        state.notified.push(key);
+        notify = result.problem;
+      }
+    }
+    return result;
+  }, now);
+  if (choice.model) {
+    if (toolInput.model === choice.model) return null;
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...toolInput, model: choice.model } } };
+  }
+  if (!notify) return null;
+  const why =
+    notify === "inherit_unknown_parent"
+      ? "JEV_FLOW_LOCATOR_MODEL=inherit, but the parent model is unknown, so the agent's own model (haiku) applies"
+      : "JEV_FLOW_LOCATOR_MODEL must be haiku, sonnet, opus or inherit; the value is ignored and the agent's own model (haiku) applies";
+  return { systemMessage: `jev-flow: ${why}.` };
+}
+
+/** Batch manifest fields of a gate input (metadata only), or {}. */
+function batchFields(toolInput) {
+  const label = parseBatchLabel(toolInput?.request);
+  return label ? { batch: label.id, part: label.part, of: label.of } : {};
 }
 
 function handlePreToolUse(ctx) {
   const { input, repoRoot, dir, now } = ctx;
   const tool = input.tool_name;
+  if (AGENT_TOOLS.has(tool)) return handleAgentPreToolUse(ctx);
   const jev = jevToolName(tool);
   if (jev) {
     const deny = (reason) => {
@@ -142,6 +226,7 @@ function handlePreToolUse(ctx) {
               ts: now,
               failed: true,
               denied: true,
+              ...batchFields(input.tool_input),
             });
           }, now);
         } catch (error) {
@@ -175,6 +260,7 @@ function handlePreToolUse(ctx) {
           req: state.request.seq,
           boot: state.boot,
           ts: now,
+          ...batchFields(input.tool_input),
         };
       }, now);
     }
@@ -202,11 +288,12 @@ function commandHash(command) {
 }
 
 /** Close a started gate attempt into a completed or failed record. */
-function finishGate(state, useId, hash, after, now, failed) {
+function finishGate(state, useId, hash, after, now, failed, toolInput) {
   const pending = useId ? state.pending[useId] : undefined;
   if (useId) delete state.pending[useId];
   const started = pending?.kind === "gate" ? pending : null;
   state.gates.push({
+    ...batchFields(toolInput),
     id: useId ?? "unknown",
     // Without a matching start record, request, boot and stability are unknown.
     req: started ? started.req : -1,
@@ -257,7 +344,7 @@ export function shellExitCode(response) {
 }
 
 function handlePostToolUse(ctx) {
-  const { input, repoRoot, dir, now, isChild } = ctx;
+  const { input, env, repoRoot, dir, now, isChild } = ctx;
   const tool = input.tool_name;
   const jev = jevToolName(tool);
   const useId = input.tool_use_id ? String(input.tool_use_id).slice(0, 120) : null;
@@ -266,7 +353,7 @@ function handlePostToolUse(ctx) {
     const after = computeSnapshot(repoRoot);
     const hash = inputHash(input.tool_input);
     withState(dir, (state) => {
-      finishGate(state, useId, hash, after.hash, now, false);
+      finishGate(state, useId, hash, after.hash, now, false, input.tool_input);
       state.counters.jev_calls.gate = (state.counters.jev_calls.gate ?? 0) + 1;
     }, now);
     return null;
@@ -304,23 +391,24 @@ function handlePostToolUse(ctx) {
     }
     // Hints go to the main thread only; subagents never get delegation hints.
     if (isChild) return null;
+    const off = flowOff(env);
     if (kind === "exploration") {
       state.request.exploration += 1;
       state.counters.exploration_total += 1;
       let rereads = 0;
       if (readInfo?.hash) rereads = recordRead(state, { path: readInfo.rel, start: readInfo.start, end: readInfo.end, hash: readInfo.hash, now });
-      if (!state.request.explore_hinted) {
-        if (rereads >= REREAD_HINT_THRESHOLD) {
-          state.request.explore_hinted = true;
-          return additionalContext("PostToolUse", HINTS.reread());
-        }
-        if (state.request.exploration >= EXPLORATION_HINT_THRESHOLD) {
-          state.request.explore_hinted = true;
-          return additionalContext("PostToolUse", HINTS.explore(state.request.exploration));
-        }
+      if (off) return null;
+      // The exploration directive repeats at every multiple of the threshold;
+      // the re-read hint fires once per request. One message per event.
+      const texts = [];
+      if (!state.request.reread_hinted && rereads >= REREAD_HINT_THRESHOLD) {
+        state.request.reread_hinted = true;
+        texts.push(HINTS.reread());
       }
-      return null;
+      if (state.request.exploration % EXPLORATION_HINT_THRESHOLD === 0) texts.push(HINTS.explore(state.request.exploration));
+      return texts.length ? additionalContext("PostToolUse", texts.join("\n")) : null;
     }
+    if (off) return null;
     if ((kind === "edit" || kind === "test") && !state.request.finish_hinted) {
       state.request.finish_hinted = true;
       return additionalContext("PostToolUse", HINTS.finish());
@@ -340,7 +428,7 @@ function handlePostToolUseFailure(ctx) {
   const jev = jevToolName(tool);
   if (jev === "gate") {
     const hash = inputHash(input.tool_input);
-    withState(dir, (state) => finishGate(state, useId, hash, null, now, true), now);
+    withState(dir, (state) => finishGate(state, useId, hash, null, now, true, input.tool_input), now);
   } else if (tool === "Bash" && classifyShellCommand(input.tool_input?.command) === "test") {
     withState(dir, (state) => finishTest(state, useId, input.tool_input?.command, null, null, now, true), now);
   }
@@ -348,24 +436,21 @@ function handlePostToolUseFailure(ctx) {
 }
 
 /**
- * Re-read a gate verdict from the native Claude transcript, in memory only.
- * The tool_use must carry the recorded id, a Jev gate tool name and the same
- * input hash; the tool_result must not be an error and must pass
- * validateGateResult. Anything missing or unparseable is "unknown".
+ * Gate-related tool_use blocks (in transcript order) and the tool_results of
+ * `wantedIds`, read from the native Claude transcript in memory only; null
+ * when the transcript cannot be read.
  */
-export function gateVerdictFromTranscript(transcriptPath, record) {
-  if (typeof transcriptPath !== "string" || !record?.id || record.id === "unknown") return { accepted: false, reason: "transcript_unavailable" };
+function readTranscriptGates(transcriptPath, wantedIds) {
   let text;
   try {
     text = readFileSync(transcriptPath, "utf8");
   } catch {
-    return { accepted: false, reason: "transcript_unavailable" };
+    return null;
   }
-  let use = null;
-  let result = null;
-  let laterGateCall = false;
+  const uses = [];
+  const results = new Map();
   for (const line of text.split("\n")) {
-    if (!line.includes(record.id) && !line.includes("jev_gate")) continue;
+    if (!line.includes("jev_gate") && ![...wantedIds].some((id) => line.includes(id))) continue;
     let entry;
     try {
       entry = JSON.parse(line);
@@ -375,20 +460,113 @@ export function gateVerdictFromTranscript(transcriptPath, record) {
     const content = entry?.message?.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (block?.type === "tool_use" && block.id === record.id) use = block;
-      // Any gate call written after this one (denied, cancelled or otherwise)
-      // supersedes it, even if its own state record was never written.
-      else if (use && block?.type === "tool_use" && jevToolName(block.name) === "gate") laterGateCall = true;
-      if (block?.type === "tool_result" && block.tool_use_id === record.id) result = block;
+      if (block?.type === "tool_use" && (jevToolName(block.name) === "gate" || wantedIds.has(block.id))) {
+        uses.push({ id: block.id, name: block.name, input: block.input, order: uses.length });
+      }
+      if (block?.type === "tool_result" && wantedIds.has(block.tool_use_id)) results.set(block.tool_use_id, block);
     }
   }
-  if (!use || jevToolName(use.name) !== "gate") return { accepted: false, reason: "gate_call_not_in_transcript" };
-  if (laterGateCall) return { accepted: false, reason: "later_gate_call_in_transcript" };
-  if (inputHash(use.input) !== record.input) return { accepted: false, reason: "gate_input_mismatch" };
-  if (!result) return { accepted: false, reason: "gate_result_not_in_transcript" };
-  if (result.is_error) return { accepted: false, reason: "gate_call_failed" };
+  return { uses, results };
+}
+
+/** Validate one recorded gate call against its transcript tool_use and tool_result. */
+function checkTranscriptCall(t, record) {
+  const use = t.uses.find((u) => u.id === record.id);
+  if (!use || jevToolName(use.name) !== "gate") return { reason: "gate_call_not_in_transcript" };
+  if (inputHash(use.input) !== record.input) return { reason: "gate_input_mismatch", use };
+  const result = t.results.get(record.id);
+  if (!result) return { reason: "gate_result_not_in_transcript", use };
+  if (result.is_error) return { reason: "gate_call_failed", use };
   const check = validateGateResult(parseJevResult(result.content), { claims: use.input?.claims });
-  return check.accepted ? { accepted: true } : { accepted: false, reason: "gate_not_accepted", problems: check.problems };
+  return check.accepted ? { use } : { reason: "gate_not_accepted", problems: check.problems, use };
+}
+
+/**
+ * Re-read a gate verdict from the native Claude transcript, in memory only.
+ * The tool_use must carry the recorded id, a Jev gate tool name and the same
+ * input hash; the tool_result must not be an error and must pass
+ * validateGateResult. Anything missing or unparseable is "unknown". An
+ * accepted verdict also returns the claims that were checked.
+ */
+export function gateVerdictFromTranscript(transcriptPath, record) {
+  if (typeof transcriptPath !== "string" || !record?.id || record.id === "unknown") return { accepted: false, reason: "transcript_unavailable" };
+  const t = readTranscriptGates(transcriptPath, new Set([record.id]));
+  if (!t) return { accepted: false, reason: "transcript_unavailable" };
+  const use = t.uses.find((u) => u.id === record.id);
+  if (!use || jevToolName(use.name) !== "gate") return { accepted: false, reason: "gate_call_not_in_transcript" };
+  // Any gate call written after this one (denied, cancelled or otherwise)
+  // supersedes it, even if its own state record was never written.
+  if (t.uses.some((u) => u.order > use.order && jevToolName(u.name) === "gate")) return { accepted: false, reason: "later_gate_call_in_transcript" };
+  const check = checkTranscriptCall(t, record);
+  if (check.reason) return { accepted: false, reason: check.reason, ...(check.problems ? { problems: check.problems } : {}) };
+  return { accepted: true, claims: Array.isArray(use.input?.claims) ? use.input.claims : [], diff: use.input?.diff };
+}
+
+/**
+ * Re-read a partitioned batch from the transcript: every selected part must
+ * pass checkTranscriptCall, carry the batch label, and no gate call outside
+ * the batch (or a newer attempt of a part than the one recorded) may follow
+ * the batch's first selected part. The parts' inputs must then form the
+ * complete batch of their manifest on `snapshot` (verifyBatchContents).
+ */
+export function batchVerdictFromTranscript(transcriptPath, batch, snapshot) {
+  const records = batch?.records ?? [];
+  if (typeof transcriptPath !== "string" || records.length === 0 || records.some((r) => !r.id || r.id === "unknown")) {
+    return { accepted: false, reason: "transcript_unavailable" };
+  }
+  const ids = new Set(records.map((r) => r.id));
+  const t = readTranscriptGates(transcriptPath, ids);
+  if (!t) return { accepted: false, reason: "transcript_unavailable" };
+  const parts = [];
+  const orderOf = new Map();
+  let firstOrder = Infinity;
+  for (const record of records) {
+    const check = checkTranscriptCall(t, record);
+    if (check.reason) return { accepted: false, reason: check.reason, part: record.part, ...(check.problems ? { problems: check.problems } : {}) };
+    const label = parseBatchLabel(check.use.input?.request);
+    if (!label || label.id !== batch.id || label.part !== record.part) return { accepted: false, reason: "batch_label_mismatch", part: record.part };
+    // The complete input as sent: its digest binds the manifest id.
+    parts.push(check.use.input);
+    orderOf.set(record.part, check.use.order);
+    firstOrder = Math.min(firstOrder, check.use.order);
+  }
+  for (const u of t.uses) {
+    if (u.order <= firstOrder || ids.has(u.id) || jevToolName(u.name) !== "gate") continue;
+    const label = parseBatchLabel(u.input?.request);
+    if (!label || label.id !== batch.id || u.order > orderOf.get(label.part)) return { accepted: false, reason: "later_gate_call_in_transcript" };
+  }
+  const contents = verifyBatchContents(parts, { snapshot });
+  if (!contents.ok) return { accepted: false, reason: "batch_manifest_invalid", problems: contents.problems };
+  return { accepted: true, parts: records.length, partitioned: records.length > 1, claims: contents.claims, diff: contents.whole };
+}
+
+/** The inputs ({request, claims, diff}) of earlier batch attempts, from the transcript; null when any is missing. */
+function earlierBatchInputs(transcriptPath, records) {
+  const ids = new Set(records.map((r) => r.id).filter((id) => id && id !== "unknown"));
+  if (typeof transcriptPath !== "string" || ids.size !== records.length) return null;
+  const t = readTranscriptGates(transcriptPath, ids);
+  if (!t) return null;
+  const inputs = [];
+  for (const id of ids) {
+    const use = t.uses.find((u) => u.id === id);
+    if (!use) return null;
+    inputs.push({ request: use.input?.request, claims: use.input?.claims, diff: use.input?.diff });
+  }
+  return inputs;
+}
+
+/** Re-read whatever gateCandidate selected; never approves without a valid transcript record. */
+function candidateVerdict(transcriptPath, candidate, snapshot) {
+  let verdict;
+  if (candidate.batch) verdict = batchVerdictFromTranscript(transcriptPath, candidate.batch, snapshot);
+  else if (candidate.record) verdict = gateVerdictFromTranscript(transcriptPath, candidate.record);
+  else return { accepted: false };
+  if (!verdict.accepted || !candidate.supersededBatch?.length) return verdict;
+  // A later gate (single or a replacement batch) on this snapshot must cover
+  // every claim and the whole patch of the earlier batch it replaces.
+  const earlier = earlierBatchInputs(transcriptPath, candidate.supersededBatch);
+  if (earlier === null) return { accepted: false, reason: "batch_claims_unavailable" };
+  return coversEarlierBatches({ claims: verdict.claims, diff: verdict.diff }, earlier) ? verdict : { accepted: false, reason: "later_gate_misses_batch_coverage" };
 }
 
 const STOP_REASONS = {
@@ -400,6 +578,9 @@ const STOP_REASONS = {
 
 function handleStop(ctx) {
   const { input, env, repoRoot, dir, now } = ctx;
+  // JEV_FLOW=off takes precedence over JEV_FLOW_STRICT=1: no redirect, no
+  // notice. It never counts as an approval either; nothing is recorded as one.
+  if (flowOff(env)) return null;
   const strict = env.JEV_FLOW_STRICT === "1";
   const snapshot = computeSnapshot(repoRoot);
   const denylist = loadDenylist(repoRoot);
@@ -410,7 +591,7 @@ function handleStop(ctx) {
     testsFresh: testFreshFor(state, snapshot.hash),
   }), now);
   // Phase 2 (unlocked): re-read the verdict from the native transcript, in memory.
-  const verdict = view.candidate.record ? gateVerdictFromTranscript(input.transcript_path, view.candidate.record) : { accepted: false };
+  const verdict = candidateVerdict(input.transcript_path, view.candidate, snapshot.hash);
   const snapKey = snapshot.hash ?? "unknown";
   // Phase 3 (locked): decide once per snapshot, re-checking the redirect record.
   return withState(dir, (state) => {
@@ -430,7 +611,7 @@ function handleStop(ctx) {
         decision: "block",
         reason:
           `jev-flow strict mode: code changed and no accepted jev_gate exists for the current snapshot and request${view.testsFresh ? "" : " (no passing real check is recorded on it either)"}. ` +
-          "Run /jev:jev-done (real checks, then jev_gate on the final diff). If completion cannot be verified, end with a line starting with \"Incomplete:\", " +
+          "Run /jev:jev-done (real checks, then jev_gate on the final diff with per-claim evidence; for a partitioned batch every part must be accepted on this snapshot). If completion cannot be verified, end with a line starting with \"Incomplete:\", " +
           `report "${FIXED_PHRASES.unavailable}" when Jev failed, or ask the user.` +
           disabledNote,
       };

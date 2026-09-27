@@ -2,7 +2,10 @@
 // jev-flow candidate helper and sanitizer. Node stdlib only.
 //
 //   node jev-candidates.mjs --root <repo> --query <text> [--limit 48] [--chunk-chars 1000]
-//                           [--window-lines 60] [--max-file-bytes 1048576]
+//                           [--window-lines 60] [--max-file-bytes 1048576] [--single]
+//   --single: the question asks for one definitive location (jev_find instead of jev_rerank).
+//   The output's `recommend.tool` (plain | jev_rerank | jev_find | none) is the locator's next
+//   step and `jev_payload` ({query, candidates, top_k}) is sent to that tool unchanged.
 //   node jev-candidates.mjs --sanitize [--root <repo>] [--mode auto|text|diff] < input
 //
 // Exit codes: 0 success, 2 usage error or non-git root, 3 sanitize input too large.
@@ -17,7 +20,7 @@ const SANITIZE_MAX_BYTES = 2 * 1024 * 1024;
 
 const USAGE = `Usage:
   jev-candidates.mjs --root <repo> --query <text> [--limit N<=${LIMITS.maxCandidates}] [--chunk-chars N<=${LIMITS.maxChunkChars}]
-                     [--window-lines N<=${LIMITS.maxWindowLines}] [--max-file-bytes N]
+                     [--window-lines N<=${LIMITS.maxWindowLines}] [--max-file-bytes N] [--single]
   jev-candidates.mjs --sanitize [--root <repo>] [--mode auto|text|diff] < input`;
 
 function parseArgs(argv) {
@@ -27,6 +30,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") opts.help = true;
     else if (arg === "--sanitize") opts.sanitize = true;
+    else if (arg === "--single") opts.single = true;
     else if (valueFlags.has(arg)) {
       if (i + 1 >= argv.length) throw new UsageError(`${arg} needs a value`);
       opts[arg.slice(2)] = argv[++i];
@@ -85,6 +89,7 @@ async function main() {
     chunkChars: toInt(opts["chunk-chars"], "--chunk-chars"),
     windowLines: toInt(opts["window-lines"], "--window-lines"),
     maxFileBytes: toInt(opts["max-file-bytes"], "--max-file-bytes"),
+    single: opts.single === true,
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;

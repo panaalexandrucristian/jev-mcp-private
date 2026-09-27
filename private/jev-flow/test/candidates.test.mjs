@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { exactMatcher, exactToken, recommendNext } from "../candidates.mjs";
 import { candidates, git, makeRepo, sandboxEnv, tempDir, writeFiles } from "./helpers.mjs";
 
 const sha = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -399,5 +400,105 @@ describe("sanitize: diff provenance and assignments", () => {
     assert.equal(out.text.split("\n").filter((l) => l.includes("[REDACTED:credential_assignment]")).length, 4);
     const code = "const token = options.token;\nmax_tokens=1000\nfunction check(password: string) {}\nconst secret = z.string();\n";
     assert.equal(sanitize(repo, code, "text").text, code);
+  });
+});
+
+describe("jev-candidates: locator ranking rule (F4)", () => {
+  /** A file with `n` separate hit windows for "widget parser". */
+  const windows = (n) => Array.from({ length: n }, (_, i) => [`export function widgetParser${i}(input) {`, "  return input;", "}", ...Array(70).fill("// filler")].join("\n")).join("\n") + "\n";
+  const run = (files, args = []) => parse(candidates(["--root", makeRepo(files), "--query", "widget parser", ...args]));
+
+  it("1 to 3 candidates in one file: plain reads, no Jev payload", () => {
+    for (const n of [1, 3]) {
+      const out = run({ "src/w.ts": windows(n) });
+      assert.equal(out.candidates.length, n);
+      assert.deepEqual(out.recommend, { tool: "plain", reason: "few_candidates_one_file", candidates: n });
+      assert.equal(out.jev_payload, null);
+    }
+  });
+
+  it("more than 3 candidates, even from one file: jev_rerank with top_k 5", () => {
+    const out = run({ "src/w.ts": windows(4) });
+    assert.equal(out.candidates.length, 4);
+    assert.equal(out.recommend.tool, "jev_rerank");
+    assert.equal(out.recommend.reason, "more_than_3_candidates");
+    assert.equal(out.jev_payload.top_k, 5);
+    assert.deepEqual(out.jev_payload.candidates, out.candidates, "the payload is the helper's own candidates");
+    assert.ok(!JSON.stringify(out.jev_payload).includes("src/w.ts\"") && !("map" in out.jev_payload), "the map stays local");
+  });
+
+  it("candidates from two files: jev_rerank; with --single: jev_find", () => {
+    const files = { "src/a.ts": windows(1), "src/b.ts": windows(1) };
+    const out = run(files);
+    assert.deepEqual([out.recommend.tool, out.recommend.reason, out.recommend.files], ["jev_rerank", "candidates_in_several_files", 2]);
+    const single = run(files, ["--single"]);
+    assert.equal(single.recommend.tool, "jev_find");
+    assert.deepEqual(Object.keys(single.jev_payload), ["query", "candidates", "top_k"]);
+  });
+
+  it("an exact symbol found as a whole token in exactly one file: plain, to be confirmed by reading, with the threshold rule as fallback", () => {
+    const repo = makeRepo({ "src/a.ts": windows(5), "src/b.ts": "export const other = 1;\n" });
+    const out = parse(candidates(["--root", repo, "--query", "widgetParser3"]));
+    assert.deepEqual(out.recommend, {
+      tool: "plain",
+      reason: "exact_match_in_one_file",
+      path: "src/a.ts",
+      confirm_by_reading: true,
+      fallback: { tool: "jev_rerank", reason: "more_than_3_candidates", candidates: 5, files: 1 },
+    });
+    assert.equal(out.jev_payload.top_k, 5, "if reading does not confirm the match, the fallback payload is ready");
+    // A verified real match: the only whole-token occurrence of the symbol is its definition.
+    const hit = out.candidates.find((c) => out.map[c.id].path === "src/a.ts");
+    assert.match(hit.text, /export function widgetParser3\(input\)/);
+    const both = makeRepo({ "src/a.ts": windows(1), "src/b.ts": "import { widgetParser0 } from './a';\n" });
+    assert.equal(parse(candidates(["--root", both, "--query", "widgetParser0"])).recommend.tool, "jev_rerank", "the symbol is in two files");
+  });
+
+  it("a substring is not an exact match: cache vs cacheable/caching in two files keeps the threshold rule (regression)", () => {
+    const repo = makeRepo({
+      "src/a.ts": "// Cache policy\nexport const cacheable = true;\n",
+      "src/b.ts": "// Cache warmup\nexport let caching = false;\n",
+    });
+    const out = parse(candidates(["--root", repo, "--query", "cache"]));
+    assert.equal(out.candidates.length, 2, "both files are lexical candidates for the word cache");
+    assert.notEqual(out.recommend.reason, "exact_match_in_one_file", "cacheable contains the substring cache, but is not the identifier cache");
+    assert.equal(out.recommend.tool, "jev_rerank");
+    assert.equal(out.recommend.reason, "candidates_in_several_files");
+    assert.equal(out.jev_payload.top_k, 5);
+    const m = exactMatcher("cache");
+    assert.deepEqual(["const cacheable = 1", "let caching", "// Cache", "const cache = new Map()", "this.cache.get(k)"].map((l) => m.matchesLine(l)), [false, false, false, true, true]);
+  });
+
+  it("when the exact match does not answer the question, the fallback carries the Jev payload", () => {
+    const repo = makeRepo({ "src/a.ts": "export const cache = new Map();\n", "src/b.ts": "// Cache warming\nexport function warm() {}\n", "src/c.ts": "// Cache eviction\nexport function evict() {}\n" });
+    const out = parse(candidates(["--root", repo, "--query", "cache"]));
+    assert.equal(out.recommend.reason, "exact_match_in_one_file", "only a.ts has the case-sensitive whole token cache; the others say Cache");
+    assert.equal(out.recommend.confirm_by_reading, true);
+    assert.equal(out.recommend.path, "src/a.ts");
+    assert.equal(out.recommend.fallback.tool, "jev_rerank");
+    assert.deepEqual(Object.keys(out.jev_payload), ["query", "candidates", "top_k"]);
+  });
+
+  it("paths match only as a whole path suffix", () => {
+    const m = exactMatcher("app/Main.kt");
+    assert.equal(m.matchesPath("src/app/Main.kt"), true);
+    assert.equal(m.matchesPath("src/myapp/Main.kt"), false);
+    assert.equal(m.matchesLine("import app/Main.kt"), false, "a path is not matched inside file contents");
+  });
+
+  it("zero candidates and a disabled repo recommend no Jev call and claim nothing", () => {
+    const none = run({ "src/a.ts": "export const unrelated = 1;\n" });
+    assert.deepEqual(none.recommend, { tool: "none", reason: "no_candidates" });
+    const off = parse(candidates(["--root", makeRepo({ ".jev-flow-denylist": "*\n", "a.ts": "widget parser\n" }), "--query", "widget parser"]));
+    assert.deepEqual(off.recommend, { tool: "none", reason: "jev_disabled" });
+    assert.equal(off.jev_payload, null);
+  });
+
+  it("exact tokens are identifiers, qualified names or paths; prose is not", () => {
+    for (const q of ["widgetParser", "Foo.bar", "src/app/Main.kt", "a::b"]) assert.equal(exactToken(q), q);
+    for (const q of ["where is the parser", "ab", ""]) assert.equal(exactToken(q), null);
+    const long = "q".repeat(3000);
+    const rec = recommendNext({ disabled: false, query: long, candidates: [1, 2, 3, 4].map((i) => ({ id: `c${i}`, text: "t" })), map: {}, exactFiles: null });
+    assert.equal(rec.jev_payload.query.length, 2000, "the query fits jev_rerank's 2,000-character cap");
   });
 });

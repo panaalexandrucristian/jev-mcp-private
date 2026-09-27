@@ -17,7 +17,75 @@ export const LIMITS = Object.freeze({
   timeBudgetMs: 10000,
 });
 
+/** Locator ranking rule (F4): above this many candidates, or from 2+ files, Jev ranks them. */
+export const RANK_RULE = Object.freeze({ maxPlainCandidates: 3, topK: 5, maxQueryChars: 2000 });
+
 export class UsageError extends Error {}
+
+/** A query that is one exact token: an identifier, a dotted/qualified name or a path. */
+export function exactToken(query) {
+  const q = String(query ?? "").trim();
+  return /^[A-Za-z_$][\w$]*(?:(?:\.|::|\/|-)[\w$]+)*(?:\.[A-Za-z0-9]+)?$/.test(q) && q.length >= 3 ? q : null;
+}
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Lexical exact-match test for an exact token. A token with "/" is a path: it
+ * matches a file whose repository path is the token or ends with "/token".
+ * Any other token (identifier, qualified or dotted name, file name) matches a
+ * path the same way, or a line only as a whole, delimited token,
+ * case-sensitive: `cache` does not match `cacheable`, `caching` or `Cache`.
+ */
+export function exactMatcher(token) {
+  if (!token) return null;
+  const bounded = new RegExp(`(?<![\\w$])${escapeRegExp(token)}(?![\\w$])`);
+  const isPath = token.includes("/");
+  return {
+    token,
+    matchesPath: (rel) => rel === token || rel.endsWith(`/${token}`),
+    matchesLine: isPath ? () => false : (line) => bounded.test(line),
+  };
+}
+
+/**
+ * The locator's next step for a candidate set (F4). First the threshold rule:
+ * - Jev disabled -> "none" (local reads only);
+ * - no candidates -> "none" (widen or rephrase locally; never claim absence);
+ * - more than 3 candidates, or candidates from 2+ files -> "jev_find" when the
+ *   question asks for one definitive location (single), otherwise "jev_rerank";
+ * - otherwise (1-3 candidates in one file) -> "plain": read them locally,
+ *   without claiming the result is certain.
+ * Exception: an exact token (a delimited identifier/qualified name, or a
+ * path) found in exactly one file -> "plain" with confirm_by_reading: the
+ * locator must read that match and use it only if it answers the question;
+ * otherwise it follows `fallback` (the threshold rule, with its payload).
+ * Lexical uniqueness is not proof that the match answers the question.
+ * The payload for Jev is {query, candidates, top_k: 5}; the map stays local.
+ */
+export function recommendNext({ disabled, query, candidates, map, exactFiles, single }) {
+  if (disabled) return { recommend: { tool: "none", reason: "jev_disabled" }, jev_payload: null };
+  if (candidates.length === 0) return { recommend: { tool: "none", reason: "no_candidates" }, jev_payload: null };
+  const files = new Set(candidates.map((c) => map[c.id]?.path));
+  let base;
+  if (candidates.length > RANK_RULE.maxPlainCandidates || files.size >= 2) {
+    const tool = single ? "jev_find" : "jev_rerank";
+    const reason = files.size >= 2 ? "candidates_in_several_files" : "more_than_3_candidates";
+    base = {
+      recommend: { tool, reason, candidates: candidates.length, files: files.size },
+      jev_payload: { query: String(query).slice(0, RANK_RULE.maxQueryChars), candidates: candidates.map((c) => ({ id: c.id, text: c.text })), top_k: RANK_RULE.topK },
+    };
+  } else {
+    base = { recommend: { tool: "plain", reason: "few_candidates_one_file", candidates: candidates.length }, jev_payload: null };
+  }
+  if (Array.isArray(exactFiles) && exactFiles.length === 1) {
+    return {
+      recommend: { tool: "plain", reason: "exact_match_in_one_file", path: exactFiles[0], confirm_by_reading: true, fallback: base.recommend },
+      jev_payload: base.jev_payload,
+    };
+  }
+  return base;
+}
 
 const STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "in", "into",
@@ -172,6 +240,7 @@ export function buildCandidates(options) {
       map: {},
       coverage: { complete: false, reason: "denylist_disables_repo" },
       omitted: [],
+      ...recommendNext({ disabled: true }),
     };
   }
 
@@ -375,9 +444,12 @@ export function buildCandidates(options) {
   if (windowsTotal > candidates.length + omitted.length) incompleteReasons.add("candidate_limit_reached");
   if (omitted.length) incompleteReasons.add("windows_omitted");
   if (lineCuts) incompleteReasons.add("long_lines_truncated");
+  const matcher = exactMatcher(exactToken(options.query));
+  const exactFiles = matcher ? scored.filter((f) => matcher.matchesPath(f.rel) || f.lines.some((line) => matcher.matchesLine(line))).map((f) => f.rel) : null;
   return {
     ...base,
     disabled: false,
+    ...recommendNext({ disabled: false, query: options.query, candidates, map, exactFiles, single: options.single === true }),
     candidates,
     map,
     coverage: {

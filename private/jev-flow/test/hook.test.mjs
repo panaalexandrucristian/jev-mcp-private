@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { sessionDir } from "../state.mjs";
+import { prepareGateBatch } from "../gate-batch.mjs";
+import { HINTS } from "../hook.mjs";
+import { parseDenylist } from "../paths.mjs";
+import { computeSnapshot, sessionDir } from "../state.mjs";
 import { acceptedGate, appendTranscriptCall, HOOK_CLI, makeRepo, run, sandboxEnv, tempDir, writeFiles } from "./helpers.mjs";
 
 const FAKE_AWS = "AKIA" + "QRSTUVWXYZ012345";
@@ -39,7 +42,7 @@ function session(files = { "src/app.ts": "export const widget = 1;\n" }, envExtr
 const read = (repo, file = "src/app.ts", extra = {}) => ({ tool_name: "Read", tool_input: { file_path: join(repo, file), ...extra }, tool_response: {} });
 
 describe("hooks: exploration hints", () => {
-  it("hints once per request after four exploration calls and resets on a new prompt", () => {
+  it("repeats the exploration directive at 4, 8, 12 calls and resets on a new prompt (F1)", () => {
     const { repo, call } = session({ "a.ts": "a\n", "b.ts": "b\n", "c.ts": "c\n", "d.ts": "d\n", "e.ts": "e\n" });
     assert.equal(call("PostToolUse", read(repo, "a.ts")), null);
     assert.equal(call("PostToolUse", { tool_name: "Grep", tool_input: { pattern: "x" } }), null);
@@ -47,11 +50,42 @@ describe("hooks: exploration hints", () => {
     const hint = call("PostToolUse", read(repo, "b.ts"));
     assert.equal(hint.hookSpecificOutput.hookEventName, "PostToolUse");
     assert.match(hint.hookSpecificOutput.additionalContext, /4 exploration calls.*\/jev:jev-locate/);
-    assert.equal(call("PostToolUse", read(repo, "c.ts")), null, "one hint per request");
+    assert.equal(call("PostToolUse", read(repo, "c.ts")), null, "no hint between thresholds");
     assert.equal(call("PostToolUse", { tool_name: "Bash", tool_input: { command: "python3 x.py" } }), null, "unknown shell is not exploration");
+    assert.equal(call("PostToolUse", read(repo, "d.ts")), null);
+    assert.equal(call("PostToolUse", read(repo, "e.ts")), null);
+    assert.match(call("PostToolUse", { tool_name: "Glob", tool_input: { pattern: "*.ts" } }).hookSpecificOutput.additionalContext, /8 exploration calls/);
+    for (let i = 0; i < 3; i++) call("PostToolUse", { tool_name: "Grep", tool_input: { pattern: `y${i}` } });
+    assert.match(call("PostToolUse", { tool_name: "Grep", tool_input: { pattern: "z" } }).hookSpecificOutput.additionalContext, /12 exploration calls/);
     call("UserPromptSubmit", { prompt: "next" });
     for (const f of ["a.ts", "b.ts", "c.ts"]) assert.equal(call("PostToolUse", read(repo, f)), null);
     assert.ok(call("PostToolUse", read(repo, "d.ts")));
+  });
+
+  it("injects the route directive at SessionStart and on every prompt, without the prompt asking for the flow (F1)", () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const env = sandboxEnv();
+    const base = { session_id: "s-directive", cwd: repo };
+    const start = hook("SessionStart", { ...base, hook_event_name: "SessionStart", source: "startup" }, env);
+    assert.equal(start.hookSpecificOutput.hookEventName, "SessionStart");
+    assert.equal(start.hookSpecificOutput.additionalContext, HINTS.directive());
+    assert.match(HINTS.directive(), /load the jev-flow skill/);
+    assert.match(HINTS.directive(), /jev-locator subagent \(\/jev:jev-locate <question>\)/);
+    assert.match(HINTS.directive(), /\/jev:jev-done/);
+    for (const prompt of ["fix the crash in the settings screen", "and the other one"]) {
+      const out = hook("UserPromptSubmit", { ...base, hook_event_name: "UserPromptSubmit", prompt }, env);
+      assert.equal(out.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+      assert.equal(out.hookSpecificOutput.additionalContext, HINTS.directive());
+    }
+  });
+
+  it("a repeated re-read and a threshold on the same event give one combined message", () => {
+    const { repo, call } = session();
+    call("PostToolUse", { tool_name: "Grep", tool_input: { pattern: "x" } });
+    call("PostToolUse", read(repo, "src/app.ts", { offset: 1, limit: 20 }));
+    call("PostToolUse", read(repo, "src/app.ts", { offset: 1, limit: 20 }));
+    const out = call("PostToolUse", read(repo, "src/app.ts", { offset: 1, limit: 20 }));
+    assert.match(out.hookSpecificOutput.additionalContext, /re-read twice[\s\S]*4 exploration calls/);
   });
 
   it("hints on the second re-read of the same range with the same hash", () => {
@@ -83,6 +117,72 @@ describe("hooks: exploration hints", () => {
     const hint = call("PostToolUse", { tool_name: "Edit", tool_input: { file_path: "src/app.ts" } });
     assert.match(hint.hookSpecificOutput.additionalContext, /\/jev:jev-done/);
     assert.equal(call("PostToolUse", { tool_name: "Write", tool_input: { file_path: "src/b.ts" } }), null);
+  });
+});
+
+describe("hooks: JEV_FLOW=off (F1 opt-out)", () => {
+  it("sends no directive, hints, Stop notice or strict redirect, even with JEV_FLOW_STRICT=1", () => {
+    const repo = makeRepo({ "a.ts": "a\n", "b.ts": "b\n" });
+    const env = sandboxEnv({ JEV_FLOW: "off", JEV_FLOW_STRICT: "1" });
+    const base = { session_id: "s-off", cwd: repo, transcript_path: join(tempDir(), "t.jsonl") };
+    const call = (event, extra = {}) => hook(event, { ...base, hook_event_name: event, ...extra }, env);
+    assert.equal(call("SessionStart", { source: "startup" }), null);
+    assert.equal(call("UserPromptSubmit", { prompt: "do it" }), null);
+    for (let i = 0; i < 8; i++) assert.equal(call("PostToolUse", read(repo, i % 2 ? "a.ts" : "b.ts")), null);
+    assert.equal(call("PostToolUse", { tool_name: "Edit", tool_input: { file_path: "a.ts" } }), null);
+    writeFiles(repo, { "a.ts": "changed\n" });
+    assert.equal(call("Stop", { stop_hook_active: false, last_assistant_message: "Done." }), null);
+  });
+
+  it("keeps the data guard: credentials and a disabled repo are still refused", () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const env = sandboxEnv({ JEV_FLOW: "off" });
+    const out = hook("PreToolUse", { session_id: "s-off2", cwd: repo, hook_event_name: "PreToolUse", tool_name: "mcp__jev__jev_verify", tool_input: { claims: ["x"], evidence: `k=${FAKE_AWS}` } }, env);
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  });
+});
+
+describe("hooks: jev-locator model (F2)", () => {
+  const agentCall = (subagent_type, extra = {}) => ({ tool_name: "Agent", tool_use_id: `a-${Math.random()}`, tool_input: { subagent_type, description: "locate", prompt: "where is x", ...extra } });
+
+  it("leaves the call alone when JEV_FLOW_LOCATOR_MODEL is unset (the frontmatter's haiku applies)", () => {
+    const { call } = session();
+    assert.equal(call("PreToolUse", agentCall("jev:jev-locator")), null);
+  });
+
+  it("sets the model through updatedInput for haiku, sonnet and opus, only for jev-locator", () => {
+    for (const model of ["haiku", "sonnet", "opus"]) {
+      const { call } = session(undefined, { JEV_FLOW_LOCATOR_MODEL: model });
+      for (const type of ["jev:jev-locator", "jev-locator"]) {
+        const out = call("PreToolUse", agentCall(type));
+        assert.equal(out.hookSpecificOutput.hookEventName, "PreToolUse");
+        assert.equal(out.hookSpecificOutput.permissionDecision, undefined, "no permission decision: the normal permission flow stays");
+        assert.equal(out.hookSpecificOutput.updatedInput.model, model);
+        assert.equal(out.hookSpecificOutput.updatedInput.subagent_type, type);
+        assert.equal(out.hookSpecificOutput.updatedInput.prompt, "where is x");
+      }
+      assert.equal(call("PreToolUse", agentCall("general-purpose")), null, "other agents are untouched");
+      assert.equal(call("PreToolUse", { ...agentCall("jev:jev-locator"), tool_name: "Task" }).hookSpecificOutput.updatedInput.model, model);
+    }
+  });
+
+  it("inherit maps the parent model recorded at SessionStart", () => {
+    const repo = makeRepo({ "a.ts": "a\n" });
+    const env = sandboxEnv({ JEV_FLOW_LOCATOR_MODEL: "inherit" });
+    const base = { session_id: "s-inherit", cwd: repo };
+    hook("SessionStart", { ...base, hook_event_name: "SessionStart", source: "startup", model: "claude-opus-5-5" }, env);
+    const out = hook("PreToolUse", { ...base, hook_event_name: "PreToolUse", ...agentCall("jev:jev-locator") }, env);
+    assert.equal(out.hookSpecificOutput.updatedInput.model, "opus");
+  });
+
+  it("an invalid value or an unknown parent is reported once and changes nothing", () => {
+    const { call } = session(undefined, { JEV_FLOW_LOCATOR_MODEL: "gpt-9" });
+    const first = call("PreToolUse", agentCall("jev:jev-locator"));
+    assert.match(first.systemMessage, /must be haiku, sonnet, opus or inherit/);
+    assert.equal(first.hookSpecificOutput, undefined);
+    assert.equal(call("PreToolUse", agentCall("jev:jev-locator")), null, "reported once per session");
+    const inherit = session(undefined, { JEV_FLOW_LOCATOR_MODEL: "inherit" });
+    assert.match(inherit.call("PreToolUse", agentCall("jev:jev-locator")).systemMessage, /parent model is unknown/);
   });
 });
 
@@ -426,5 +526,149 @@ describe("hooks: robustness and state", () => {
     assert.deepEqual(Object.keys(state.gates[0]).sort(), ["after", "before", "boot", "failed", "id", "input", "req", "ts"]);
     assert.deepEqual(Object.keys(state.tests[0]).sort(), ["after", "before", "boot", "cmd", "exit", "failed", "req", "ts"]);
     assert.equal(state.tests[0].exit, null, "Claude's Bash response has no exit code: unknown, never success");
+  });
+});
+
+describe("hooks: partitioned gate batches at Stop (F3)", () => {
+  const change = (repo, v) => writeFiles(repo, { "src/app.ts": `${v}\n` });
+  const body = (n) => Array.from({ length: 900 }, (_, i) => `+const line${n}_${i} = "${"x".repeat(40)}";`).join("\n");
+  const DIFF = ["a", "b"].map((f) => [`diff --git a/${f}.ts b/${f}.ts`, `--- a/${f}.ts`, `+++ b/${f}.ts`, "@@ -0,0 +1,900 @@", body(f)].join("\n")).join("\n") + "\n";
+  const CLAIMS = [
+    { text: "a.ts adds 900 constants", evidence: ["hunk-1"] },
+    { text: "b.ts adds 900 constants", evidence: ["hunk-2"] },
+  ];
+  const prepare = (repo, claims = CLAIMS) =>
+    prepareGateBatch({ request: "add the constants", diff: DIFF, claims }, { denylist: parseDenylist(""), snapshot: computeSnapshot(repo).hash });
+  const strictSession = () => {
+    const s = session({ "src/app.ts": "v1\n" }, { JEV_FLOW_STRICT: "1" });
+    change(s.repo, "v2");
+    const batch = prepare(s.repo);
+    assert.equal(batch.ok, true, JSON.stringify(batch.problems));
+    assert.ok(batch.calls.length >= 2);
+    const send = (calls, prefix, resultFor = (input) => acceptedGate({}, input.claims)) =>
+      calls.forEach((c, i) => s.gate(`${prefix}${i + 1}`, resultFor(c.input), { input: c.input }));
+    return { ...s, batch, send };
+  };
+
+  it("all parts accepted on the current snapshot satisfy strict Stop", () => {
+    const s = strictSession();
+    s.send(s.batch.calls, "p");
+    assert.equal(s.stop(), null);
+  });
+
+  it("only some parts, or only the last part, do not", () => {
+    const s = strictSession();
+    s.send(s.batch.calls.slice(-1), "last");
+    assert.equal(s.stop().decision, "block", "the latest gate alone is not the batch");
+  });
+
+  it("an escalated part blocks; a later accepted retry of that part completes the batch", () => {
+    const s = strictSession();
+    const n = s.batch.calls.length;
+    s.send(s.batch.calls, "p", (input) => (input === s.batch.calls[n - 1].input ? acceptedGate({ action: "escalate", reason_codes: ["review_escalated"] }, input.claims) : acceptedGate({}, input.claims)));
+    assert.equal(s.stop().decision, "block");
+    s.send(s.batch.calls.slice(-1), "retry");
+    assert.equal(s.stop("Done again."), null);
+  });
+
+  it("a snapshot change after the parts invalidates the batch", () => {
+    const s = strictSession();
+    s.send(s.batch.calls, "p");
+    change(s.repo, "v3");
+    assert.equal(s.stop().decision, "block");
+  });
+
+  it("a part whose claims were altered breaks the manifest", () => {
+    const s = strictSession();
+    const calls = s.batch.calls.map((c, i) => (i === 0 ? { ...c, input: { ...c.input, claims: ["forged claim"] } } : c));
+    s.send(calls, "p");
+    assert.equal(s.stop().decision, "block");
+  });
+
+  // Each scenario uses a fresh session: its first Stop is the verdict (block =
+  // not accepted, null = accepted), independent of earlier notices.
+  const allClaims = (batch) => batch.calls.flatMap((c) => c.input.claims).filter((c, i, a) => a.indexOf(c) === i);
+
+  it("a later single gate must cover every claim and the whole patch of the batch it follows", () => {
+    const fewer = strictSession();
+    fewer.send(fewer.batch.calls.slice(0, 1), "p");
+    fewer.gate("single", acceptedGate({}, ["a.ts adds 900 constants"]), { input: { ...GATE_INPUT, diff: DIFF, claims: ["a.ts adds 900 constants"] } });
+    assert.equal(fewer.stop().decision, "block", "drops the batch's other claims");
+
+    const otherDiff = strictSession();
+    otherDiff.send(otherDiff.batch.calls.slice(0, 1), "p");
+    const all = allClaims(otherDiff.batch);
+    otherDiff.gate("claims-only", acceptedGate({}, all), { input: { ...GATE_INPUT, claims: all } });
+    assert.equal(otherDiff.stop().decision, "block", "same claims on another diff do not cover the batch's patch");
+
+    const full = strictSession();
+    full.send(full.batch.calls.slice(0, 1), "p");
+    full.gate("full", acceptedGate({}, allClaims(full.batch)), { input: { ...GATE_INPUT, diff: DIFF, claims: allClaims(full.batch) } });
+    assert.equal(full.stop(), null, "same claims and the same whole diff");
+  });
+
+  it("a replacement for only a.ts with the same claims, after only the first part of an a.ts+b.ts batch, is not accepted", () => {
+    const onlyAFor = (s) =>
+      prepareGateBatch(
+        { request: "add the constants", diff: DIFF.slice(0, DIFF.indexOf("diff --git a/b.ts")), claims: CLAIMS.map((c) => ({ ...c, evidence: ["hunk-1"] })) },
+        { denylist: parseDenylist(""), snapshot: computeSnapshot(s.repo).hash },
+      );
+    const batchA = strictSession();
+    batchA.send(batchA.batch.calls.slice(0, 1), "p");
+    const onlyA = onlyAFor(batchA);
+    assert.equal(onlyA.ok, true, JSON.stringify(onlyA.problems));
+    batchA.send(onlyA.calls, "a");
+    assert.equal(batchA.stop().decision, "block", "a batch for a.ts only drops b.ts");
+
+    const singleA = strictSession();
+    singleA.send(singleA.batch.calls.slice(0, 1), "p");
+    const texts = CLAIMS.map((c) => c.text);
+    singleA.gate("singleA", acceptedGate({}, texts), { input: { ...GATE_INPUT, diff: onlyAFor(singleA).calls[0].input.diff, claims: texts } });
+    assert.equal(singleA.stop().decision, "block", "a single gate for a.ts only is not accepted either");
+  });
+
+  it("a complete a.ts+b.ts replacement counts only once all its parts are accepted", () => {
+    const s = strictSession();
+    s.send(s.batch.calls.slice(0, 1), "p");
+    const rebuilt = prepare(s.repo, [{ text: "a.ts adds 900 constants", evidence: ["hunk-1"] }, { text: "b.ts adds 900 constants", evidence: ["hunk-2", "file:a.ts"] }]);
+    assert.equal(rebuilt.ok, true, JSON.stringify(rebuilt.problems));
+    assert.notEqual(rebuilt.batch.id, s.batch.batch.id);
+    s.send(rebuilt.calls.slice(0, 1), "r");
+    assert.equal(s.stop().decision, "block", "only the first part of the replacement");
+    s.send(rebuilt.calls.slice(1), "rr");
+    assert.equal(s.stop("Done again."), null);
+  });
+
+  it("parts from two preparations are not combined", () => {
+    const s = strictSession();
+    const rebuilt = prepare(s.repo, [{ text: "a.ts adds 900 constants", evidence: ["hunk-1"] }, { text: "b.ts adds 900 constants", evidence: ["hunk-2", "file:a.ts"] }]);
+    s.send(s.batch.calls.slice(0, 1), "p");
+    s.send(rebuilt.calls.slice(1), "q");
+    assert.equal(s.stop().decision, "block");
+  });
+
+  it("a gate outside the batch between its parts interleaves it", () => {
+    const s = strictSession();
+    s.send(s.batch.calls.slice(0, 1), "p");
+    s.gate("other", acceptedGate());
+    s.send(s.batch.calls.slice(1), "q");
+    assert.equal(s.stop().decision, "block");
+  });
+
+  it("a later gate call in the transcript after the batch supersedes it", () => {
+    const s = strictSession();
+    s.send(s.batch.calls, "p");
+    appendTranscriptCall(s.transcript, { id: "late", name: GATE, input: GATE_INPUT, result: "cancelled", isError: true });
+    assert.equal(s.stop().decision, "block");
+  });
+
+  it("the state keeps only batch metadata: no claims, diffs or verdicts", () => {
+    const s = strictSession();
+    s.send(s.batch.calls, "p");
+    const text = readFileSync(join(sessionDir(s.repo, s.id, s.env), "state.json"), "utf8");
+    const gates = JSON.parse(text).gates.filter((g) => g.batch);
+    assert.equal(gates.length, s.batch.calls.length);
+    assert.ok(gates.every((g) => g.batch === s.batch.batch.id && Number.isInteger(g.part) && g.of === s.batch.calls.length));
+    for (const needle of ["adds 900 constants", "const linea_1", "auto", "verified"]) assert.ok(!text.includes(needle), needle);
   });
 });
