@@ -21,6 +21,8 @@ async function go(raw, steps, ctx = {}) {
   return { result, caller, dir };
 }
 const probs = (real, control = [0.1, 0.1]) => [...real, ...control];
+/** The text of the context item `id` of a recorded call. */
+const ctxText = (call, id) => call.args.context.find((x) => x.id === id)?.text;
 const ids = (plan, action) => plan.filter((p) => p.action === action).map((p) => p.id);
 
 describe("eligibility is strictly above the threshold, on the raw probability", () => {
@@ -271,22 +273,109 @@ describe("raw scores, concrete actions and availability", () => {
     assert.equal(result.provenance.calls[0].tool, "noul");
     assert.equal(result.provenance.calls[0].attempts, 1);
     assert.equal(result.provenance.t, 0.95);
-    assert.match(caller.calls[0].args.propositions[0], /Concrete action: Bash npm run check-1\./, "Jev judges the concrete action, not only its description");
+    assert.match(caller.calls[0].args.propositions[0], /context item "action_o1"/, "the proposition points at the concrete action");
+    assert.equal(ctxText(caller.calls[0], "action_o1"), "Tool: Bash\nTarget: npm run check-1", "Jev judges the concrete action, not only its description");
   });
-  it("Jev is shown the concrete SANITIZED variant: exact arguments as sizes, hash prefixes and heads, no credential, never the whole payload", async () => {
+  it("Jev is shown the concrete SANITIZED variant IN FULL: no credential, and the decisive part after any prefix", async () => {
     const secret = `sk-or-v1-${"c".repeat(40)}`;
     const raw = batchOf(5, { kind: "edit" });
     raw.options[0].action = { tool: "Write", target: "src/a.js", content: `const k = "${secret}";\n${"y".repeat(600)}TAILMARK` };
     raw.options[1].action = { tool: "Edit", target: "src/a.js", old_string: "alpha", new_string: "beta" };
     const { result, caller } = await go(raw, [noul(probs([0.99, 0.6, 0.4, 0.3, 0.2]))]);
     const sent = JSON.stringify(caller.calls[0].args);
-    assert.match(caller.calls[0].args.propositions[0], /Concrete action: Write src\/a\.js with content \(\d+ chars, s256:[0-9a-f]{8}\): "const k = /);
-    assert.match(caller.calls[0].args.propositions[1], /Edit src\/a\.js with old_string \(5 chars, s256:[0-9a-f]{8}\): "alpha"; new_string \(4 chars, s256:[0-9a-f]{8}\): "beta"/);
+    const a1 = ctxText(caller.calls[0], "action_o1");
+    assert.match(a1, /^Tool: Write\nTarget: src\/a\.js\nArgument content \(\d+ characters, s256:[0-9a-f]{8}\) between the markers:\n<<<content\nconst k = /);
+    assert.match(a1, /TAILMARK\ncontent>>>$/, "the whole payload, to its last character");
     assert.equal(sent.includes(secret), false, "a credential in the payload never reaches Jev");
-    assert.equal(sent.includes("TAILMARK"), false, "only a head of the payload is shown");
+    assert.match(a1, /\[REDACTED/);
+    const a2 = ctxText(caller.calls[0], "action_o2");
+    assert.match(a2, /Argument old_string \(5 characters, s256:[0-9a-f]{8}\) between the markers:\n<<<old_string\nalpha\nold_string>>>/);
+    assert.match(a2, /<<<new_string\nbeta\nnew_string>>>/);
     const o1 = result.provenance.options.find((o) => o.id === "o1");
     assert.match(o1.action.args.content, /^s256:[0-9a-f]{64}$/, "the receipt keeps the hash of the payload, not the text");
     assert.equal(JSON.stringify(result.provenance).includes("TAILMARK"), false);
+    assert.equal(JSON.stringify(loadControlState(dirs.get(result))).includes("TAILMARK"), false, "nor does the state");
+  });
+  it("commands that share a long prefix are told apart by Jev: the whole command is sent, never a prefix", async () => {
+    const prefix = `echo ${"x".repeat(400)}`;
+    const raw = batchOf(5, { kind: "command" });
+    raw.options[0].action = { tool: "Bash", target: `${prefix} && rm -rf build` };
+    raw.options[1].action = { tool: "Bash", target: `${prefix} && npm test` };
+    const { caller } = await go(raw, [noul(probs([0.99, 0.6, 0.4, 0.3, 0.2]))]);
+    const [c1, c2] = [ctxText(caller.calls[0], "action_o1"), ctxText(caller.calls[0], "action_o2")];
+    assert.equal(c1, `Tool: Bash\nTarget: ${prefix} && rm -rf build`);
+    assert.equal(c2, `Tool: Bash\nTarget: ${prefix} && npm test`);
+    assert.notEqual(c1, c2);
+    assert.equal(caller.calls[0].args.propositions.every((p) => p.length <= 2000), true);
+  });
+  it("a Write or an Edit whose decisive difference comes after the 160th character is distinguishable in what Jev reads", async () => {
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options[0].action = { tool: "Write", target: "src/a.js", content: `${"a".repeat(300)}SAFE_TAIL` };
+    raw.options[1].action = { tool: "Write", target: "src/a.js", content: `${"a".repeat(300)}DANGER_TAIL` };
+    raw.options[2].action = { tool: "Edit", target: "src/b.js", old_string: "x", new_string: `${"b".repeat(300)}KEEP` };
+    raw.options[3].action = { tool: "Edit", target: "src/b.js", old_string: "x", new_string: `${"b".repeat(300)}DROP` };
+    const { caller } = await go(raw, [noul(probs([0.99, 0.6, 0.4, 0.3, 0.2]))]);
+    const t = (id) => ctxText(caller.calls[0], `action_${id}`);
+    assert.match(t("o1"), /SAFE_TAIL\ncontent>>>$/);
+    assert.match(t("o2"), /DANGER_TAIL\ncontent>>>$/);
+    assert.match(t("o3"), /KEEP\nnew_string>>>$/);
+    assert.match(t("o4"), /DROP\nnew_string>>>$/);
+  });
+  it("a long decision is not cut inside the proposition: it moves to a context item of its own", async () => {
+    const decision = `${"Which option? ".repeat(100)}`.trim().slice(0, 1500);
+    const raw = batchOf(5, { kind: "command", decision });
+    raw.options[0].text = "t".repeat(1500);
+    const { caller } = await go(raw, [noul(probs([0.99, 0.6, 0.4, 0.3, 0.2]))]);
+    const [p0, p1] = caller.calls[0].args.propositions;
+    assert.match(p0, /the decision stated in the context item "decision"/);
+    assert.equal(p0.length <= 2000, true);
+    assert.equal(p0.includes("t".repeat(1500)), true, "the option text is whole");
+    assert.equal(ctxText(caller.calls[0], "decision"), decision);
+    assert.match(p1, /for this decision: /, "a short proposition keeps its decision inline");
+  });
+  it("what does not fit one call is split over several, each option judged whole; nothing is shortened", async () => {
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options.forEach((o, i) => {
+      o.action = { tool: "Write", target: `src/big-${i}.js`, content: `${String(i).repeat(50_000)}END${i}` };
+    });
+    const { result, caller } = await go(raw, [noul([0.99, 0.6]), noul([0.5, 0.4]), noul([0.3, 0.1, 0.1])]);
+    assert.equal(caller.calls.length, 3);
+    assert.equal(result.calls, 3);
+    assert.equal(result.status, "selected");
+    assert.deepEqual(ids(result.plan, "execute"), ["o1"]);
+    const sentChars = caller.calls.map((c) => c.args.propositions.join("").length + c.args.context.reduce((n, x) => n + x.text.length, 0));
+    assert.equal(sentChars.every((n) => n <= 150_000), true, `each call within the tool's own total: ${sentChars}`);
+    for (let i = 0; i < 5; i++) {
+      const holders = caller.calls.filter((c) => c.args.context.some((x) => x.id === `action_o${i + 1}` && x.text.endsWith(`END${i}\ncontent>>>`)));
+      assert.equal(holders.length, 1, `option o${i + 1} is judged once, whole`);
+    }
+    const scores = result.scores;
+    assert.deepEqual([scores.o1, scores.o2, scores.o3, scores.o4, scores.o5], [0.99, 0.6, 0.5, 0.4, 0.3], "probabilities of the chunks are joined in option order");
+  });
+  it("an action Jev cannot be shown whole (sanitizing drops a line) is never scored, so never authorized", async () => {
+    const raw = batchOf(5, { kind: "command" });
+    raw.options[0].action = { tool: "Bash", target: "export X=Zk3jF9qL2mX8vB7nR4tY6wP1sD5aH0cE9uG # api key" };
+    const { result, caller } = await go(raw, [noul([0.97, 0.6, 0.4, 0.3, 0.1, 0.1])]);
+    assert.equal(caller.calls[0].args.propositions.length, 6, "o1 is not among the scored propositions");
+    assert.equal(JSON.stringify(caller.calls[0].args).includes("Zk3jF9qL2mX8vB7nR4tY6wP1sD5aH0cE9uG"), false);
+    assert.deepEqual(result.unavailable, ["o1:action_material_omitted"]);
+    assert.equal(result.plan.some((p) => p.id === "o1" && p.action === "execute"), false);
+    assert.equal(result.provenance.options.find((o) => o.id === "o1").unavailable, "action_material_omitted");
+  });
+  it("a tie-break reads the whole concrete action of every tied option; when it does not fit, nothing is chosen", async () => {
+    const small = await go(batchOf(5, { kind: "edit" }), [noul(probs([0.97, 0.965, 0.5, 0.4, 0.3])), decide("o1")]);
+    const sd = small.caller.calls[1].args;
+    assert.match(sd.evidence, /Concrete action of option o1:\nTool: Edit\nTarget: src\/file-1\.js/);
+    assert.match(sd.evidence, /<<<new_string\nnew 2\nnew_string>>>/);
+    assert.match(sd.candidates[0].description, /in the evidence under "Concrete action of option o1"/);
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options[0].action = { tool: "Write", target: "src/a.js", content: "p".repeat(8000) };
+    raw.options[1].action = { tool: "Write", target: "src/b.js", content: "q".repeat(8000) };
+    const big = await go(raw, [noul(probs([0.97, 0.965, 0.5, 0.4, 0.3]))]);
+    assert.equal(big.caller.calls.length, 1, "no jev_decide over material that was cut");
+    assert.equal(big.result.status, "expand");
+    assert.equal(big.result.reason, "action_material_too_large");
+    assert.deepEqual(big.result.plan, [], "nothing is authorized");
   });
   it("the provenance fingerprints the evidence each option depends on, at decision time", async () => {
     const repo = makeRepo({ "src/file-1.js": "one\n", "pkg.json": "{}\n" });

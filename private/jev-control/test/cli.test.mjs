@@ -346,6 +346,10 @@ describe("approvals, budget and direct calls", () => {
     const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
     assert.equal(state.approvals.length, 1);
     assert.equal(state.approvals[0].option, "o1");
+    const quoted = cli(["approve", ...SID, "--decision", "dec9", "--option", "o1", "--message", "do not use o1"], { env, cwd: repo });
+    assert.equal(quoted.code, 4);
+    assert.equal(quoted.json.reason, "message_not_authorization");
+    assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.length, 1, "a quoted refusal records no approval");
     assert.equal(cli(["approve", ...SID, "--decision", "nope", "--option", "o1", "--message", "yes"], { env, cwd: repo }).code, 4);
     assert.equal(cli(["approve", ...SID, "--decision", "dec9", "--option", "zz", "--message", "yes"], { env, cwd: repo }).code, 4);
   });
@@ -364,6 +368,14 @@ describe("approvals, budget and direct calls", () => {
     const noWords = cli(["budget", "approve", ...SID], { env, cwd: repo });
     assert.equal(noWords.code, 4, "going past the budget needs the user's own words");
     assert.match(noWords.json.message, /--message/);
+    const quoted = cli(["budget", "approve", ...SID, "--n", "100", "--message", "Do not increase the budget."], { env, cwd: repo });
+    assert.equal(quoted.code, 4);
+    assert.equal(quoted.json.reason, "message_not_authorization");
+    assert.match(quoted.json.message, /not an authorization/);
+    const smaller = cli(["budget", "approve", ...SID, "--n", "100", "--message", "yes, approve 10 more calls"], { env, cwd: repo });
+    assert.equal(smaller.json.reason, "over_quantum");
+    assert.match(smaller.json.message, /at most 10/);
+    assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.limit, 25, "nothing was raised by a refusal");
     const approved = cli(["budget", "approve", ...SID, "--message", "yes, go on beyond the limit"], { env, cwd: repo });
     assert.equal(approved.json.limit, 50);
     assert.deepEqual(approved.json.approval, { n: 25, msg: "yes, go on beyond the limit" });

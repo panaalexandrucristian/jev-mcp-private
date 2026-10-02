@@ -65,7 +65,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_wrapper is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Add a wrapper in src/utils/math.mjs",
     "Taking option opt_tests is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Change the failing test",
     "Taking option action_gather_evidence is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
+    "Taking option action_ask_user is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\"."
   ],
   "context": [
     {
@@ -94,7 +94,11 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_6",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+    },
+    {
+      "id": "action_action_ask_user",
+      "text": "Tool: AskUserQuestion"
     },
     {
       "id": "priorities",

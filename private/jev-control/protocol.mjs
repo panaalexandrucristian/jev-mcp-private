@@ -11,8 +11,8 @@
 // executed without a recorded user approval. Jev unavailable (after the single
 // identical retry) stops the step; there is no silent continuation.
 import { sanitizeText } from "../jev-flow/sanitize.mjs";
-import { actionRecord, dependencyPaths, describeAction, evaluatePreconditions, fingerprintPaths, planItem, shortHash } from "./actions.mjs";
-import { parseDecideResult, parseNoulResult, parseRankResult } from "./contracts.mjs";
+import { actionMaterial, actionRecord, dependencyPaths, evaluatePreconditions, fingerprintPaths, planItem, shortHash } from "./actions.mjs";
+import { LIMITS, parseDecideResult, parseNoulResult, parseRankResult } from "./contracts.mjs";
 import { isUnavailable, UNAVAILABLE } from "./client.mjs";
 import { ASK_ID, CONTROL_IDS, EXCLUSIVE_KINDS, GATHER_ID, optionActionHash, optionHash } from "./options.mjs";
 import { hashJson } from "./receipts.mjs";
@@ -22,13 +22,24 @@ import { exceeds, isNearTie } from "./threshold.mjs";
 export const MAX_EXPANSIONS = 2;
 export const SHORTLIST = 6;
 const SAME = 1e-9;
-const clip = (text, n) => String(text).slice(0, n);
-/**
- * The concrete action an option stands for (tool, exact target and every bound argument, a payload as its size, a hash
- * prefix and a short head), as a short SANITIZED phrase Jev can judge (empty when it names none). The hash and the
- * receipt cover the raw action; only what is shown to Jev is sanitized.
- */
-const actionPhrase = (o) => (o.action ? ` Concrete action: ${clip(sanitizeText(describeAction(o.action)).text, 600)}.` : "");
+// What Jev judges, and what is only kept. The concrete action an option stands for (tool, exact target, every argument IN
+// FULL) is sanitized and sent whole as its own context item or evidence block: a head or a prefix is never enough, because
+// the decisive part of a command or a payload can come after it. What does not fit a call is not shortened: a batch is
+// split over several jev_noul calls, and a tie-break whose material does not fit stops without choosing. What stays behind
+// (the receipt, the state, the plan) holds only hashes and compact labels (actions.mjs).
+/** Characters of one jev_noul call (propositions plus context) the control fills at most; the tool's own limit is 150000. */
+const NOUL_CHUNK_CHARS = 120_000;
+/** The context item that carries the decision when it does not fit inside the proposition. */
+const DECISION_ITEM = "decision";
+
+/** The whole sanitized concrete material of an option's action: {text, omitted}; omitted when sanitizing had to drop a line (then it cannot be shown whole). */
+function materialOf(option) {
+  if (!option.action) return null;
+  const sanitized = sanitizeText(actionMaterial(option.action));
+  return { text: sanitized.text, omitted: sanitized.omitted_lines > 0 };
+}
+
+const stopTooLarge = (what) => new StopDecision({ status: "tie_unresolved", reason: "action_material_too_large", message: `${what}: the concrete action material of the options does not fit in one Jev call, and nothing Jev did not read may be authorized` });
 
 export class StopDecision extends Error {
   constructor(result) {
@@ -47,19 +58,14 @@ function failure(reply, extra = {}) {
 }
 
 function propositionFor(batch, option) {
-  return `Taking option ${option.id} is the right next step for this decision: ${batch.decision} — Option: ${option.text}${actionPhrase(option)}`.slice(0, 2000);
+  const tail = ` — Option: ${option.text}${option.action ? ` Its concrete action, in full, is the context item "action_${option.id}".` : ""}`;
+  const inline = `Taking option ${option.id} is the right next step for this decision: ${batch.decision}${tail}`;
+  return inline.length <= LIMITS.noulPropositionChars ? inline : `Taking option ${option.id} is the right next step for the decision stated in the context item "${DECISION_ITEM}"${tail}`;
 }
 
-function evidenceBlock(options, maxChars) {
-  const lines = [];
-  let used = 0;
-  for (const o of options) {
-    const text = `Option ${o.id}: ${o.evidence.join(" | ")}${actionPhrase(o)}`;
-    if (used + text.length + 1 > maxChars) break;
-    lines.push(text);
-    used += text.length + 1;
-  }
-  return lines.join("\n");
+/** The evidence of the tied options and, after each, the whole concrete action it stands for. */
+function evidenceBlock(options, ctx) {
+  return options.map((o) => `Option ${o.id}: ${o.evidence.join(" | ")}${o.action ? `\nConcrete action of option ${o.id}:\n${ctx.materials.get(o.id).text}` : ""}`).join("\n");
 }
 
 /** Run one Jev call, recording argument and result hashes for the receipt. */
@@ -78,7 +84,9 @@ async function shortlistOf(group, batch, ctx) {
   const above = group.filter((g) => g.score > boundary + SAME);
   const tied = group.filter((g) => Math.abs(g.score - boundary) <= SAME);
   const need = SHORTLIST - above.length;
-  const args = { query: `Which option should come first for this decision: ${batch.decision}`.slice(0, 2000), candidates: tied.map((t) => ({ id: t.id, text: `${t.text}${actionPhrase(t)}`.slice(0, 2000) })), top_k: tied.length };
+  const candidates = tied.map((t) => ({ id: t.id, text: `${t.text}${t.action ? `\nConcrete action:\n${ctx.materials.get(t.id).text}` : ""}` }));
+  if (candidates.some((c) => c.text.length > LIMITS.candidateChars)) throw stopTooLarge("tie at the shortlist boundary");
+  const args = { query: `Which option should come first for this decision: ${batch.decision}`.slice(0, LIMITS.rerankQueryChars), candidates, top_k: tied.length };
   const ids = tied.map((t) => t.id);
   const reply = await jev(ctx, "jev_rerank", args, { source: "tiebreak", invalid: (r) => !parseRankResult("rerank", r, ids, tied.length).ok });
   if (!reply.ok) throw new StopDecision(failure(reply));
@@ -92,11 +100,13 @@ async function shortlistOf(group, batch, ctx) {
 /** One jev_decide selection over a tie group: the winner, strictly above the threshold, or a stop. */
 async function selectFrom(group, batch, ctx) {
   const shortlist = await shortlistOf(group, batch, ctx);
+  const evidence = evidenceBlock(shortlist, ctx);
+  if (evidence.length > LIMITS.decideEvidenceChars) throw stopTooLarge("tie-break");
   const args = {
     decision: batch.decision,
-    evidence: evidenceBlock(shortlist, 12_000) || "No further evidence.",
+    evidence: evidence || "No further evidence.",
     priorities: ctx.priorities,
-    candidates: shortlist.map((o) => ({ id: o.id, description: `${o.text}${actionPhrase(o)}`.slice(0, 2000) })),
+    candidates: shortlist.map((o) => ({ id: o.id, description: `${o.text}${o.action ? ` (Its concrete action, in full, is in the evidence under "Concrete action of option ${o.id}".)` : ""}` })),
   };
   const ids = shortlist.map((o) => o.id);
   const reply = await jev(ctx, "jev_decide", args, { source: "tiebreak", invalid: (r) => !parseDecideResult(r, ids).ok });
@@ -253,7 +263,10 @@ async function decideOnce(batch, ctx) {
     return result;
   };
   // 0. Availability: an option whose preconditions do not hold now (or cannot be evaluated) is not scored.
+  ctx.materials = new Map(batch.options.filter((o) => o.action).map((o) => [o.id, materialOf(o)]));
   const usable = batch.options.filter((o) => {
+    // An action Jev cannot be shown whole (sanitizing dropped a line) is never scored, so never authorized.
+    if (ctx.materials.get(o.id)?.omitted) return (unavailable.push({ id: o.id, reason: "action_material_omitted" }), false);
     if (!o.preconditions?.length) return true;
     if (!ctx.repoRoot) return (unavailable.push({ id: o.id, reason: "preconditions_not_evaluable" }), false);
     const check = evaluatePreconditions(o.preconditions, ctx.repoRoot);
@@ -268,20 +281,35 @@ async function decideOnce(batch, ctx) {
   const expandOrAsk = (reason, extra = {}) => (expansionsLeft > 0 ? finish("expand", { reason, expansions_left: expansionsLeft, ...extra }, scoreOf) : stopForUser(reason, extra));
   let scoreOf = {};
   if (!usable.some((o) => !o.control)) return expandOrAsk("all_options_unavailable");
-  // 1. Independent probabilities.
-  const n = usable.length;
-  const args = {
-    propositions: usable.map((o) => propositionFor(batch, o)),
-    context: [
-      ...usable.map((o, i) => ({ id: `evidence_${i}`, text: `Option ${o.id}: ${o.evidence.join(" | ")}${actionPhrase(o)}`.slice(0, 2000) })),
-      { id: "priorities", text: ctx.priorities.slice(0, 2000) },
-    ],
-    auto_accept: T,
-  };
-  const reply = await jev(ctx, "jev_noul", args, { source: ctx.source ?? "helper", invalid: (r) => !parseNoulResult(r, n, args.propositions).ok });
-  if (!reply.ok) return { ...failure(reply), decision_id: key, calls: ctx.attempts };
-  const parsed = parseNoulResult(reply.result, n, args.propositions);
-  if (!parsed.ok) return { ...failure({ ok: false, kind: "invalid_response", message: parsed.reason }), decision_id: key, calls: ctx.attempts };
+  // 1. Independent probabilities, over as many jev_noul calls as the whole material needs (each option is judged on its own).
+  const costOf = (o) => propositionFor(batch, o).length + o.evidence.join(" | ").length + (ctx.materials.get(o.id)?.text.length ?? 0) + 100;
+  const chunks = [];
+  let sum = 0;
+  for (const o of usable) {
+    if (chunks.length === 0 || sum + costOf(o) > NOUL_CHUNK_CHARS) {
+      chunks.push([]);
+      sum = 0;
+    }
+    chunks[chunks.length - 1].push(o);
+    sum += costOf(o);
+  }
+  const probabilities = [];
+  for (const chunk of chunks) {
+    const propositions = chunk.map((o) => propositionFor(batch, o));
+    const context = propositions.some((p) => p.includes(`context item "${DECISION_ITEM}"`)) ? [{ id: DECISION_ITEM, text: batch.decision }] : [];
+    chunk.forEach((o, i) => {
+      context.push({ id: `evidence_${i}`, text: `Option ${o.id}: ${o.evidence.join(" | ")}` });
+      if (o.action) context.push({ id: `action_${o.id}`, text: ctx.materials.get(o.id).text });
+    });
+    context.push({ id: "priorities", text: ctx.priorities.slice(0, 2000) });
+    const args = { propositions, context, auto_accept: T };
+    const reply = await jev(ctx, "jev_noul", args, { source: ctx.source ?? "helper", invalid: (r) => !parseNoulResult(r, chunk.length, propositions).ok });
+    if (!reply.ok) return { ...failure(reply), decision_id: key, calls: ctx.attempts };
+    const parsed = parseNoulResult(reply.result, chunk.length, propositions);
+    if (!parsed.ok) return { ...failure({ ok: false, kind: "invalid_response", message: parsed.reason }), decision_id: key, calls: ctx.attempts };
+    probabilities.push(...parsed.probabilities);
+  }
+  const parsed = { probabilities };
   scoreOf = scoresOf(usable, parsed.probabilities);
   const scored = usable.map((o, i) => ({ ...o, score: parsed.probabilities[i], index: i }));
   // 2. Eligibility: strictly above the threshold, on the raw probability (the tool's label is ignored).

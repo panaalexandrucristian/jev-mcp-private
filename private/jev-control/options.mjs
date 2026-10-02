@@ -11,7 +11,7 @@
 // decision and bound into the plan and the receipt. A kind whose options are
 // actions (order, command, edit, delegate) requires the descriptor.
 import { createHash } from "node:crypto";
-import { actionHash, descriptorKey, EDIT_TOOLS, normalizeDescriptor, normalizePreconditions } from "./actions.mjs";
+import { actionHash, actionMaterial, descriptorKey, EDIT_TOOLS, MAX_MATERIAL_CHARS, normalizeDescriptor, normalizePreconditions } from "./actions.mjs";
 import { DECIDE_HATCHES } from "./contracts.mjs";
 
 export const KINDS = Object.freeze(["order", "approach", "command", "edit", "delegate", "ask", "done"]);
@@ -90,6 +90,7 @@ export function normalizeBatch(raw, { root = null } = {}) {
     if (o.action !== undefined && o.action !== null) {
       const d = normalizeDescriptor(o.action, root);
       if (!d.ok) problems.push(...d.problems.map((m) => `${where}.${m}`));
+      else if (actionMaterial(d.descriptor).length > MAX_MATERIAL_CHARS) problems.push(`${where}.action is too large for Jev to read whole (more than ${MAX_MATERIAL_CHARS} characters of target and arguments): split it into smaller actions, because nothing Jev did not read may be authorized`);
       else action = d.descriptor;
     }
     if (raw.kind in ACTION_REQUIRED) {

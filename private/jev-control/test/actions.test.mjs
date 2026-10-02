@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { actionHash, actionRecord, dependencyPaths, describeAction, evaluatePreconditions, fingerprintPaths, normalizeDescriptor, normalizePath, normalizePreconditions, observedDescriptor, parsePlanItem, planItem, shortHash } from "../actions.mjs";
+import { actionHash, actionMaterial, actionRecord, dependencyPaths, describeAction, evaluatePreconditions, fingerprintPaths, normalizeDescriptor, normalizePath, normalizePreconditions, observedDescriptor, parsePlanItem, planItem, shortHash } from "../actions.mjs";
 import { makeRepo, writeFiles } from "./helpers.mjs";
 
 describe("action descriptors", () => {
@@ -49,12 +49,25 @@ describe("action descriptors", () => {
     assert.equal(normalizePath("/elsewhere/a.js", "/repo"), "/elsewhere/a.js");
     assert.equal(normalizePath("/repo", "/repo"), ".");
   });
-  it("describe the concrete call for Jev with sizes, hash prefixes and heads, never the whole payload", () => {
+  it("label the call compactly for logs (size and hash prefix only) and give Jev the whole concrete material apart", () => {
     const big = `${"x".repeat(500)}TAIL`;
-    const text = describeAction(D({ tool: "Write", target: "a.js", content: big }));
-    assert.match(text, /^Write a\.js with content \(504 chars, s256:[0-9a-f]{8}\): "x+"$/);
-    assert.equal(text.includes("TAIL"), false);
+    const d = D({ tool: "Write", target: "a.js", content: big });
+    const label = describeAction(d);
+    assert.match(label, /^Write a\.js with content \(504 chars, s256:[0-9a-f]{8}\)$/);
+    assert.equal(label.includes("xxx"), false, "the label carries no payload text");
+    const material = actionMaterial(d);
+    assert.match(material, /^Tool: Write\nTarget: a\.js\nArgument content \(504 characters, s256:[0-9a-f]{8}\) between the markers:\n<<<content\nx{500}TAIL\ncontent>>>$/);
     assert.match(describeAction(D({ tool: "Read", target: "a.js", offset: 5, limit: 7 })), /offset=5; limit=7/);
+    assert.match(actionMaterial(D({ tool: "Read", target: "a.js", offset: 5, limit: 7 })), /Argument offset: 5\nArgument limit: 7$/);
+    const long = `${"c".repeat(2000 - 20)} && rm -rf build`;
+    assert.equal(actionMaterial(D({ tool: "Bash", target: long })).endsWith("rm -rf build"), true, "a long command is whole");
+    const edits = actionMaterial(D({ tool: "MultiEdit", target: "a.js", edits: [{ old_string: "a", new_string: "b" }] }));
+    assert.match(edits, /<<<edits\n\[\{"old_string":"a","new_string":"b","replace_all":false\}\]\nedits>>>$/);
+  });
+  it("an observed call keeps only the size of a payload, never its text", () => {
+    const d = observedDescriptor("Write", { file_path: "/repo/a.js", content: "SECRET=1" }, "/repo");
+    assert.deepEqual(d.view.content, { chars: 8 });
+    assert.equal(JSON.stringify(d).includes("SECRET"), false);
   });
   it("keep only hashes of the payloads in the record a receipt stores", () => {
     const rec = actionRecord(D({ tool: "Write", target: "a.js", content: "SECRET=1" }));

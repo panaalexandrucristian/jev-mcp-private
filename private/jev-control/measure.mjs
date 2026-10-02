@@ -28,18 +28,23 @@
 // option only (evidence, precondition, action or option problems); a replay or an
 // out-of-order refusal revokes nothing. A covered action is counted as
 // receipt_verified only when an authorized, non-dry-run verification of its
-// decision and option preceded it; otherwise unverified_binding: snapshot and
+// decision and option preceded it AND nothing that may change the tree (an edit, a
+// Bash command, a delegated agent, an unclassified tool) happened between the
+// verification and the action; otherwise unverified_binding: snapshot and
 // precondition validity at action time is proven only for the former.
 // (2) threshold compliance: an `e` plan item must score strictly above the
 // output's own threshold, no controllable action may follow a blocking stop until
 // a new helper result or a bound approval, and an approval counts only when its
-// message occurs in a real user message of the same request. (3) plan ordering
+// message occurs in a real user message of the same request as part of a granting
+// sentence (authorization.mjs: a quoted refusal, question or condition is not one). (3) plan ordering
 // and the order of the actions actually executed. (4) Jev calls: direct calls
 // against open reservations of the SAME agent context (a reserve's --source must
 // match its context's side), helper-reported attempts against the per-request
-// limit of 25, raised only by a `budget approve` whose --message occurs in a real
-// user message of that request. (5) finalization, per request: every `done` call
-// replaces the request's state; accepted = outcome accepted AND control says
+// limit of 25, raised only by a `budget approve` whose --message is an authorization
+// the user gave in that request (once, for at most the quantity their words state).
+// (5) finalization, per request: every `done` call
+// replaces the request's state, and only the latest started attempt's result may
+// update it (a late result of an earlier attempt is ignored: stale_results); accepted = outcome accepted AND control says
 // strictly above AND control.threshold equals the session threshold; any later
 // edit of the request invalidates it; a request with edits must end accepted, or
 // with a final message starting `Incomplete:`, or it is a completion declared
@@ -51,6 +56,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { actionHash, EDIT_TOOLS, normalizePath, observedDescriptor, parsePlanItem, shortHash } from "./actions.mjs";
+import { authorizedExtra, findAuthorizations } from "./authorization.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult, toolBase } from "./contracts.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
@@ -62,6 +68,8 @@ export const SEARCH_BLOCKING = new Set(["budget_exhausted", "search_budget_exhau
 const MECHANICAL = new Set(["TodoWrite", "ToolSearch", "Skill", "TaskOutput", "TaskStop", "ExitPlanMode", "EnterPlanMode"]);
 const ACTIONS = new Set(["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob", "LS", "Agent", "Task", "AskUserQuestion"]);
 const GRANTING = new Set(["decide", "search", "page", "approve"]);
+/** Tools whose calls may change the tree (an unclassified tool counts too): a verification does not survive them. */
+const MUTATING = new Set(["Bash", "Agent", "Task", ...EDIT_TOOLS]);
 const BASE_LIMIT = 25;
 const SAMPLES = 10;
 
@@ -283,6 +291,8 @@ const CLI_SCRIPT = /jev-control\/cli\.mjs$/;
 const FLOW_SCRIPT = /(^|\/)(jev-gate-run|jev-candidates)\.mjs$/;
 /** Helper flags that never take a value. */
 const BOOL_FLAGS = new Set(["dry-run", "headless", "single", "widen"]);
+/** The commands that may feed a helper through a pipe: they only print data. */
+const FEEDERS = new Set(["cat", "echo", "printf"]);
 /** Redirections a helper call may carry: stderr only. */
 const STDERR_REDIRECTS = new Set(["2>&1", "2>/dev/null"]);
 
@@ -396,7 +406,7 @@ const isAssignment = (w) => typeof w === "string" && /^[A-Za-z_][A-Za-z0-9_]*=/.
  * The argument words (after the script) when `command` is, structurally, ONE
  * genuine run of a node script matching `scriptRe`: optional leading `cd <dir>`
  * or assignment-only commands joined by && ; or a newline, optional piped feeders
- * (`cat x.json |`), then `[VAR=v ...] node <script> <args>` with only stderr
+ * (`cat x.json |`, `echo ... |`, `printf ... |`: only commands that print data), then `[VAR=v ...] node <script> <args>` with only stderr
  * redirects and here-documents / here-strings, and nothing after it (a trailing
  * newline or `;` is fine). Command substitution, a chained command, a pipe from the
  * script, a stdout redirect or any other shape is not a run: null.
@@ -425,9 +435,15 @@ function scriptRun(command, scriptRe) {
   const last = kept[kept.length - 1];
   // Nothing may follow the script except a trailing `;` or newline.
   if (!last || (last.op !== null && last.op !== ";" && last.op !== "\n")) return null;
-  // Walk back over the pipe feeders (any command whose output is piped in); everything before is the prefix.
+  // Walk back over the pipe feeders; everything before is the prefix.
   let head = kept.length - 1;
   while (head > 0 && kept[head - 1].op === "|") head -= 1;
+  // A feeder may only print data (cat of files, echo, printf): any other command in front of the pipe is an action of its
+  // own that the helper call would hide, so the whole command is not a helper run and is audited as the action it is.
+  for (const seg of kept.slice(head, kept.length - 1)) {
+    if (seg.words.some((w) => typeof w !== "string") || !FEEDERS.has(seg.words[0])) return null;
+    if (seg.words[0] === "cat" && seg.words.slice(1).some((w) => w.startsWith("-") && w !== "-")) return null;
+  }
   for (const seg of kept.slice(0, head)) {
     if (seg.op !== "&&" && seg.op !== ";" && seg.op !== "\n") return null;
     if (seg.words.some((w) => typeof w !== "string")) return null;
@@ -547,8 +563,8 @@ export function audit(records, { threshold = 0.95 } = {}) {
       per_request: [],
       violations: [],
     },
-    budget: { approvals_bound: 0, approvals_unbound: 0 },
-    finalization: { done_calls: 0, last_outcome: null, accepted: false, last_accepted_at: null, edits: 0, incomplete_stops: 0, accepted_without_control: 0, per_request: [], unknown: [], violations: [] },
+    budget: { approvals_bound: 0, approvals_unbound: 0, approvals_over_quantum: 0, unbound: [] },
+    finalization: { done_calls: 0, last_outcome: null, accepted: false, last_accepted_at: null, edits: 0, incomplete_stops: 0, accepted_without_control: 0, stale_results: 0, per_request: [], unknown: [], violations: [] },
     approvals: { calls: 0, bound: 0, unbound: [], refused: 0 },
     receipts: { receipt_verifications: 0, receipt_refusals: 0, refusals_by_reason: {} },
   };
@@ -564,6 +580,9 @@ export function audit(records, { threshold = 0.95 } = {}) {
   const reportedLimit = new Map();
   const finState = new Map();
   const editLog = [];
+  // Everything that may have changed the tree, by position: an edit, a Bash command, a delegated agent, an unclassified tool.
+  const mutations = [];
+  const usedAuthorizations = new Set();
   const edits = [];
   let lastT = null;
   // The threshold in force for a `done`: the latest numeric threshold any session-level helper output carried.
@@ -594,10 +613,30 @@ export function audit(records, { threshold = 0.95 } = {}) {
     g.revoked = reason;
     out.coverage.grants.revoked += 1;
   };
-  /** True when `message` (normalized, at least 3 characters) occurs in a real user message of request `req` before position `before`. */
-  const userSaid = (message, req, before) => {
-    const m = norm(message);
-    return m.length >= 3 && userMessages[req].some((u) => u.at < before && norm(u.text).includes(m));
+  /**
+   * Is `message` (at least 3 characters) an AUTHORIZATION the user gave in request `req` before position `before`? The words
+   * must occur in a real user message AND the sentence they lie in must grant (a quoted «Do not increase the budget.» is
+   * not an approval). `once`: the authorization is spent (a budget raise): the same words in the same user message
+   * cannot authorize a second time. {ok: true, quantum} or {ok: false, reason: not_said | not_an_authorization | approval_reused}.
+   */
+  const authorize = (message, req, before, { once = false } = {}) => {
+    let found = false;
+    let reused = false;
+    for (const [k, u] of userMessages[req].entries()) {
+      if (u.at >= before) continue;
+      const r = findAuthorizations(u.text, message);
+      found ||= r.found;
+      for (const o of r.occurrences) {
+        const key = `${req}:${k}:${o.start}`;
+        if (once && usedAuthorizations.has(key)) {
+          reused = true;
+          continue;
+        }
+        if (once) usedAuthorizations.add(key);
+        return { ok: true, quantum: o.quantum };
+      }
+    }
+    return { ok: false, reason: reused ? "approval_reused" : found ? "not_an_authorization" : "not_said" };
   };
 
   const matches = (g, desc, ah) => {
@@ -705,7 +744,9 @@ export function audit(records, { threshold = 0.95 } = {}) {
         ctxStats(e.ctx).covered += 1;
         if (chosen.whole) out.coverage.search_whole_file_reads += 1;
         // Snapshot and precondition validity at action time is proven only when the decision's option was receipt-verified before.
-        const verified = verifications.some((v) => v.decision_id === chosen.decision_id && v.option === chosen.option && v.ctx === e.ctx && v.req === e.req && v.at < e.i);
+        // And only while nothing that may change the tree happened since: an edit, a Bash command or a delegated agent between the
+        // verification and this action may have moved the evidence the authorization rested on (conservative: unknown effects count).
+        const verified = verifications.some((v) => v.decision_id === chosen.decision_id && v.option === chosen.option && v.ctx === e.ctx && v.req === e.req && v.at < e.i && !mutations.some((m) => m.req === e.req && m.i > v.at && m.i < e.i));
         out.coverage[verified ? "receipt_verified" : "unverified_binding"] += 1;
         return;
       }
@@ -786,6 +827,12 @@ export function audit(records, { threshold = 0.95 } = {}) {
 
   function onDoneResult(e, p, at) {
     const f = finOf(e.req);
+    // A result belongs to the attempt that produced it: only the request's current (latest started) attempt may update the
+    // finalization; a late result of an earlier attempt is counted and ignored.
+    if (f.done_seq !== e.seq) {
+      out.finalization.stale_results += 1;
+      return;
+    }
     const outcome = (p && (nonEmpty(p.outcome) ?? nonEmpty(p.status))) || "unknown";
     f.outcome = outcome;
     const ctl = p?.control && typeof p.control === "object" ? p.control : null;
@@ -903,10 +950,10 @@ export function audit(records, { threshold = 0.95 } = {}) {
           out.approvals.refused += 1;
           return;
         }
-        const bound = typeof c.flags.message === "string" && userSaid(c.flags.message, e.req, e.i);
-        if (!bound) {
+        const auth = typeof c.flags.message === "string" ? authorize(c.flags.message, e.req, e.i) : { ok: false, reason: "not_said" };
+        if (!auth.ok) {
           out.threshold.approvals_unbound += 1;
-          out.approvals.unbound.push({ at: e.i, decision_id: p.decision_id ?? null, option: p.option ?? null });
+          out.approvals.unbound.push({ at: e.i, decision_id: p.decision_id ?? null, option: p.option ?? null, reason: auth.reason });
           return;
         }
         out.approvals.bound += 1;
@@ -934,13 +981,19 @@ export function audit(records, { threshold = 0.95 } = {}) {
         } else if (c.action === "approve" && p.status === "ok") {
           const R = reqStats(e.req);
           const before = reportedLimit.get(e.req) ?? BASE_LIMIT;
-          // The raised limit counts only when the user's own words (the --message) occur in a user message of this request.
+          // The raised limit counts only for an AUTHORIZATION the user gave in this request (their --message words, said as a
+          // granting sentence, not quoted from a refusal), once, and for at most the quantity their words state.
           const message = typeof c.flags.message === "string" ? c.flags.message : typeof p.approval?.msg === "string" ? p.approval.msg : "";
-          if (!userSaid(message, e.req, e.i)) out.budget.approvals_unbound += 1;
-          else {
+          const auth = authorize(message, e.req, e.i, { once: true });
+          if (!auth.ok) {
+            out.budget.approvals_unbound += 1;
+            out.budget.unbound.push({ at: e.i, reason: auth.reason });
+          } else {
             out.budget.approvals_bound += 1;
-            const extra = Number.isInteger(p.approval?.n) && p.approval.n > 0 ? p.approval.n : finite(p.limit) ? Math.max(0, p.limit - before) : 0;
-            R.approved_extra += extra;
+            const asked = Number.isInteger(p.approval?.n) && p.approval.n > 0 ? p.approval.n : finite(p.limit) ? Math.max(0, p.limit - before) : 0;
+            const allowed = authorizedExtra(auth.quantum);
+            if (asked > allowed) out.budget.approvals_over_quantum += 1;
+            R.approved_extra += Math.min(asked, allowed);
             R.limit = BASE_LIMIT + R.approved_extra;
           }
           if (finite(p.limit)) reportedLimit.set(e.req, p.limit);
@@ -1021,17 +1074,23 @@ export function audit(records, { threshold = 0.95 } = {}) {
         }
         if (!e.result && GRANTING.has(c.sub)) scope(e).opaque = true;
       } else if (c.cat === "mechanical") out.coverage.mechanical += 1;
-      else if (c.cat === "unclassified") out.coverage.unclassified += 1;
+      else if (c.cat === "unclassified") {
+        out.coverage.unclassified += 1;
+        mutations.push({ req: e.req, i: e.i });
+      }
       else {
         // A command that merely mentions a helper is audited as the action it is.
         if (c.mention) out.coverage.protocol_compound += 1;
         onAction(e);
+        if (MUTATING.has(e.name)) mutations.push({ req: e.req, i: e.i });
       }
     } else if (c.cat === "jev_direct") onDirectResult(e, c);
     else if (c.cat === "protocol") onHelperResult(e, c);
     else if (c.cat === "action" && e.name === "AskUserQuestion" && !e.result.error) {
       // The answer to a question is the user's own words for binding an approval.
-      userMessages[e.req].push({ at: e.result.i, text: e.result.text });
+      // Only the answers count (`"question"="answer"`), not the questions the model wrote.
+      const answers = [...e.result.text.matchAll(/"=\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+      userMessages[e.req].push({ at: e.result.i, text: answers.length ? answers.join("\n") : e.result.text });
     }
   }
 

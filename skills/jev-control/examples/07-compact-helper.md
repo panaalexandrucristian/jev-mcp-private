@@ -82,34 +82,54 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "propositions": [
-    "Taking option run_unit is the right next step for this decision: Which test command should be run first after the change? — Option: node --test test/pagination.test.mjs Concrete action: Bash node --test test/pagination.test.mjs.",
-    "Taking option run_all is the right next step for this decision: Which test command should be run first after the change? — Option: node --test Concrete action: Bash node --test.",
-    "Taking option run_lint is the right next step for this decision: Which test command should be run first after the change? — Option: npm run lint Concrete action: Bash npm run lint.",
-    "Taking option run_build is the right next step for this decision: Which test command should be run first after the change? — Option: npm run build Concrete action: Bash npm run build.",
-    "Taking option run_manual is the right next step for this decision: Which test command should be run first after the change? — Option: node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\" Concrete action: Bash node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\".",
+    "Taking option run_unit is the right next step for this decision: Which test command should be run first after the change? — Option: node --test test/pagination.test.mjs Its concrete action, in full, is the context item \"action_run_unit\".",
+    "Taking option run_all is the right next step for this decision: Which test command should be run first after the change? — Option: node --test Its concrete action, in full, is the context item \"action_run_all\".",
+    "Taking option run_lint is the right next step for this decision: Which test command should be run first after the change? — Option: npm run lint Its concrete action, in full, is the context item \"action_run_lint\".",
+    "Taking option run_build is the right next step for this decision: Which test command should be run first after the change? — Option: npm run build Its concrete action, in full, is the context item \"action_run_build\".",
+    "Taking option run_manual is the right next step for this decision: Which test command should be run first after the change? — Option: node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\" Its concrete action, in full, is the context item \"action_run_manual\".",
     "Taking option action_gather_evidence is the right next step for this decision: Which test command should be run first after the change? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which test command should be run first after the change? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
+    "Taking option action_ask_user is the right next step for this decision: Which test command should be run first after the change? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\"."
   ],
   "context": [
     {
       "id": "evidence_0",
-      "text": "Option run_unit: the change touches only src/pagination.mjs | this test file covers pageCount Concrete action: Bash node --test test/pagination.test.mjs."
+      "text": "Option run_unit: the change touches only src/pagination.mjs | this test file covers pageCount"
+    },
+    {
+      "id": "action_run_unit",
+      "text": "Tool: Bash\nTarget: node --test test/pagination.test.mjs"
     },
     {
       "id": "evidence_1",
-      "text": "Option run_all: the repository has 4 test files and a 2 second suite Concrete action: Bash node --test."
+      "text": "Option run_all: the repository has 4 test files and a 2 second suite"
+    },
+    {
+      "id": "action_run_all",
+      "text": "Tool: Bash\nTarget: node --test"
     },
     {
       "id": "evidence_2",
-      "text": "Option run_lint: package.json has no lint script Concrete action: Bash npm run lint."
+      "text": "Option run_lint: package.json has no lint script"
+    },
+    {
+      "id": "action_run_lint",
+      "text": "Tool: Bash\nTarget: npm run lint"
     },
     {
       "id": "evidence_3",
-      "text": "Option run_build: package.json has no build script Concrete action: Bash npm run build."
+      "text": "Option run_build: package.json has no build script"
+    },
+    {
+      "id": "action_run_build",
+      "text": "Tool: Bash\nTarget: npm run build"
     },
     {
       "id": "evidence_4",
-      "text": "Option run_manual: a one-line check of the exact case in the report Concrete action: Bash node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\"."
+      "text": "Option run_manual: a one-line check of the exact case in the report"
+    },
+    {
+      "id": "action_run_manual",
+      "text": "Tool: Bash\nTarget: node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\""
     },
     {
       "id": "evidence_5",
@@ -117,7 +137,11 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_6",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+    },
+    {
+      "id": "action_action_ask_user",
+      "text": "Tool: AskUserQuestion"
     },
     {
       "id": "priorities",
@@ -137,35 +161,35 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
-      "proposition": "Taking option run_unit is the right next step for this decision: Which test command should be run first after the change? — Option: node --test test/pagination.test.mjs Concrete action: Bash node --test test/pagination.test.mjs.",
+      "proposition": "Taking option run_unit is the right next step for this decision: Which test command should be run first after the change? — Option: node --test test/pagination.test.mjs Its concrete action, in full, is the context item \"action_run_unit\".",
       "probability": 0.972,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition1",
-      "proposition": "Taking option run_all is the right next step for this decision: Which test command should be run first after the change? — Option: node --test Concrete action: Bash node --test.",
+      "proposition": "Taking option run_all is the right next step for this decision: Which test command should be run first after the change? — Option: node --test Its concrete action, in full, is the context item \"action_run_all\".",
       "probability": 0.62,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition2",
-      "proposition": "Taking option run_lint is the right next step for this decision: Which test command should be run first after the change? — Option: npm run lint Concrete action: Bash npm run lint.",
+      "proposition": "Taking option run_lint is the right next step for this decision: Which test command should be run first after the change? — Option: npm run lint Its concrete action, in full, is the context item \"action_run_lint\".",
       "probability": 0.05,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition3",
-      "proposition": "Taking option run_build is the right next step for this decision: Which test command should be run first after the change? — Option: npm run build Concrete action: Bash npm run build.",
+      "proposition": "Taking option run_build is the right next step for this decision: Which test command should be run first after the change? — Option: npm run build Its concrete action, in full, is the context item \"action_run_build\".",
       "probability": 0.05,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition4",
-      "proposition": "Taking option run_manual is the right next step for this decision: Which test command should be run first after the change? — Option: node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\" Concrete action: Bash node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\".",
+      "proposition": "Taking option run_manual is the right next step for this decision: Which test command should be run first after the change? — Option: node -e \"import('./src/pagination.mjs').then(m => console.log(m.pageCount(10, 5)))\" Its concrete action, in full, is the context item \"action_run_manual\".",
       "probability": 0.4,
       "label": "uncertain",
       "auto": false
@@ -179,7 +203,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "proposition6",
-      "proposition": "Taking option action_ask_user is the right next step for this decision: Which test command should be run first after the change? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which test command should be run first after the change? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\".",
       "probability": 0.2,
       "label": "uncertain",
       "auto": false
@@ -204,8 +228,8 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 | Part | Bytes | In the model's context? |
 | --- | --- | --- |
 | the batch the model writes | 1060 | yes (it writes it) |
-| the `jev_noul` payload built by the helper (propositions, evidence, priorities) | 2747 | **no** |
-| the raw `jev_noul` response | 2260 | **no** |
+| the `jev_noul` payload built by the helper (propositions, evidence, priorities) | 3057 | **no** |
+| the raw `jev_noul` response | 2384 | **no** |
 | the helper's one-line output | 178 | yes |
 
 Calling `jev_noul` directly from the model would put the payload and the raw response in the context and would need a reserve/confirm pair around the call. Through the helper the attempt is counted at the client boundary (1 of 25, source `helper`), the data are sanitized and checked against `.jev-flow-denylist` before anything is sent, and a signed receipt of the decision is kept in the session state (a receipt proves the helper's metadata, not that the action ran).

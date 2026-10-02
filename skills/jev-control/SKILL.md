@@ -35,7 +35,7 @@ Not Jev's: an explicit instruction of the user (it outranks Jev), permission pro
    - `expand`: gather genuinely **new** options or evidence (a rephrasing is refused), then call again with the same `--decision-id` and a `new_material` note. At most **2** expansion rounds. The `scores` are raw `id:probability` strings; if `scores_next` is present, page them in the same way.
    - `ask_user`: ask, showing the options and the scores. `incomplete`: nobody can answer; finish with a report that starts `Incomplete:` and lists the scores.
    - `unavailable`: stop with **"Jev unavailable"** and let the user choose between waiting or retrying and `off`. Never go on with your own judgment.
-   - `budget_exhausted`: stop and ask whether to continue; only if the user agrees, `cli.mjs budget approve --message "<their words>"` (refused without their words).
+   - `budget_exhausted`: stop and ask whether to continue; only if the user agrees, `cli.mjs budget approve --message "<their words>"` (refused without their words, when they are not an approval such as a quoted «do not …», a question or a condition, when `--n` is more than the quantity they state, or when the same words were already spent).
    - `invalid` / `refused`: fix what `problems` or `message` names; nothing was sent.
 4. **Nothing below the threshold is executed** unless the user explicitly approves that exact option; record it with `cli.mjs approve --decision <id> --option <id> --message "<the user's words>"`. It is not a general exception.
 

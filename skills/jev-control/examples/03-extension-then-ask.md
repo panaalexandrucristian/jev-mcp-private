@@ -68,7 +68,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_ini is the right next step for this decision: Which library should parse the configuration files? — Option: Use an INI parser for the flat files",
     "Taking option opt_own is the right next step for this decision: Which library should parse the configuration files? — Option: Write a small parser for the subset in use",
     "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
+    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\"."
   ],
   "context": [
     {
@@ -97,7 +97,11 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_6",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+    },
+    {
+      "id": "action_action_ask_user",
+      "text": "Tool: AskUserQuestion"
     },
     {
       "id": "priorities",
@@ -159,7 +163,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "proposition6",
-      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\".",
       "probability": 0.45,
       "label": "uncertain",
       "auto": false
@@ -221,7 +225,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
     "Taking option opt_json is the right next step for this decision: Which library should parse the configuration files? — Option: Convert the configs to JSON and use JSON.parse",
     "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
+    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\"."
   ],
   "context": [
     {
@@ -238,7 +242,11 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_3",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+    },
+    {
+      "id": "action_action_ask_user",
+      "text": "Tool: AskUserQuestion"
     },
     {
       "id": "priorities",
@@ -279,7 +287,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "proposition3",
-      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\".",
       "probability": 0.25,
       "label": "uncertain",
       "auto": false
@@ -341,7 +349,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
     "Taking option opt_yaml_strict is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package in strict mode and fix the duplicate keys",
     "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
+    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\"."
   ],
   "context": [
     {
@@ -358,7 +366,11 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_3",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+    },
+    {
+      "id": "action_action_ask_user",
+      "text": "Tool: AskUserQuestion"
     },
     {
       "id": "priorities",
@@ -399,7 +411,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "proposition3",
-      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Its concrete action, in full, is the context item \"action_action_ask_user\".",
       "probability": 0.2,
       "label": "uncertain",
       "auto": false

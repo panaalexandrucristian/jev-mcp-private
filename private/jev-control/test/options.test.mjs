@@ -183,5 +183,14 @@ describe("an action is bound by its arguments, not only by its path", () => {
     assert.match(d.args.content, /^s256:[0-9a-f]{64}$/);
     assert.equal(JSON.stringify(d.args).includes("hunter2"), false);
     assert.equal(d.view.content.chars, "SECRET=hunter2\nbody".length);
+    assert.equal(d.view.content.text, "SECRET=hunter2\nbody", "the whole text stays in memory for what Jev reads, outside the hash");
+  });
+  it("refuses an action too large for Jev to read whole: nothing unread may be authorized", () => {
+    const raw = { decision: "d", kind: "edit", options: Array.from({ length: 5 }, (_, i) => ({ id: `o${i}`, text: `t${i}`, evidence: ["e"], action: { tool: "Write", target: `a${i}.js`, content: i === 0 ? "z".repeat(100_001) : "ok" } })) };
+    const r = normalizeBatch(raw);
+    assert.equal(r.ok, false);
+    assert.match(r.problems[0], /options\[0\]\.action is too large for Jev to read whole/);
+    raw.options[0].action.content = "z".repeat(90_000);
+    assert.equal(normalizeBatch(raw).ok, true);
   });
 });

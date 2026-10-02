@@ -23,8 +23,6 @@ export const PRECONDITION_KINDS = Object.freeze(["path_exists", "path_absent", "
 export const PLAN_LETTER = Object.freeze({ execute: "e", reserve: "r", suspend: "s", after_suspend: "x" });
 export const PLAN_ACTION = Object.freeze(Object.fromEntries(Object.entries(PLAN_LETTER).map(([k, v]) => [v, k])));
 
-const collapse = (text) => String(text).replace(/\s+/g, " ").trim();
-
 /** A path relative to `root` in posix form when it lies inside it; otherwise normalized but unchanged in meaning. */
 export function normalizePath(path, root = null) {
   const text = String(path ?? "").trim();
@@ -62,17 +60,20 @@ const ARG_SPECS = Object.freeze({
   AskUserQuestion: { questions: { type: "payload" } },
 });
 export const MAX_PAYLOAD_CHARS = 200_000;
-const VIEW_HEAD = 160;
+/** The most concrete material (target and payloads, as Jev reads it) one option may carry: it must fit one jev_noul call whole. */
+export const MAX_MATERIAL_CHARS = 100_000;
 
 const sha = (text) => createHash("sha256").update(text).digest("hex");
-const head = (text) => collapse(text).slice(0, VIEW_HEAD);
 const jsonText = (v) => JSON.stringify(v) ?? "null";
 
-/** A payload value as {value: "s256:<hex>" | "j256:<hex>", view: {chars, head}}: a string by its own bytes, anything else by its JSON. */
-function payloadOf(v) {
-  if (typeof v === "string") return { value: `s256:${sha(v)}`, view: { chars: v.length, head: head(v) } };
-  const text = jsonText(v);
-  return { value: `j256:${sha(text)}`, view: { chars: text.length, head: head(text) } };
+/**
+ * A payload value as {value: "s256:<hex>" | "j256:<hex>", view: {chars, text}}: a string by its own bytes, anything else by
+ * its JSON. `view.text` is the whole concrete content, kept in memory only for what Jev must evaluate (never persisted,
+ * never part of the hash); an observed call keeps just its size.
+ */
+function payloadOf(v, keepText) {
+  const text = typeof v === "string" ? v : jsonText(v);
+  return { value: `${typeof v === "string" ? "s" : "j"}256:${sha(text)}`, view: keepText ? { chars: text.length, text } : { chars: text.length } };
 }
 
 /** The canonical form of an edit list [{old_string, new_string, replace_all?}] or null when it is not one. */
@@ -120,13 +121,14 @@ function canonArgs(tool, input, root, strict) {
         if (strict) problems.push(`action.${name} must be a non-empty array of {old_string, new_string, replace_all?}`);
         else args[name] = `?${sha(jsonText(v)).slice(0, 16)}`;
       } else {
-        const p = payloadOf(edits);
+        const p = payloadOf(edits, false);
         args[name] = p.value;
-        view[name] = p.view;
+        const shown = jsonText(edits.map(([old_string, new_string, replace_all]) => ({ old_string, new_string, replace_all })));
+        view[name] = strict ? { chars: shown.length, text: shown } : p.view;
       }
     } else if (def.type === "payload") {
       if (strict && typeof v === "string" && v.length > MAX_PAYLOAD_CHARS) problems.push(`action.${name} must be at most ${MAX_PAYLOAD_CHARS} characters`);
-      const p = payloadOf(v);
+      const p = payloadOf(v, strict);
       args[name] = p.value;
       view[name] = p.view;
     }
@@ -138,8 +140,8 @@ function canonArgs(tool, input, root, strict) {
 /**
  * Validate and normalize an option's action {tool, target, ...arguments} (the arguments are named like the Claude Code
  * tool's own, see ARG_SPECS). Returns {ok: true, descriptor: {tool, target, args, view}} or {ok: false, problems}.
- * `args` holds the canonical values (payloads as hashes) and is what the action hash covers; `view` (character counts and
- * a short head per payload) is only what Jev is shown and is not part of the hash.
+ * `args` holds the canonical values (payloads as hashes) and is what the action hash covers; `view` (character count and
+ * the whole text per payload, in memory only) is the concrete material Jev evaluates and is not part of the hash.
  */
 export function normalizeDescriptor(raw, root = null) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, problems: ["action must be an object {tool, target, ...arguments}"] };
@@ -181,15 +183,31 @@ export const sameAction = (a, b) => Boolean(a && b) && descriptorKey(a) === desc
 const clipText = (text, n) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
 
 /**
- * The concrete call as a short phrase Jev can judge: tool, exact target and every bound argument (a payload as its size,
- * a hash prefix and a short head). Not sanitized here: the caller sanitizes the phrase before it is sent.
+ * A compact label of the call for logs and lists: tool, clipped target, and per payload only its size and hash prefix.
+ * It is metadata, never what Jev evaluates (see actionMaterial).
  */
 export function describeAction(d, { target = 300 } = {}) {
   const parts = Object.entries(d.args ?? {}).map(([name, value]) => {
     const v = d.view?.[name];
-    return v ? `${name} (${v.chars} chars, ${String(value).slice(0, 13)}): "${v.head}"` : `${name}=${clipText(typeof value === "string" ? value : String(value), 80)}`;
+    return v ? `${name} (${v.chars} chars, ${String(value).slice(0, 13)})` : `${name}=${clipText(typeof value === "string" ? value : String(value), 80)}`;
   });
   return `${d.tool}${d.target ? ` ${clipText(d.target, target)}` : ""}${parts.length ? ` with ${parts.join("; ")}` : ""}`;
+}
+
+/**
+ * The whole concrete call as text, for Jev to evaluate: the tool, the exact target and every argument in full (a payload
+ * between markers, with its size and hash prefix). Not sanitized here: the caller sanitizes it before it is sent and
+ * refuses to send what it cannot show whole. Only a descriptor from normalizeDescriptor carries the payload text.
+ */
+export function actionMaterial(d) {
+  const lines = [`Tool: ${d.tool}`];
+  if (d.target) lines.push(`Target: ${d.target}`);
+  for (const [name, value] of Object.entries(d.args ?? {})) {
+    const v = d.view?.[name];
+    if (v && typeof v.text === "string") lines.push(`Argument ${name} (${v.chars} characters, ${String(value).slice(0, 13)}) between the markers:`, `<<<${name}`, v.text, `${name}>>>`);
+    else lines.push(`Argument ${name}: ${typeof value === "string" ? value : String(value)}`);
+  }
+  return lines.join("\n");
 }
 
 /** What a receipt and the helper's state keep of an action: tool, a clipped target and the canonical arguments (hashes, no payload text). */

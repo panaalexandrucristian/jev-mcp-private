@@ -163,10 +163,11 @@ describe("the audit follows the real receipt, budget and search shapes", () => {
     assert.equal(ok.json.status, "ok", ok.stdout);
     assert.equal(ok.json.approval.n, 5);
     const bound = audit([prompt(repo, "fine, yes spend five more calls"), ...step(repo, use("Bash", { command: `node "${CLI_PATH}" budget approve --n 5 --message "yes spend five more calls"` }), lastLine(ok))]);
-    assert.deepEqual(bound.budget, { approvals_bound: 1, approvals_unbound: 0 });
+    assert.deepEqual(bound.budget, { approvals_bound: 1, approvals_unbound: 0, approvals_over_quantum: 0, unbound: [] });
     assert.deepEqual(bound.jev_calls.per_request, [{ request: 1, helper_attempts: 0, direct: 0, approved_extra: 5, limit: 30 }]);
     const invented = audit([prompt(repo, "just do it"), ...step(repo, use("Bash", { command: `node "${CLI_PATH}" budget approve --n 5 --message "yes spend five more calls"` }), lastLine(ok))]);
-    assert.deepEqual(invented.budget, { approvals_bound: 0, approvals_unbound: 1 });
+    assert.equal(invented.budget.approvals_bound, 0);
+    assert.deepEqual(invented.budget.unbound.map((u) => u.reason), ["not_said"]);
     assert.deepEqual(invented.jev_calls.per_request, [{ request: 1, helper_attempts: 0, direct: 0, approved_extra: 0, limit: 25 }]);
   });
   it("a reservation's source flag is read from the real command and the real result", () => {

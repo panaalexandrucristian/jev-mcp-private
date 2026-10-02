@@ -26,6 +26,7 @@ import { loadDenylist } from "../jev-flow/paths.mjs";
 import { sanitizeText } from "../jev-flow/sanitize.mjs";
 import { computeSnapshot, gitTopLevel } from "../jev-flow/state.mjs";
 import { normalizeDescriptor, planItem } from "./actions.mjs";
+import { readMessage } from "./authorization.mjs";
 import { approveMore, budgetView, confirm, release, reserve, startRequest } from "./budget.mjs";
 import { BudgetedCaller } from "./client.mjs";
 import { checkTools } from "./contracts.mjs";
@@ -354,6 +355,8 @@ async function cmdSearch(flags, ctx) {
 function cmdApprove(flags, ctx) {
   if (!modeOn(ctx.dir)) return OFF;
   if (!flags.decision || !flags.option || !flags.message) throw new UsageError("--decision, --option and --message are required");
+  // Quoting is not approving: the words must be an authorization (not a negation, a question or a condition).
+  if (!readMessage(flags.message).authorization) return { status: "refused", reason: "message_not_authorization", message: "those words are not an authorization of the option (a negation, a question, a condition or no granting word): ask the user and pass what they answered" };
   return withControlState(ctx.dir, (state) => {
     const decision = [...state.decisions].reverse().find((d) => d.id === flags.decision);
     if (!decision) return { status: "refused", message: "unknown decision id; an approval is bound to a logged decision" };
@@ -378,6 +381,14 @@ function cmdPage(flags, ctx) {
   return { raw: true, line: compactOut({ status: "ok", decision_id: decision.id, part, from, [part]: items }, OUT_MAX, { from: { [part]: from } }) };
 }
 
+const BUDGET_REFUSALS = {
+  message_required: () => "an approval beyond the budget needs the user's own words: pass --message \"<what the user said>\"; nothing was raised",
+  message_not_authorization: () => "those words are not an authorization (a negation, a question, a condition or no granting word): ask the user and pass what they answered; nothing was raised",
+  over_quantum: (r) => `the user's words authorize at most ${r.allowed} more calls: pass --n ${r.allowed} or less, or ask for more; nothing was raised`,
+  n_invalid: () => "--n must be a whole number from 1 to 100; nothing was raised",
+  approval_already_used: () => "that approval was already used in this request: ask the user again and pass their new words; nothing was raised",
+};
+
 function cmdBudget(flags, ctx) {
   const sub = flags._[1] ?? "status";
   if (sub === "status") return { status: "ok", ...budgetView(loadControlState(ctx.dir)) };
@@ -389,11 +400,13 @@ function cmdBudget(flags, ctx) {
   if (sub === "confirm") return { ...confirm(ctx.dir, flags.id, { ok: flags.ok !== "0", ms: flags.ms === undefined ? null : Number(flags.ms) }), status: "ok" };
   if (sub === "release") return { ...release(ctx.dir, flags.id), status: "ok" };
   if (sub === "approve") {
-    // Going past the limit is the user's decision: their own words are recorded, and the audit checks that they said it.
-    const r = approveMore(ctx.dir, flags.n === undefined ? undefined : Number(flags.n), sanitizeText(flags.message ?? "").text);
-    if (!r.ok) return { status: "refused", message: "an approval beyond the budget needs the user's own words: pass --message \"<what the user said>\"; nothing was raised" };
+    // Going past the limit is the user's decision: their own words are recorded, and the audit checks that they said it
+    // and that it was an authorization for this quantity (not a quoted refusal, a question or a smaller step).
+    const message = sanitizeText(flags.message ?? "").text;
+    const r = approveMore(ctx.dir, flags.n === undefined ? undefined : Number(flags.n), message);
+    if (!r.ok) return { status: "refused", reason: r.reason, message: BUDGET_REFUSALS[r.reason]?.(r) ?? "nothing was raised" };
     const { ok, n, ...view } = r;
-    return { status: "ok", ...view, approval: { n, msg: oneLine(sanitizeText(flags.message).text, 120) } };
+    return { status: "ok", ...view, approval: { n, msg: oneLine(message, 120) } };
   }
   throw new UsageError(`unknown budget subcommand: ${sub}`);
 }

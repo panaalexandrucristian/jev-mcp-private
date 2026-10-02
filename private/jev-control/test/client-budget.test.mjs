@@ -61,6 +61,24 @@ describe("the shared budget (D15, D26)", () => {
     assert.equal(budgetView(loadControlState(dir)).limit, 50);
     assert.deepEqual(loadControlState(dir).budget.approvals.map((a) => [a.n, a.msg]), [[25, "yes, continue past the limit"]], "the words are kept for the audit");
   });
+  it("a raise needs an authorization for that quantity: a quoted refusal, a question, a bigger --n or a repeat of the same words raises nothing", () => {
+    const dir = stateDir();
+    const limit = () => budgetView(loadControlState(dir)).limit;
+    for (const words of ["Do not increase the budget.", "Should I increase the budget?", "Increase it only if the tests fail", "Nu măriți bugetul", "the budget"]) {
+      assert.deepEqual(approveMore(dir, 100, words), { ok: false, reason: "message_not_authorization" }, words);
+    }
+    assert.equal(limit(), 25);
+    assert.deepEqual(approveMore(dir, 100, "yes, approve 10 more calls"), { ok: false, reason: "over_quantum", allowed: 10 }, "a smaller quantity does not authorize 100");
+    assert.equal(limit(), 25);
+    assert.equal(approveMore(dir, 101, "yes, approve 500 more calls").reason, "n_invalid");
+    const ten = approveMore(dir, undefined, "yes, approve 10 more calls");
+    assert.equal(ten.ok, true);
+    assert.equal(ten.n, 10, "without --n the quantity the words state is used");
+    assert.equal(limit(), 35);
+    assert.deepEqual(approveMore(dir, 10, "Yes, approve 10 MORE   calls"), { ok: false, reason: "approval_already_used" }, "the same words do not authorize twice in one request");
+    assert.equal(approveMore(dir, 10, "yes, approve 10 more calls again").ok, true, "other words are another authorization (the audit still needs the user to have said them)");
+    assert.equal(limit(), 45);
+  });
   it("a new request restarts the counters and keeps a short history", () => {
     const dir = stateDir();
     reserve(dir, { tool: "noul", source: "helper" });

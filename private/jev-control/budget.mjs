@@ -7,7 +7,8 @@
 // The server's own HTTP/provider calls are not observable from here: they stay
 // "unknown" (0 only when the server explicitly reports no call).
 import { randomBytes } from "node:crypto";
-import { BUDGET_LIMIT, emptyBudget, SOURCES, withControlState } from "./state.mjs";
+import { authorizedExtra, MAX_QUANTUM, readMessage } from "./authorization.mjs";
+import { emptyBudget, SOURCES, withControlState } from "./state.mjs";
 
 export function normalizeSource(source) {
   return SOURCES.includes(source) ? source : "unknown";
@@ -69,15 +70,25 @@ export function release(dir, id, now = Date.now()) {
 }
 
 /**
- * The user approved continuing beyond the limit: raise it by `n` (a multiple of the base budget by default). The
- * approval keeps the user's own words (`message`, one line) so the transcript audit can check that the user really
- * said it; without them nothing is raised.
+ * The user approved continuing beyond the limit: raise it by `n` (the quantity their words state, or the default budget
+ * step when they state none; never more). The approval keeps the user's own words (`message`, one line) so the transcript
+ * audit can check that the user really said it. Nothing is raised without words that are an authorization (a quoted
+ * negation, a question or a condition is not one: authorization.mjs), beyond what they state, or twice from the same
+ * words within one request. {ok: true, n, ...view} or {ok: false, reason, allowed?}.
  */
-export function approveMore(dir, n = BUDGET_LIMIT, message = "", now = Date.now()) {
-  const text = String(message ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
-  if (text.length < 3) return { ok: false, reason: "message_required" };
-  const extra = Number.isInteger(n) && n > 0 && n <= 100 ? n : BUDGET_LIMIT;
+export function approveMore(dir, n, message = "", now = Date.now()) {
+  const full = String(message ?? "").replace(/\s+/g, " ").trim();
+  if (full.length < 3) return { ok: false, reason: "message_required" };
+  const read = readMessage(full);
+  if (!read.authorization) return { ok: false, reason: "message_not_authorization" };
+  const allowed = authorizedExtra(read.quantum);
+  const extra = n === undefined ? allowed : n;
+  if (!Number.isInteger(extra) || extra < 1 || extra > MAX_QUANTUM) return { ok: false, reason: "n_invalid" };
+  if (extra > allowed) return { ok: false, reason: "over_quantum", allowed };
+  const text = full.slice(0, 200);
   return withControlState(dir, (state) => {
+    const again = (state.budget.approvals ?? []).some((a) => a.req === state.request.seq && String(a.msg).toLowerCase() === text.toLowerCase());
+    if (again) return { ok: false, reason: "approval_already_used" };
     state.budget.extra += extra;
     (state.budget.approvals ??= []).push({ n: extra, msg: text, req: state.request.seq, ts: now });
     return { ok: true, n: extra, ...budgetView(state) };

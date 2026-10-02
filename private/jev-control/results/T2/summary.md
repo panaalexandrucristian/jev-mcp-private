@@ -5,7 +5,7 @@
 | Check | Result |
 | --- | --- |
 | `node --test private/jev-flow/test/` | 324 tests, 61 suites, 324 pass, exit 0 |
-| `node --test private/jev-control/test/` | 375 tests, 74 suites, 375 pass, exit 0 |
+| `node --test private/jev-control/test/` | 395 tests, 76 suites, 395 pass, exit 0 |
 | `claude plugin validate .` (Claude Code 2.1.288) | passed, exit 0 (it does not check hook event names) |
 | `node private/jev-control/fixtures/seal.mjs verify` | ok (dev oracle hashes and sealed final hashes recorded) |
 | `git diff --check` | clean |
@@ -28,6 +28,16 @@ The second review found that an action descriptor `{tool, target}` did not ident
 - **Evidence per step** (`receipts.mjs`): before the first use any move of the tree invalidates a receipt; afterwards a step needs the paths it depends on (its target, its precondition paths) unchanged, fingerprinted at decision time; a step that names none is refused as stale. The old test that waved later steps through was replaced.
 - **Audit** (`measure.mjs`): a refused `receipt verify` revokes grants; search grants carry the line range, hash and rank (a read outside the range, after an edit of the file, or out of rank order is not covered); only a genuine helper invocation with a plausible output is a grant source (a forged `echo` or a compound command is audited as an action); every `done` attempt replaces the previous finalization state, an edit after acceptance invalidates it, `Incomplete:` is told apart from a declared completion; a budget raise counts only when the user's words are in the request, and a reservation is consumed only by the agent context that made it. `budget approve` now requires `--message`.
 - **Commit trailer:** the first fix commit's message was corrected (message only, tree unchanged) to the `Co-Authored-By: Claude Opus 5.5` trailer the task requires.
+
+## Fix round 3 (after the third review)
+
+The third review found that a budget raise was accepted from any quotation of the user's words and could be repeated, that a command feeding the helper through a pipe was exempt from the audit, that `receipt_verified` stayed true after the tree changed, that a late result of an earlier `done` could replace the current attempt, and that Jev was shown a head or a prefix of a command or payload while the whole was authorized. Fixed and tested offline:
+
+- **Authorization, not quotation** (`authorization.mjs`, `budget.mjs`, `cli.mjs`, `measure.mjs`): `budget approve` and `approve` need words that are an authorization (no negation, refusal, question or condition; a granting word); `--n` may not exceed the quantity the words state (25 when none); the same words are spent once per request; the audit judges the whole sentence the quoted words lie in, spends each user sentence once and caps the raise at its quantity. «Do not increase the budget.» raises nothing, a smaller quantity does not authorize 100, call 26 without a valid approval is a violation.
+- **Pipe feeders** (`measure.mjs`): only `cat`, `echo` and `printf` may feed the helper; `touch x | node …/cli.mjs …` is audited as the action it is.
+- **Verification validity** (`measure.mjs`): `receipt_verified` only while no edit, Bash command, delegated agent or unclassified tool happened between the verification and the action; otherwise `unverified_binding`.
+- **Done attempts** (`measure.mjs`): a result updates the finalization only if it belongs to the latest started attempt of its request; late results are counted as `stale_results` and ignored.
+- **What Jev reads** (`actions.mjs`, `options.mjs`, `protocol.mjs`): the whole sanitized concrete action (target and every argument in full) is its own context item (noul), its own evidence block (tie-break) or candidate text (rerank); a batch that does not fit one `jev_noul` call is split over several; a tie-break whose material does not fit stops as `tie_unresolved` (`action_material_too_large`); an action sanitizing could not show whole is `action_material_omitted` and never scored; an action over 100000 characters is refused at validation. Receipts, state and plan keep hashes and compact labels only.
 
 ## Not measured, not verified
 
