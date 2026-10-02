@@ -1,19 +1,21 @@
 // Signed, metadata-only provenance of the control's own decisions, on the
 // jev-flow receipt primitives (a per-session HMAC key, receipts/<id>.json). A
 // receipt binds a decision to the session, the request, the threshold in force,
-// every option (full text and action hashes, the concrete action descriptor, the
-// preconditions and the RAW score), the plan (id, step, raw score, short action
+// every option (full text and action hashes, the concrete action descriptor with
+// its argument hashes, the preconditions, the fingerprints of the evidence the
+// option depends on and the RAW score), the plan (id, step, raw score, short action
 // hash), the Jev calls that produced it (tool, budget source, argument and result
 // hashes, attempts) and the work-tree snapshot. Authorizing an action means
 // matching it against the receipt: the same tool and target as the planned
-// option, preconditions that still hold, a snapshot that has not moved, in the
-// planned order, once. It proves where the helper's metadata came from and what
+// option and the same arguments (content, replacement, range, prompt, scope),
+// preconditions that still hold, a snapshot that has not moved (or, for a later step of
+// the same plan, evidence that has not changed), in the planned order, once. It proves where the helper's metadata came from and what
 // was authorized, not that an action was carried out: execution is audited from
 // the transcript (measure.mjs). A process of the same user that can read the key
 // or edit the helper is out of scope, as for the gate runner's receipts.
 import { createHash } from "node:crypto";
 import { ensureReceiptKey, newReceiptId, readSignedReceipt, writeReceipt } from "../jev-flow/runner-receipt.mjs";
-import { actionHash, evaluatePreconditions, parsePlanItem } from "./actions.mjs";
+import { actionHash, evaluatePreconditions, fingerprintPaths, parsePlanItem } from "./actions.mjs";
 
 export const RECEIPT_TYPE = "control_decision";
 export const RECEIPT_VERSION = 2;
@@ -29,6 +31,7 @@ export function hashJson(value) {
  */
 export function writeDecisionReceipt(dir, body) {
   if (!Array.isArray(body.options) || body.options.length === 0 || body.options.some((o) => typeof o?.id !== "string" || typeof o.oh !== "string" || !("score" in o))) throw new Error("receipt needs the full option records");
+  if (body.options.some((o) => o.dep !== undefined && (!o.dep || typeof o.dep !== "object" || Object.values(o.dep).some((v) => typeof v !== "string")))) throw new Error("receipt options carry their evidence fingerprints as {path: string}");
   if (!Array.isArray(body.calls)) throw new Error("receipt needs the Jev call provenance");
   if (!Array.isArray(body.plan) || body.plan.some((p) => typeof p !== "string" || !parsePlanItem(p))) throw new Error("receipt needs plan items in the compact format");
   ensureReceiptKey(dir);
@@ -85,9 +88,20 @@ export function verifyDecisionReceipt(dir, id, { session, req, snap = null, root
   if (used.some((c) => c.option === option)) return { ok: false, reason: "receipt_replayed" };
   if (body.snap === "unknown") return { ok: false, reason: "receipt_snapshot_unknown" };
   if (!snap) return { ok: false, reason: "current_snapshot_unknown" };
-  // Before the first use the tree must be exactly the one the decision saw; once an earlier step of
-  // the same plan has run, the tree is expected to move and the preconditions guard each step.
-  if (used.length === 0 && body.snap !== snap) return { ok: false, reason: "receipt_stale_snapshot" };
+  if (body.snap !== snap) {
+    // The tree moved since the decision. Before the first use of this receipt nothing it authorized can have run, so any
+    // move invalidates it. After a first use the earlier steps are expected to have changed the tree (the use is recorded
+    // before the step runs and does not prove that it ran): then only the evidence THIS step depends on counts, and a
+    // step that declares none (no path target, no preconditions) cannot show that the move was irrelevant to it.
+    if (used.length === 0) return { ok: false, reason: "receipt_stale_snapshot" };
+    const dep = planned.dep && typeof planned.dep === "object" ? planned.dep : {};
+    const paths = Object.keys(dep);
+    if (paths.length === 0) return { ok: false, reason: "receipt_stale_snapshot", detail: "the tree moved and this step names no evidence it depends on: give it a precondition on a path it needs, or decide again" };
+    if (!root) return { ok: false, reason: "preconditions_not_evaluable" };
+    const now = fingerprintPaths(root, paths);
+    const changed = paths.find((path) => now[path] !== dep[path]);
+    if (changed !== undefined) return { ok: false, reason: `receipt_evidence_changed:${changed.slice(0, 80)}` };
+  }
   if (body.kind === "order") {
     const earlier = items.slice(0, index).filter((p) => p?.action === "execute");
     if (earlier.some((p) => !used.some((c) => c.option === p.id))) return { ok: false, reason: "receipt_out_of_order" };

@@ -51,9 +51,15 @@ describe("the shared budget (D15, D26)", () => {
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, "budget_exhausted");
     assert.equal(refused.view.used, 25);
-    approveMore(dir, 25);
+    assert.deepEqual(approveMore(dir, 25), { ok: false, reason: "message_required" }, "the user's own words are required");
+    assert.equal(approveMore(dir, 25, "  ").ok, false);
+    assert.equal(reserve(dir, { tool: "noul", source: "main" }).ok, false, "nothing was raised");
+    const approved = approveMore(dir, 25, "yes, continue past the limit");
+    assert.equal(approved.ok, true);
+    assert.equal(approved.n, 25);
     assert.equal(reserve(dir, { tool: "noul", source: "main" }).ok, true);
     assert.equal(budgetView(loadControlState(dir)).limit, 50);
+    assert.deepEqual(loadControlState(dir).budget.approvals.map((a) => [a.n, a.msg]), [[25, "yes, continue past the limit"]], "the words are kept for the audit");
   });
   it("a new request restarts the counters and keeps a short history", () => {
     const dir = stateDir();

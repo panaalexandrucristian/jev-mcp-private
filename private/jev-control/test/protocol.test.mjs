@@ -273,6 +273,31 @@ describe("raw scores, concrete actions and availability", () => {
     assert.equal(result.provenance.t, 0.95);
     assert.match(caller.calls[0].args.propositions[0], /Concrete action: Bash npm run check-1\./, "Jev judges the concrete action, not only its description");
   });
+  it("Jev is shown the concrete SANITIZED variant: exact arguments as sizes, hash prefixes and heads, no credential, never the whole payload", async () => {
+    const secret = `sk-or-v1-${"c".repeat(40)}`;
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options[0].action = { tool: "Write", target: "src/a.js", content: `const k = "${secret}";\n${"y".repeat(600)}TAILMARK` };
+    raw.options[1].action = { tool: "Edit", target: "src/a.js", old_string: "alpha", new_string: "beta" };
+    const { result, caller } = await go(raw, [noul(probs([0.99, 0.6, 0.4, 0.3, 0.2]))]);
+    const sent = JSON.stringify(caller.calls[0].args);
+    assert.match(caller.calls[0].args.propositions[0], /Concrete action: Write src\/a\.js with content \(\d+ chars, s256:[0-9a-f]{8}\): "const k = /);
+    assert.match(caller.calls[0].args.propositions[1], /Edit src\/a\.js with old_string \(5 chars, s256:[0-9a-f]{8}\): "alpha"; new_string \(4 chars, s256:[0-9a-f]{8}\): "beta"/);
+    assert.equal(sent.includes(secret), false, "a credential in the payload never reaches Jev");
+    assert.equal(sent.includes("TAILMARK"), false, "only a head of the payload is shown");
+    const o1 = result.provenance.options.find((o) => o.id === "o1");
+    assert.match(o1.action.args.content, /^s256:[0-9a-f]{64}$/, "the receipt keeps the hash of the payload, not the text");
+    assert.equal(JSON.stringify(result.provenance).includes("TAILMARK"), false);
+  });
+  it("the provenance fingerprints the evidence each option depends on, at decision time", async () => {
+    const repo = makeRepo({ "src/file-1.js": "one\n", "pkg.json": "{}\n" });
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options[0].preconditions = [{ kind: "path_exists", path: "pkg.json" }];
+    const { result } = await go(raw, [noul(probs([0.99, 0.6, 0.4, 0.3, 0.2]))], { repoRoot: repo });
+    const dep = result.provenance.options.find((o) => o.id === "o1").dep;
+    assert.deepEqual(Object.keys(dep).sort(), ["pkg.json", "src/file-1.js"]);
+    assert.match(dep["src/file-1.js"], /^[0-9a-f]{64}$/);
+    assert.equal(result.provenance.options.find((o) => o.id === "o2").dep["src/file-2.js"], "absent");
+  });
   it("an option whose precondition is false is not scored and is reported as unavailable", async () => {
     const repo = makeRepo({ "a.js": "a\n" });
     const raw = batchOf(5, { kind: "edit" });

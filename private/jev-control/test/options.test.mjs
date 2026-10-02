@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ASK_ID, GATHER_ID, normalizeBatch, optionHash } from "../options.mjs";
+import { ASK_ID, GATHER_ID, normalizeBatch, optionActionHash, optionHash } from "../options.mjs";
 import { batchOf } from "./helpers.mjs";
 
 const problemsOf = (raw) => {
@@ -84,14 +84,14 @@ describe("concrete actions and preconditions are kept, not dropped", () => {
     const r = normalizeBatch(b);
     assert.equal(r.ok, true, JSON.stringify(r.problems));
     const first = r.batch.options[0];
-    assert.deepEqual(first.action, { tool: "Bash", target: "npm test" });
+    assert.deepEqual({ tool: first.action.tool, target: first.action.target, args: first.action.args }, { tool: "Bash", target: "npm   test", args: {} }, "a command is kept exactly (only its ends are trimmed): whitespace inside it can change what it does");
     assert.deepEqual(first.preconditions, [{ kind: "path_exists", path: "package.json" }, { kind: "path_sha256", path: "src/a.js", sha256: "a".repeat(64) }]);
-    assert.deepEqual(r.batch.options.find((o) => o.id === ASK_ID).action, { tool: "AskUserQuestion", target: "" });
+    assert.deepEqual(r.batch.options.find((o) => o.id === ASK_ID).action, { tool: "AskUserQuestion", target: "", args: {}, view: {} });
     assert.equal(r.batch.options.find((o) => o.id === GATHER_ID).action, null);
   });
   it("makes absolute paths relative to the repository root", () => {
     const b = batchOf(5, { kind: "edit" });
-    b.options[0].action = { tool: "Edit", target: "/repo/src/a.js" };
+    b.options[0].action = { tool: "Edit", target: "/repo/src/a.js", old_string: "a", new_string: "b" };
     const r = normalizeBatch(b, { root: "/repo" });
     assert.equal(r.batch.options[0].action.target, "src/a.js");
   });
@@ -102,7 +102,7 @@ describe("concrete actions and preconditions are kept, not dropped", () => {
       assert.match(problemsOf(b).join(" "), /action is required/, kind);
     }
     const wrong = batchOf(5, { kind: "command" });
-    wrong.options[0].action = { tool: "Write", target: "a.js" };
+    wrong.options[0].action = { tool: "Write", target: "a.js", content: "x" };
     assert.match(problemsOf(wrong).join(" "), /must be Bash/);
     const edit = batchOf(5, { kind: "edit" });
     edit.options[0].action = { tool: "Bash", target: "sed -i x a.js" };
@@ -134,5 +134,54 @@ describe("concrete actions and preconditions are kept, not dropped", () => {
     assert.notEqual(optionHash(a), optionHash({ ...a, action: { tool: "Bash", target: "b" } }));
     assert.notEqual(optionHash(a), optionHash({ ...a, preconditions: [{ kind: "path_exists", path: "x" }] }));
     assert.equal(optionHash(a, 64).length, 64);
+  });
+});
+
+describe("an action is bound by its arguments, not only by its path", () => {
+  const one = (action, kind = "order") => {
+    const b = batchOf(5, { kind });
+    b.options[0].action = action;
+    return normalizeBatch(b);
+  };
+  it("requires the arguments that change what the call does and refuses names it does not know", () => {
+    assert.match(one({ tool: "Write", target: "a.js" }).problems.join(" "), /action.content is required for Write/);
+    assert.match(one({ tool: "Edit", target: "a.js", old_string: "x" }).problems.join(" "), /action.new_string is required/);
+    assert.match(one({ tool: "Agent", target: "worker" }).problems.join(" "), /action.prompt is required for Agent/);
+    assert.match(one({ tool: "MultiEdit", target: "a.js", edits: [] }).problems.join(" "), /non-empty array/);
+    assert.match(one({ tool: "Read", target: "a.js", offset: "3" }).problems.join(" "), /offset must be an integer/);
+    assert.match(one({ tool: "Read", target: "a.js", timeout: 5 }).problems.join(" "), /timeout is not an argument of Read/);
+    assert.equal(one({ tool: "Read", target: "a.js", offset: 10, limit: 20 }).ok, true);
+  });
+  it("gives a different option hash, action hash and plan hash to every different argument of the same tool and path", () => {
+    const hashes = (action) => {
+      const o = one(action).batch.options[0];
+      return [optionHash(o), optionActionHash(o)];
+    };
+    const variants = [
+      { tool: "Write", target: "a.js", content: "one" },
+      { tool: "Write", target: "a.js", content: "two" },
+      { tool: "Edit", target: "a.js", old_string: "a", new_string: "b" },
+      { tool: "Edit", target: "a.js", old_string: "a", new_string: "c" },
+      { tool: "Edit", target: "a.js", old_string: "a", new_string: "b", replace_all: true },
+      { tool: "Read", target: "a.js" },
+      { tool: "Read", target: "a.js", offset: 1, limit: 50 },
+      { tool: "Read", target: "a.js", offset: 51, limit: 50 },
+      { tool: "Agent", target: "worker", prompt: "do x", model: "sonnet" },
+      { tool: "Agent", target: "worker", prompt: "do y", model: "sonnet" },
+      { tool: "Agent", target: "worker", prompt: "do x", model: "opus" },
+      { tool: "Grep", target: "foo", path: "src" },
+      { tool: "Grep", target: "foo", path: "test" },
+      { tool: "Bash", target: 'printf "a b"' },
+      { tool: "Bash", target: 'printf "a  b"' },
+    ];
+    const all = variants.map(hashes);
+    assert.equal(new Set(all.map((h) => h[0])).size, variants.length, "option hashes");
+    assert.equal(new Set(all.map((h) => h[1])).size, variants.length, "action hashes");
+  });
+  it("keeps a payload only as its hash (the head is a view for Jev, outside the hash)", () => {
+    const d = one({ tool: "Write", target: "a.js", content: "SECRET=hunter2\nbody" }).batch.options[0].action;
+    assert.match(d.args.content, /^s256:[0-9a-f]{64}$/);
+    assert.equal(JSON.stringify(d.args).includes("hunter2"), false);
+    assert.equal(d.view.content.chars, "SECRET=hunter2\nbody".length);
   });
 });

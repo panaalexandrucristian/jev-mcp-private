@@ -5,12 +5,13 @@
 // each. The control options "gather more evidence" and "ask the user" are always
 // present; their ids cannot collide with jev_decide's escape hatches
 // (ask_user, investigate, none). An option that is meant to be carried out names
-// ONE concrete observable action ({tool, target}) and optional preconditions
+// ONE concrete observable action ({tool, target, ...arguments}: the arguments
+// that change what the call does are part of it) and optional preconditions
 // (see actions.mjs): they are kept, hashed, checked for availability before the
 // decision and bound into the plan and the receipt. A kind whose options are
 // actions (order, command, edit, delegate) requires the descriptor.
 import { createHash } from "node:crypto";
-import { actionHash, EDIT_TOOLS, normalizeDescriptor, normalizePreconditions } from "./actions.mjs";
+import { actionHash, descriptorKey, EDIT_TOOLS, normalizeDescriptor, normalizePreconditions } from "./actions.mjs";
 import { DECIDE_HATCHES } from "./contracts.mjs";
 
 export const KINDS = Object.freeze(["order", "approach", "command", "edit", "delegate", "ask", "done"]);
@@ -35,11 +36,11 @@ const norm = (text) => String(text).toLowerCase().replace(/\s+/g, " ").trim();
 
 /** The kinds whose real options are single actions, and the tools each allows (null: any action tool). */
 export const ACTION_REQUIRED = Object.freeze({ order: null, command: ["Bash"], edit: EDIT_TOOLS, delegate: ["Agent"] });
-const ASK_ACTION = Object.freeze({ tool: "AskUserQuestion", target: "" });
+const ASK_ACTION = Object.freeze({ tool: "AskUserQuestion", target: "", args: {}, view: {} });
 
-/** Hash of an option's meaning: text, evidence, concrete action and preconditions (new material when any of them changes). */
+/** Hash of an option's meaning: text, evidence, concrete action (tool, target and arguments) and preconditions (new material when any of them changes). */
 export function optionHash(option, length = 16) {
-  const action = option.action ? `${option.action.tool}\n${option.action.target}` : "-";
+  const action = option.action ? descriptorKey(option.action) : "-";
   const pre = (option.preconditions ?? []).map((p) => `${p.kind}:${p.path}:${p.sha256 ?? ""}`).join("|");
   return createHash("sha256").update(`${norm(option.text)}\n${option.evidence.map(norm).join("\n")}\n${action}\n${pre}`).digest("hex").slice(0, length);
 }
@@ -52,7 +53,7 @@ export function evidenceHash(lines) {
 }
 
 /**
- * Validate and normalize a raw batch {decision, kind, options: [{id, text, evidence: [..], action?: {tool, target},
+ * Validate and normalize a raw batch {decision, kind, options: [{id, text, evidence: [..], action?: {tool, target, ...arguments},
  * preconditions?: [{kind, path, sha256?}]}], priorities?, space_small?}. `root` (the repository) makes paths relative.
  * Returns {ok: true, batch} or {ok: false, problems}.
  */

@@ -1,30 +1,84 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { actionHash, evaluatePreconditions, normalizeDescriptor, normalizePath, normalizePreconditions, observedDescriptor, parsePlanItem, planItem, shortHash } from "../actions.mjs";
+import { actionHash, actionRecord, dependencyPaths, describeAction, evaluatePreconditions, fingerprintPaths, normalizeDescriptor, normalizePath, normalizePreconditions, observedDescriptor, parsePlanItem, planItem, shortHash } from "../actions.mjs";
 import { makeRepo, writeFiles } from "./helpers.mjs";
 
 describe("action descriptors", () => {
-  it("normalize the tool, the command's whitespace and repository paths", () => {
-    assert.deepEqual(normalizeDescriptor({ tool: "Bash", target: "  npm   test\n" }).descriptor, { tool: "Bash", target: "npm test" });
-    assert.deepEqual(normalizeDescriptor({ tool: "Task", target: "worker" }).descriptor, { tool: "Agent", target: "worker" });
-    assert.deepEqual(normalizeDescriptor({ tool: "Edit", target: "/repo/src/a.js" }, "/repo").descriptor, { tool: "Edit", target: "src/a.js" });
-    assert.deepEqual(normalizeDescriptor({ tool: "Read", target: "./src/../src/a.js" }, "/repo").descriptor, { tool: "Read", target: "src/a.js" });
-    assert.deepEqual(normalizeDescriptor({ tool: "AskUserQuestion", target: "ignored" }).descriptor, { tool: "AskUserQuestion", target: "" });
+  const D = (raw, root = "/repo") => normalizeDescriptor(raw, root).descriptor;
+  it("normalize the tool and repository paths; a command is kept exactly, only its ends are trimmed", () => {
+    assert.deepEqual(pick(D({ tool: "Bash", target: "  npm   test\n" })), { tool: "Bash", target: "npm   test", args: {} });
+    assert.deepEqual(pick(D({ tool: "Task", target: "worker", prompt: "p" })).tool, "Agent");
+    assert.equal(D({ tool: "Edit", target: "/repo/src/a.js", old_string: "a", new_string: "b" }).target, "src/a.js");
+    assert.equal(D({ tool: "Read", target: "./src/../src/a.js" }).target, "src/a.js");
+    assert.deepEqual(pick(D({ tool: "AskUserQuestion", target: "ignored" })), { tool: "AskUserQuestion", target: "", args: {} });
     for (const bad of [null, "x", { tool: "Teleport", target: "x" }, { tool: "Bash" }, { tool: "Bash", target: "   " }, { tool: "Bash", target: "x".repeat(2001) }]) assert.equal(normalizeDescriptor(bad).ok, false, JSON.stringify(bad));
   });
   it("an observed tool call has the same descriptor as the option that names it, and only that one", () => {
-    const planned = normalizeDescriptor({ tool: "Edit", target: "src/a.js" }, "/repo").descriptor;
-    const seen = observedDescriptor("Edit", { file_path: "/repo/src/a.js" }, "/repo");
+    const planned = D({ tool: "Edit", target: "src/a.js", old_string: "a", new_string: "b" });
+    const seen = observedDescriptor("Edit", { file_path: "/repo/src/a.js", old_string: "a", new_string: "b" }, "/repo");
     assert.equal(actionHash(seen), actionHash(planned));
-    assert.notEqual(actionHash(observedDescriptor("Write", { file_path: "/repo/src/a.js" }, "/repo")), actionHash(planned), "Write is not Edit");
-    assert.notEqual(actionHash(observedDescriptor("Edit", { file_path: "/repo/src/b.js" }, "/repo")), actionHash(planned));
-    assert.deepEqual(observedDescriptor("Bash", { command: "npm   test" }), { tool: "Bash", target: "npm test" });
-    assert.deepEqual(observedDescriptor("Grep", { pattern: "foo", path: "src" }), { tool: "Grep", target: "foo" });
+    assert.notEqual(actionHash(observedDescriptor("Write", { file_path: "/repo/src/a.js", content: "b" }, "/repo")), actionHash(planned), "Write is not Edit");
+    assert.notEqual(actionHash(observedDescriptor("Edit", { file_path: "/repo/src/b.js", old_string: "a", new_string: "b" }, "/repo")), actionHash(planned));
+    assert.deepEqual(pick(observedDescriptor("Bash", { command: "npm test", description: "run" })), { tool: "Bash", target: "npm test", args: {} }, "a description does not change the call");
+    assert.deepEqual(pick(observedDescriptor("Grep", { pattern: "foo", path: "/repo/src" }, "/repo")), { tool: "Grep", target: "foo", args: { path: "src" } });
     assert.equal(observedDescriptor("TodoWrite", {}), null);
+  });
+  it("two calls with the same tool and path but different arguments are different actions", () => {
+    const h = (name, input) => actionHash(observedDescriptor(name, input, "/repo"));
+    const w = (content) => h("Write", { file_path: "/repo/a.js", content });
+    assert.notEqual(w("one"), w("two"), "Write content");
+    const e = (new_string, extra = {}) => h("Edit", { file_path: "/repo/a.js", old_string: "a", new_string, ...extra });
+    assert.notEqual(e("b"), e("c"), "Edit replacement");
+    assert.notEqual(e("b"), e("b", { replace_all: true }), "replace_all");
+    assert.equal(e("b"), e("b", { replace_all: false }), "false is the default and means nothing");
+    const r = (extra) => h("Read", { file_path: "/repo/a.js", ...extra });
+    assert.notEqual(r({}), r({ offset: 1, limit: 10 }), "Read range");
+    assert.notEqual(r({ offset: 1, limit: 10 }), r({ offset: 11, limit: 10 }));
+    const a = (extra) => h("Agent", { subagent_type: "worker", prompt: "x", ...extra });
+    assert.notEqual(a({}), a({ prompt: "y" }), "Agent prompt");
+    assert.notEqual(a({}), a({ model: "opus" }), "Agent model");
+    const g = (extra) => h("Grep", { pattern: "foo", ...extra });
+    assert.notEqual(g({ path: "src" }), g({ path: "test" }), "Grep scope");
+    assert.notEqual(g({}), g({ glob: "*.mjs" }), "Grep glob");
+    const m = (b) => h("MultiEdit", { file_path: "/repo/a.js", edits: [{ old_string: "a", new_string: b }] });
+    assert.notEqual(m("1"), m("2"), "MultiEdit");
+    assert.notEqual(h("Bash", { command: 'printf "a b"' }), h("Bash", { command: 'printf "a  b"' }), "whitespace inside quotes changes the command");
+    assert.equal(h("Bash", { command: "  npm test \n" }), h("Bash", { command: "npm test" }), "only the ends are trimmed");
   });
   it("paths outside the root stay absolute and never collide with a relative one", () => {
     assert.equal(normalizePath("/elsewhere/a.js", "/repo"), "/elsewhere/a.js");
     assert.equal(normalizePath("/repo", "/repo"), ".");
+  });
+  it("describe the concrete call for Jev with sizes, hash prefixes and heads, never the whole payload", () => {
+    const big = `${"x".repeat(500)}TAIL`;
+    const text = describeAction(D({ tool: "Write", target: "a.js", content: big }));
+    assert.match(text, /^Write a\.js with content \(504 chars, s256:[0-9a-f]{8}\): "x+"$/);
+    assert.equal(text.includes("TAIL"), false);
+    assert.match(describeAction(D({ tool: "Read", target: "a.js", offset: 5, limit: 7 })), /offset=5; limit=7/);
+  });
+  it("keep only hashes of the payloads in the record a receipt stores", () => {
+    const rec = actionRecord(D({ tool: "Write", target: "a.js", content: "SECRET=1" }));
+    assert.equal(JSON.stringify(rec).includes("SECRET"), false);
+    assert.match(rec.args.content, /^s256:/);
+  });
+});
+
+const pick = (d) => ({ tool: d.tool, target: d.target, args: d.args });
+
+describe("evidence a step depends on", () => {
+  it("are the action's path, its scope and every precondition path, fingerprinted by content", () => {
+    const repo = makeRepo({ "a.js": "a\n", "b.js": "b\n" });
+    const option = { action: normalizeDescriptor({ tool: "Edit", target: "a.js", old_string: "a", new_string: "c" }, repo).descriptor, preconditions: [{ kind: "path_exists", path: "b.js" }, { kind: "path_absent", path: "gone.js" }] };
+    assert.deepEqual(dependencyPaths(option), ["a.js", "b.js", "gone.js"]);
+    assert.deepEqual(dependencyPaths({ action: normalizeDescriptor({ tool: "Bash", target: "npm test" }).descriptor, preconditions: [] }), []);
+    const before = fingerprintPaths(repo, dependencyPaths(option));
+    assert.match(before["a.js"], /^[0-9a-f]{64}$/);
+    assert.equal(before["gone.js"], "absent");
+    writeFiles(repo, { "a.js": "changed\n" });
+    const after = fingerprintPaths(repo, dependencyPaths(option));
+    assert.notEqual(after["a.js"], before["a.js"]);
+    assert.equal(after["b.js"], before["b.js"]);
+    assert.equal(fingerprintPaths(repo, ["../outside"])["../outside"], "outside");
   });
 });
 

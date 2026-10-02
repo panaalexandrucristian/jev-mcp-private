@@ -19,7 +19,9 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
       ],
       "action": {
         "tool": "Edit",
-        "target": "src/user.mjs"
+        "target": "src/user.mjs",
+        "old_string": "fullname",
+        "new_string": "displayName"
       }
     },
     {
@@ -30,7 +32,9 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
       ],
       "action": {
         "tool": "Edit",
-        "target": "CHANGELOG.md"
+        "target": "CHANGELOG.md",
+        "old_string": "- first release",
+        "new_string": "- first release\n- Renamed fullname to displayName"
       }
     },
     {
@@ -42,7 +46,9 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
       ],
       "action": {
         "tool": "Edit",
-        "target": "src/greeting.mjs"
+        "target": "src/greeting.mjs",
+        "old_string": "user.fullname",
+        "new_string": "user.displayName"
       }
     },
     {
@@ -53,7 +59,9 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
       ],
       "action": {
         "tool": "Edit",
-        "target": "test/greeting.test.mjs"
+        "target": "test/greeting.test.mjs",
+        "old_string": "Hello, Ada",
+        "new_string": "Hello, Ada Lovelace"
       }
     },
     {
@@ -64,7 +72,8 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
       ],
       "action": {
         "tool": "Write",
-        "target": "docs/user.md"
+        "target": "docs/user.md",
+        "content": "# User module\n\nA user has a `displayName` field (formerly `fullname`).\n"
       }
     }
   ]
@@ -82,34 +91,34 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "propositions": [
-    "Taking option t_schema is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Rename fullname to displayName in src/user.mjs (no precondition) Concrete action: Edit src/user.mjs.",
-    "Taking option t_changelog is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Add the changelog line (no precondition) Concrete action: Edit CHANGELOG.md.",
-    "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (precondition: t_schema done) Concrete action: Edit src/greeting.mjs.",
-    "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (precondition: t_schema done) Concrete action: Edit test/greeting.test.mjs.",
-    "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (precondition: t_schema done) Concrete action: Write docs/user.md.",
+    "Taking option t_schema is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Rename fullname to displayName in src/user.mjs (no precondition) Concrete action: Edit src/user.mjs with old_string (8 chars, s256:7244b466): \"fullname\"; new_string (11 chars, s256:e10039a5): \"displayName\".",
+    "Taking option t_changelog is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Add the changelog line (no precondition) Concrete action: Edit CHANGELOG.md with old_string (15 chars, s256:af659b18): \"- first release\"; new_string (49 chars, s256:0be472c4): \"- first release - Renamed fullname to displayName\".",
+    "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (precondition: t_schema done) Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\".",
+    "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (precondition: t_schema done) Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\".",
+    "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (precondition: t_schema done) Concrete action: Write docs/user.md with content (71 chars, s256:e092d0ed): \"# User module A user has a `displayName` field (formerly `fullname`).\".",
     "Taking option action_gather_evidence is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Gather more evidence before acting: read or run something that could change the choice.",
     "Taking option action_ask_user is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
       "id": "evidence_0",
-      "text": "Option t_schema: src/user.mjs:2 defines fullname Concrete action: Edit src/user.mjs."
+      "text": "Option t_schema: src/user.mjs:2 defines fullname Concrete action: Edit src/user.mjs with old_string (8 chars, s256:7244b466): \"fullname\"; new_string (11 chars, s256:e10039a5): \"displayName\"."
     },
     {
       "id": "evidence_1",
-      "text": "Option t_changelog: CHANGELOG.md is independent of the code Concrete action: Edit CHANGELOG.md."
+      "text": "Option t_changelog: CHANGELOG.md is independent of the code Concrete action: Edit CHANGELOG.md with old_string (15 chars, s256:af659b18): \"- first release\"; new_string (49 chars, s256:0be472c4): \"- first release - Renamed fullname to displayName\"."
     },
     {
       "id": "evidence_2",
-      "text": "Option t_greeting: src/greeting.mjs:2 reads user.fullname | the field does not exist under the new name yet Concrete action: Edit src/greeting.mjs."
+      "text": "Option t_greeting: src/greeting.mjs:2 reads user.fullname | the field does not exist under the new name yet Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\"."
     },
     {
       "id": "evidence_3",
-      "text": "Option t_tests: the test builds a user through createUser Concrete action: Edit test/greeting.test.mjs."
+      "text": "Option t_tests: the test builds a user through createUser Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\"."
     },
     {
       "id": "evidence_4",
-      "text": "Option t_docs: no documentation file exists Concrete action: Write docs/user.md."
+      "text": "Option t_docs: no documentation file exists Concrete action: Write docs/user.md with content (71 chars, s256:e092d0ed): \"# User module A user has a `displayName` field (formerly `fullname`).\"."
     },
     {
       "id": "evidence_5",
@@ -137,35 +146,35 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
-      "proposition": "Taking option t_schema is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Rename fullname to displayName in src/user.mjs (no precondition) Concrete action: Edit src/user.mjs.",
+      "proposition": "Taking option t_schema is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Rename fullname to displayName in src/user.mjs (no precondition) Concrete action: Edit src/user.mjs with old_string (8 chars, s256:7244b466): \"fullname\"; new_string (11 chars, s256:e10039a5): \"displayName\".",
       "probability": 0.991,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition1",
-      "proposition": "Taking option t_changelog is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Add the changelog line (no precondition) Concrete action: Edit CHANGELOG.md.",
+      "proposition": "Taking option t_changelog is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Add the changelog line (no precondition) Concrete action: Edit CHANGELOG.md with old_string (15 chars, s256:af659b18): \"- first release\"; new_string (49 chars, s256:0be472c4): \"- first release - Renamed fullname to displayName\".",
       "probability": 0.971,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition2",
-      "proposition": "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (precondition: t_schema done) Concrete action: Edit src/greeting.mjs.",
+      "proposition": "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (precondition: t_schema done) Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\".",
       "probability": 0.52,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition3",
-      "proposition": "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (precondition: t_schema done) Concrete action: Edit test/greeting.test.mjs.",
+      "proposition": "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (precondition: t_schema done) Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\".",
       "probability": 0.44,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition4",
-      "proposition": "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (precondition: t_schema done) Concrete action: Write docs/user.md.",
+      "proposition": "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (precondition: t_schema done) Concrete action: Write docs/user.md with content (71 chars, s256:e092d0ed): \"# User module A user has a `displayName` field (formerly `fullname`).\".",
       "probability": 0.35,
       "label": "uncertain",
       "auto": false
@@ -194,7 +203,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"ordered","decision_id":"a17c05e93b2d4f68","kind":"order","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"plan":["t_schema:e:0.991:f0be44b171fa","t_changelog:e:0.971:8f55ac55d81a"],"plan_total":2}
+{"status":"ordered","decision_id":"a17c05e93b2d4f68","kind":"order","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"plan":["t_schema:e:0.991:ec0923e8492c","t_changelog:e:0.971:7366fe1f120f"],"plan_total":2}
 ```
 
 **Comparison (strict)** — decision 1:
@@ -230,7 +239,9 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
       ],
       "action": {
         "tool": "Edit",
-        "target": "src/greeting.mjs"
+        "target": "src/greeting.mjs",
+        "old_string": "user.fullname",
+        "new_string": "user.displayName"
       }
     },
     {
@@ -241,7 +252,9 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
       ],
       "action": {
         "tool": "Edit",
-        "target": "test/greeting.test.mjs"
+        "target": "test/greeting.test.mjs",
+        "old_string": "Hello, Ada",
+        "new_string": "Hello, Ada Lovelace"
       }
     },
     {
@@ -252,7 +265,8 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
       ],
       "action": {
         "tool": "Write",
-        "target": "docs/user.md"
+        "target": "docs/user.md",
+        "content": "# User module\n\nA user has a `displayName` field (formerly `fullname`).\n"
       }
     }
   ]
@@ -270,24 +284,24 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "propositions": [
-    "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (t_schema is done) Concrete action: Edit src/greeting.mjs.",
-    "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (t_schema is done) Concrete action: Edit test/greeting.test.mjs.",
-    "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (t_schema is done) Concrete action: Write docs/user.md.",
+    "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (t_schema is done) Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\".",
+    "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (t_schema is done) Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\".",
+    "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (t_schema is done) Concrete action: Write docs/user.md with content (71 chars, s256:e092d0ed): \"# User module A user has a `displayName` field (formerly `fullname`).\".",
     "Taking option action_gather_evidence is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Gather more evidence before acting: read or run something that could change the choice.",
     "Taking option action_ask_user is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
       "id": "evidence_0",
-      "text": "Option t_greeting: src/user.mjs:2 now returns displayName | src/greeting.mjs:2 still reads user.fullname Concrete action: Edit src/greeting.mjs."
+      "text": "Option t_greeting: src/user.mjs:2 now returns displayName | src/greeting.mjs:2 still reads user.fullname Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\"."
     },
     {
       "id": "evidence_1",
-      "text": "Option t_tests: src/user.mjs:2 now returns displayName Concrete action: Edit test/greeting.test.mjs."
+      "text": "Option t_tests: src/user.mjs:2 now returns displayName Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\"."
     },
     {
       "id": "evidence_2",
-      "text": "Option t_docs: no documentation file exists Concrete action: Write docs/user.md."
+      "text": "Option t_docs: no documentation file exists Concrete action: Write docs/user.md with content (71 chars, s256:e092d0ed): \"# User module A user has a `displayName` field (formerly `fullname`).\"."
     },
     {
       "id": "evidence_3",
@@ -315,21 +329,21 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
-      "proposition": "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (t_schema is done) Concrete action: Edit src/greeting.mjs.",
+      "proposition": "Taking option t_greeting is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update src/greeting.mjs to read displayName (t_schema is done) Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\".",
       "probability": 0.985,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition1",
-      "proposition": "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (t_schema is done) Concrete action: Edit test/greeting.test.mjs.",
+      "proposition": "Taking option t_tests is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Update test/greeting.test.mjs (t_schema is done) Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\".",
       "probability": 0.978,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition2",
-      "proposition": "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (t_schema is done) Concrete action: Write docs/user.md.",
+      "proposition": "Taking option t_docs is the right next step for this decision: Which of the remaining tasks can be done now, and in which order? — Option: Document the new field (t_schema is done) Concrete action: Write docs/user.md with content (71 chars, s256:e092d0ed): \"# User module A user has a `displayName` field (formerly `fullname`).\".",
       "probability": 0.5,
       "label": "uncertain",
       "auto": false
@@ -360,16 +374,16 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "decision": "Which of the remaining tasks can be done now, and in which order?",
-  "evidence": "Option t_greeting: src/user.mjs:2 now returns displayName | src/greeting.mjs:2 still reads user.fullname Concrete action: Edit src/greeting.mjs.\nOption t_tests: src/user.mjs:2 now returns displayName Concrete action: Edit test/greeting.test.mjs.",
+  "evidence": "Option t_greeting: src/user.mjs:2 now returns displayName | src/greeting.mjs:2 still reads user.fullname Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\".\nOption t_tests: src/user.mjs:2 now returns displayName Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\".",
   "priorities": "fix it with the smallest correct change",
   "candidates": [
     {
       "id": "t_greeting",
-      "description": "Update src/greeting.mjs to read displayName (t_schema is done) Concrete action: Edit src/greeting.mjs."
+      "description": "Update src/greeting.mjs to read displayName (t_schema is done) Concrete action: Edit src/greeting.mjs with old_string (13 chars, s256:96dc10b5): \"user.fullname\"; new_string (16 chars, s256:77f9a1e6): \"user.displayName\"."
     },
     {
       "id": "t_tests",
-      "description": "Update test/greeting.test.mjs (t_schema is done) Concrete action: Edit test/greeting.test.mjs."
+      "description": "Update test/greeting.test.mjs (t_schema is done) Concrete action: Edit test/greeting.test.mjs with old_string (10 chars, s256:7da4681c): \"Hello, Ada\"; new_string (19 chars, s256:38992db9): \"Hello, Ada Lovelace\"."
     }
   ]
 }
@@ -401,7 +415,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"ordered","decision_id":"a17c05e93b2d4f6f","kind":"order","threshold":0.95,"round":0,"calls":2,"tiebreaks":1,"plan":["t_greeting:e:0.985:7e863bfe3aa5","t_tests:e:0.978:f8e831eda89d"],"plan_total":2}
+{"status":"ordered","decision_id":"a17c05e93b2d4f6f","kind":"order","threshold":0.95,"round":0,"calls":2,"tiebreaks":1,"plan":["t_greeting:e:0.985:d3472a74b466","t_tests:e:0.978:bfcab3c52e02"],"plan_total":2}
 ```
 
 **Comparison (strict)** — decision 2:

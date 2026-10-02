@@ -68,12 +68,19 @@ export function release(dir, id, now = Date.now()) {
   }, now);
 }
 
-/** The user approved continuing beyond the limit: raise it by `n` (a multiple of the base budget by default). */
-export function approveMore(dir, n = BUDGET_LIMIT, now = Date.now()) {
+/**
+ * The user approved continuing beyond the limit: raise it by `n` (a multiple of the base budget by default). The
+ * approval keeps the user's own words (`message`, one line) so the transcript audit can check that the user really
+ * said it; without them nothing is raised.
+ */
+export function approveMore(dir, n = BUDGET_LIMIT, message = "", now = Date.now()) {
+  const text = String(message ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+  if (text.length < 3) return { ok: false, reason: "message_required" };
   const extra = Number.isInteger(n) && n > 0 && n <= 100 ? n : BUDGET_LIMIT;
   return withControlState(dir, (state) => {
     state.budget.extra += extra;
-    return budgetView(state);
+    (state.budget.approvals ??= []).push({ n: extra, msg: text, req: state.request.seq, ts: now });
+    return { ok: true, n: extra, ...budgetView(state) };
   }, now);
 }
 

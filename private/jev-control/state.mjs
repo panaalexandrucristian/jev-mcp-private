@@ -50,7 +50,7 @@ export function controlSessionDirFromKey(repoRoot, key, env = process.env) {
 }
 
 export function emptyBudget() {
-  return { limit: BUDGET_LIMIT, extra: 0, attempts: Object.fromEntries(SOURCES.map((s) => [s, 0])), sent: 0, released: 0, history: [] };
+  return { limit: BUDGET_LIMIT, extra: 0, attempts: Object.fromEntries(SOURCES.map((s) => [s, 0])), sent: 0, released: 0, approvals: [], history: [] };
 }
 
 export function emptyControlState(now = Date.now()) {

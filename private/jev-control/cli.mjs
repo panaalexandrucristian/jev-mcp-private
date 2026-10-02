@@ -8,8 +8,8 @@
 //   cli.mjs search --query <text> [--single] [--exact-path p] [--search-id id --widen] [--source subagent]
 //   cli.mjs page --decision id [--part plan|scores] [--from n]
 //   cli.mjs approve --decision id --option id --message "<the user's words>"
-//   cli.mjs budget status|reserve --tool noul [--source main|subagent]|confirm --id x [--ok 0|1] [--ms n]|release --id x|approve [--n 25]
-//   cli.mjs receipt verify --id x --option id --tool T --target t [--dry-run]
+//   cli.mjs budget status|reserve --tool noul [--source main|subagent]|confirm --id x [--ok 0|1] [--ms n]|release --id x|approve --message "<the user's words>" [--n 25]
+//   cli.mjs receipt verify --id x --option id (--action-file <file|-> | --tool T --target t) [--dry-run]
 //   cli.mjs done --claims <file|-> [--check '["cmd","arg"]']... [--check-timeout s]
 // Common: [--root <repo>] [--session-id <id>] [--session-cap <capability>]. The
 // session is the one in an explicit --session-id (operators and tests), in
@@ -388,15 +388,26 @@ function cmdBudget(flags, ctx) {
   }
   if (sub === "confirm") return { ...confirm(ctx.dir, flags.id, { ok: flags.ok !== "0", ms: flags.ms === undefined ? null : Number(flags.ms) }), status: "ok" };
   if (sub === "release") return { ...release(ctx.dir, flags.id), status: "ok" };
-  if (sub === "approve") return { status: "ok", ...approveMore(ctx.dir, flags.n === undefined ? undefined : Number(flags.n)) };
+  if (sub === "approve") {
+    // Going past the limit is the user's decision: their own words are recorded, and the audit checks that they said it.
+    const r = approveMore(ctx.dir, flags.n === undefined ? undefined : Number(flags.n), sanitizeText(flags.message ?? "").text);
+    if (!r.ok) return { status: "refused", message: "an approval beyond the budget needs the user's own words: pass --message \"<what the user said>\"; nothing was raised" };
+    const { ok, n, ...view } = r;
+    return { status: "ok", ...view, approval: { n, msg: oneLine(sanitizeText(flags.message).text, 120) } };
+  }
   throw new UsageError(`unknown budget subcommand: ${sub}`);
 }
 
 async function cmdReceipt(flags, ctx) {
-  if (flags._[1] !== "verify" || !flags.id) throw new UsageError("receipt verify --id <id> --option <id> --tool <T> --target <t> [--dry-run]");
+  if (flags._[1] !== "verify" || !flags.id) throw new UsageError("receipt verify --id <id> --option <id> (--action-file <file|-> | --tool <T> --target <t>) [--dry-run]");
+  // The action to authorize in full: tool, target and every bound argument (content, replacement, range, prompt, scope).
+  // --tool/--target alone cover the tools that have no required argument.
+  let raw = null;
+  if (flags["action-file"] !== undefined) raw = await readJson(flags["action-file"]);
+  else if (flags.tool !== undefined) raw = { tool: flags.tool, target: flags.target ?? "" };
   let action = null;
-  if (flags.tool !== undefined) {
-    const d = normalizeDescriptor({ tool: flags.tool, target: flags.target ?? "" }, ctx.repoRoot);
+  if (raw !== null) {
+    const d = normalizeDescriptor(raw, ctx.repoRoot);
     if (!d.ok) return { status: "refused", authorized: false, message: d.problems[0] };
     action = d.descriptor;
   }
@@ -409,7 +420,7 @@ async function cmdReceipt(flags, ctx) {
   // Check and consume under one lock: two processes cannot both use the same authorization.
   return withControlState(ctx.dir, (state) => {
     const v = verifyDecisionReceipt(ctx.dir, flags.id, { session: ctx.key, req: state.request.seq, snap, root: ctx.repoRoot, option: flags.option ?? null, action, consumed: state.consumed });
-    if (!v.ok) return { status: "refused", authorized: false, message: v.reason, ...(v.expected ? { expected: v.expected } : {}) };
+    if (!v.ok) return { status: "refused", authorized: false, message: v.reason, ...(v.detail ? { detail: v.detail } : {}), ...(v.expected ? { expected: v.expected } : {}) };
     if (flags["dry-run"] !== true) state.consumed.push({ receipt: flags.id, option: flags.option, req: state.request.seq, ts: Date.now() });
     return { status: "ok", authorized: true, consumed: flags["dry-run"] !== true };
   });
@@ -434,7 +445,7 @@ export async function main(argv, env = process.env) {
     return EXIT.ok;
   }
   const flags = parseFlags(argv.slice(), {
-    values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "source", "id", "ok", "ms", "n", "claims", "check-timeout"],
+    values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "action-file", "source", "id", "ok", "ms", "n", "claims", "check-timeout"],
     bools: ["headless", "single", "widen", "dry-run"],
     multi: ["check"],
   });

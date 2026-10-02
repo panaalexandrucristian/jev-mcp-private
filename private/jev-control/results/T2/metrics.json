@@ -1,6 +1,6 @@
 {
   "round": "T2",
-  "kind": "build + offline tests (ratification fix round 1 applied)",
+  "kind": "build + offline tests (ratification fix rounds 1 and 2 applied)",
   "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
   "branch": "jev-control-skill",
   "plugin_version": "0.7.0",
@@ -34,9 +34,9 @@
       "exit": 0
     },
     "node --test private/jev-control/test/": {
-      "tests": 318,
-      "suites": 64,
-      "pass": 318,
+      "tests": 375,
+      "suites": 74,
+      "pass": 375,
       "fail": 0,
       "exit": 0
     },
@@ -80,5 +80,12 @@
     "runner": "one campaign-wide exclusive lock taken before spawn; the no-progress stop is removed",
     "demonstrated_offline": "see skills/jev-control/reference/integration.md",
     "left_for_R02": "CLAUDE_CODE_SESSION_ID in the Bash tool; raw slash text in the prompt hook and the capability line reaching the model; the model copying the capability into subagent prompts; agent_id in subagent payloads; SessionEnd firing; /jev:jev-control in claude -p; --plugin-dir with an installed jev plugin"
+  },
+  "fix_round_2": {
+    "actions": "the descriptor is tool, exact target and the canonical arguments per tool (Write content, Edit old/new string, Read offset/limit, Agent model and prompt, Grep scope, ...); payloads are bound by SHA-256; a missing required argument or an unknown name is refused; Jev sees the sanitized concrete variant; receipt verify takes the whole action",
+    "receipts": "before the first use any move of the tree invalidates; later steps need the evidence paths they depend on unchanged (fingerprinted at decision time) and a step that names none is refused as stale",
+    "audit": "refused receipts revoke grants; search grants keep range, hash and rank; only a genuine helper invocation with a plausible output grants; every done attempt replaces the finalization state and an edit after acceptance invalidates it; Incomplete: is told apart from a declared completion; a budget raise needs the user's words in the request; reservations are bound to the agent context",
+    "budget_approve": "requires --message (the user's words); refused without",
+    "commit_trailer": "first fix commit message amended to Co-Authored-By: Claude Opus 5.5 (tree unchanged)"
   }
 }

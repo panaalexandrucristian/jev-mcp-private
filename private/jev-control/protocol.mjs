@@ -10,7 +10,8 @@
 // stop with a report that starts "Incomplete:"). Nothing below the threshold is
 // executed without a recorded user approval. Jev unavailable (after the single
 // identical retry) stops the step; there is no silent continuation.
-import { evaluatePreconditions, planItem, shortHash } from "./actions.mjs";
+import { sanitizeText } from "../jev-flow/sanitize.mjs";
+import { actionRecord, dependencyPaths, describeAction, evaluatePreconditions, fingerprintPaths, planItem, shortHash } from "./actions.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult } from "./contracts.mjs";
 import { isUnavailable, UNAVAILABLE } from "./client.mjs";
 import { ASK_ID, CONTROL_IDS, EXCLUSIVE_KINDS, GATHER_ID, optionActionHash, optionHash } from "./options.mjs";
@@ -22,8 +23,12 @@ export const MAX_EXPANSIONS = 2;
 export const SHORTLIST = 6;
 const SAME = 1e-9;
 const clip = (text, n) => String(text).slice(0, n);
-/** The concrete action an option stands for, as a short phrase Jev can judge (empty when it names none). */
-const actionPhrase = (o) => (o.action ? ` Concrete action: ${o.action.tool}${o.action.target ? ` ${clip(o.action.target, 300)}` : ""}.` : "");
+/**
+ * The concrete action an option stands for (tool, exact target and every bound argument, a payload as its size, a hash
+ * prefix and a short head), as a short SANITIZED phrase Jev can judge (empty when it names none). The hash and the
+ * receipt cover the raw action; only what is shown to Jev is sanitized.
+ */
+const actionPhrase = (o) => (o.action ? ` Concrete action: ${clip(sanitizeText(describeAction(o.action)).text, 600)}.` : "");
 
 export class StopDecision extends Error {
   constructor(result) {
@@ -208,6 +213,9 @@ export async function runDecision(batch, rawCtx) {
 async function decideOnce(batch, ctx) {
   const { T, key, round } = ctx;
   const unavailable = [];
+  // The evidence each option depends on (its target path and its precondition paths), fingerprinted with the snapshot: a
+  // later step of the plan is authorized only while that evidence is unchanged (receipts.mjs).
+  const deps = new Map(batch.options.map((o) => [o.id, ctx.repoRoot ? fingerprintPaths(ctx.repoRoot, dependencyPaths(o)) : {}]));
   const finish = (status, extra = {}, scores = {}, planItems = []) => {
     const result = {
       status, decision_id: key, kind: batch.kind, threshold: T, round, calls: ctx.attempts, tiebreaks: ctx.tiebreaks, scores, plan: planItems,
@@ -217,7 +225,7 @@ async function decideOnce(batch, ctx) {
       provenance: {
         t: T,
         round,
-        options: batch.options.map((o, i) => ({ id: o.id, oh: ctx.fullHashes[i], ah: optionActionHash(o), action: o.action ? { tool: o.action.tool, target: clip(o.action.target, 120) } : null, pre: o.preconditions ?? [], score: scores[o.id] ?? null, unavailable: unavailable.find((u) => u.id === o.id)?.reason ?? null })),
+        options: batch.options.map((o, i) => ({ id: o.id, oh: ctx.fullHashes[i], ah: optionActionHash(o), action: o.action ? actionRecord(o.action) : null, pre: o.preconditions ?? [], dep: deps.get(o.id) ?? {}, score: scores[o.id] ?? null, unavailable: unavailable.find((u) => u.id === o.id)?.reason ?? null })),
         calls: ctx.calls,
         tiebreaks: ctx.tiebreaks,
       },

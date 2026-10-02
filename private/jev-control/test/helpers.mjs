@@ -108,8 +108,8 @@ export function scriptedCaller(steps) {
 export function actionFor(kind, i) {
   if (kind === "order") return { tool: "Bash", target: `node scripts/step-${i + 1}.mjs` };
   if (kind === "command") return { tool: "Bash", target: `npm run check-${i + 1}` };
-  if (kind === "edit") return { tool: "Edit", target: `src/file-${i + 1}.js` };
-  if (kind === "delegate") return { tool: "Agent", target: `worker-${i + 1}` };
+  if (kind === "edit") return { tool: "Edit", target: `src/file-${i + 1}.js`, old_string: `old ${i + 1}`, new_string: `new ${i + 1}` };
+  if (kind === "delegate") return { tool: "Agent", target: `worker-${i + 1}`, prompt: `Do the work of option ${i + 1}.` };
   return null;
 }
 

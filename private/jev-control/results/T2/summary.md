@@ -5,7 +5,7 @@
 | Check | Result |
 | --- | --- |
 | `node --test private/jev-flow/test/` | 324 tests, 61 suites, 324 pass, exit 0 |
-| `node --test private/jev-control/test/` | 318 tests, 64 suites, 318 pass, exit 0 |
+| `node --test private/jev-control/test/` | 375 tests, 74 suites, 375 pass, exit 0 |
 | `claude plugin validate .` (Claude Code 2.1.288) | passed, exit 0 (it does not check hook event names) |
 | `node private/jev-control/fixtures/seal.mjs verify` | ok (dev oracle hashes and sealed final hashes recorded) |
 | `git diff --check` | clean |
@@ -19,6 +19,15 @@ Threshold boundaries (0.95 rejected, 0.951 accepted, 0.95001 kept raw; 0.5, 1, 0
 ## Fix round 1 (after the council's review)
 
 The first ratification found false coverage in the audit, an unbounded search, plans and receipts not bound to concrete actions, plans cut without a marker, shallow contract checks, an identity that could be adopted from another session, a runner without a campaign-wide lock and partial token totals presented as complete. Each is fixed and tested offline (see `metrics.json`, `fix_round_1`). Offline evidence only: the installed binary's hook schema was inspected for `SessionEnd` and the `SessionStart` sources, but no hook was run in a live session.
+
+## Fix round 2 (after the second review)
+
+The second review found that an action descriptor `{tool, target}` did not identify the call (Write content, Edit replacement, Read range, Agent model and prompt, Grep scope and the whitespace inside a Bash command were ignored), that a receipt stayed valid after the work tree moved and after a refusal, that the audit kept an accepted completion after a later failed `done` and raised the budget from any `budget approve`, and that any Bash text mentioning the helper counted as helper output. Fixed and tested offline:
+
+- **Actions bound by their arguments** (`actions.mjs`, `options.mjs`, `protocol.mjs`, `receipts.mjs`, `cli.mjs`): the descriptor is tool, exact target (a Bash command is not whitespace-collapsed) and the canonical arguments per tool; payloads enter the hash as SHA-256 (receipts and state keep hashes, never text); a required argument that is missing and an unknown argument name are refused; Jev is shown the concrete variant sanitized (size, hash prefix, short head); `receipt verify` takes the whole action (`--action-file`).
+- **Evidence per step** (`receipts.mjs`): before the first use any move of the tree invalidates a receipt; afterwards a step needs the paths it depends on (its target, its precondition paths) unchanged, fingerprinted at decision time; a step that names none is refused as stale. The old test that waved later steps through was replaced.
+- **Audit** (`measure.mjs`): a refused `receipt verify` revokes grants; search grants carry the line range, hash and rank (a read outside the range, after an edit of the file, or out of rank order is not covered); only a genuine helper invocation with a plausible output is a grant source (a forged `echo` or a compound command is audited as an action); every `done` attempt replaces the previous finalization state, an edit after acceptance invalidates it, `Incomplete:` is told apart from a declared completion; a budget raise counts only when the user's words are in the request, and a reservation is consumed only by the agent context that made it. `budget approve` now requires `--message`.
+- **Commit trailer:** the first fix commit's message was corrected (message only, tree unchanged) to the `Co-Authored-By: Claude Opus 5.5` trailer the task requires.
 
 ## Not measured, not verified
 

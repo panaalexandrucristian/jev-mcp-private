@@ -5,20 +5,48 @@
 //   node measure.mjs --transcript <file> [--threshold 0.95] [--baseline <file>] [--format json|markdown] [--out <dir>]
 // What it measures (D17): (1) observable controllable actions and whether each one
 // is bound to a concrete GRANT: an earlier helper result (decide plan item, page,
-// search hit, bound approval, stop) that named exactly that action (same tool and
-// normalized target, compared by action hash), in the same request and agent
-// context, consumed once, in plan order for `order` decisions. Nothing else covers
-// an action: a direct Jev call, a plan score or a `budget` command never does. The
-// only exception is a Read of a path the request's own user prompt names exactly.
+// search hit, bound approval, stop) that named exactly that action (same tool,
+// exact target AND canonical arguments, compared by action hash), in the same
+// request and agent context, consumed once, in plan order for `order` decisions.
+// Nothing else covers an action: a direct Jev call, a plan score or a `budget`
+// command never does. The only exception is a Read of a path the request's own
+// user prompt names exactly.
+// Provenance: a Bash call is a HELPER call only when its simple-command structure
+// is `[cd <dir> &&] [VAR=v] node <...>/jev-control/cli.mjs <flags> [2>&1|2>/dev/null]`,
+// optionally fed by a pipe and/or a here-document; anything else that merely
+// mentions the helper (echo, a chained command, a pipe FROM it, command
+// substitution) is an ordinary Bash ACTION that needs its own grant and whose
+// output never creates a grant (coverage.protocol_compound counts those). A result
+// without the shape the real helper prints is opaque, never a grant source; a
+// decide result without a `receipt` creates no grants (grants_without_receipt).
+// Search grants keep path, line range, sha256, rank and the search: a Read covers
+// a hit only inside its range (a whole-file Read is accepted and counted, the file
+// length is unknown offline), not after an edit of that path since the search, and
+// a better-ranked hit is not read after a worse-ranked one of the same search.
+// Receipts: a refused `receipt verify` revokes the unconsumed grants of its
+// decision (stale or unknown snapshot, forged, other session or request) or of its
+// option only (evidence, precondition, action or option problems); a replay or an
+// out-of-order refusal revokes nothing. A covered action is counted as
+// receipt_verified only when an authorized, non-dry-run verification of its
+// decision and option preceded it; otherwise unverified_binding: snapshot and
+// precondition validity at action time is proven only for the former.
 // (2) threshold compliance: an `e` plan item must score strictly above the
 // output's own threshold, no controllable action may follow a blocking stop until
 // a new helper result or a bound approval, and an approval counts only when its
 // message occurs in a real user message of the same request. (3) plan ordering
 // and the order of the actions actually executed. (4) Jev calls: direct calls
-// against open reservations, helper-reported attempts against the per-request
-// limit. (5) finalization (accepted done after the last edit). (6) usage per
-// unique message, merged per field, parent / subagent / unattributed kept apart;
-// a total with missing messages is "unknown" (the observed subtotal is separate).
+// against open reservations of the SAME agent context (a reserve's --source must
+// match its context's side), helper-reported attempts against the per-request
+// limit of 25, raised only by a `budget approve` whose --message occurs in a real
+// user message of that request. (5) finalization, per request: every `done` call
+// replaces the request's state; accepted = outcome accepted AND control says
+// strictly above AND control.threshold equals the session threshold; any later
+// edit of the request invalidates it; a request with edits must end accepted, or
+// with a final message starting `Incomplete:`, or it is a completion declared
+// without an accepted done (no final message at all is unknown, not a violation).
+// (6) usage per unique message, merged per field, parent / subagent /
+// unattributed kept apart; a total with missing messages is "unknown" (the
+// observed subtotal is separate).
 // Choices made internally and never visible in the transcript are unmeasurable.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -182,14 +210,20 @@ function collect(records) {
     }
   });
   const events = [];
-  const requests = [{ request: 0, at: -1, text: "" }];
+  // `last`: the last main-context assistant record of the request that has text or a tool_use (its text is the final message only when it has no tool_use).
+  const requests = [{ request: 0, at: -1, text: "", last: null }];
   const seen = new Set();
   let cwd = null;
   records.forEach((r, i) => {
     if (nonEmpty(r?.cwd)) cwd = r.cwd;
-    if (isPrompt(r, carries)) requests.push({ request: requests.length, at: i, text: userText(r) });
+    if (isPrompt(r, carries)) requests.push({ request: requests.length, at: i, text: userText(r), last: null });
     if (r?.type !== "assistant") return;
     const who = identity(r, carries);
+    if (who.side !== "subagent") {
+      const text = blocks(r).filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n").trim();
+      const toolUse = blocks(r).some((b) => b?.type === "tool_use");
+      if (text || toolUse) requests[requests.length - 1].last = { text, toolUse, i };
+    }
     blocks(r).forEach((b, k) => {
       if (b?.type !== "tool_use") return;
       const id = nonEmpty(b.id) ?? `line:${i}:${k}`;
@@ -199,6 +233,7 @@ function collect(records) {
       const result = results.get(id) ?? null;
       events.push({
         i,
+        seq: events.length,
         id,
         name: String(b.name ?? ""),
         input: b.input && typeof b.input === "object" ? b.input : {},
@@ -243,23 +278,35 @@ function anyJson(text) {
   return lastJson(text);
 }
 
-function cliSub(command) {
-  const m = /jev-control\/cli\.mjs["']?\s+(on|off|status|threshold|decide|search|page|approve|budget|receipt|done|plan)\b/.exec(command);
-  return m ? m[1] : null;
-}
+const HELPER_SUBS = new Set(["on", "off", "status", "threshold", "decide", "search", "page", "approve", "budget", "receipt", "done", "plan"]);
+const CLI_SCRIPT = /jev-control\/cli\.mjs$/;
+const FLOW_SCRIPT = /(^|\/)(jev-gate-run|jev-candidates)\.mjs$/;
+/** Helper flags that never take a value. */
+const BOOL_FLAGS = new Set(["dry-run", "headless", "single", "widen"]);
+/** Redirections a helper call may carry: stderr only. */
+const STDERR_REDIRECTS = new Set(["2>&1", "2>/dev/null"]);
 
 /**
  * Shell words of a command, quote aware (single, double, backslash), with the
- * control operators as {op} entries and here-document bodies skipped.
+ * control operators as {op} entries, here-documents / here-strings as {here}
+ * markers (the body of a here-document is skipped), a word with an unquoted
+ * redirection as {redir: text}, and `#` comments dropped. `words.subst` is true
+ * when the command has a command or process substitution (`$(`, backtick, `<(`,
+ * `>(`) outside single quotes or in an unquoted here-document body.
  */
 function shellWords(command) {
   const s = String(command);
   const words = [];
   const heredocs = [];
   let cur = null;
+  let redir = false;
   const push = () => {
-    if (cur !== null) words.push(cur);
+    if (cur !== null) words.push(redir ? { redir: cur } : cur);
     cur = null;
+    redir = false;
+  };
+  const subst = () => {
+    words.subst = true;
   };
   let i = 0;
   while (i < s.length) {
@@ -276,11 +323,15 @@ function shellWords(command) {
         if (s[i] === "\\" && i + 1 < s.length && '"\\$`'.includes(s[i + 1])) {
           cur += s[i + 1];
           i += 2;
-        } else cur += s[i++];
+        } else {
+          if (s[i] === "`" || (s[i] === "$" && s[i + 1] === "(")) subst();
+          cur += s[i++];
+        }
       }
       i += 1;
     } else if (c === "\\" && i + 1 < s.length) {
-      cur = (cur ?? "") + s[i + 1];
+      // A backslash-newline is a line continuation: nothing.
+      if (s[i + 1] !== "\n") cur = (cur ?? "") + s[i + 1];
       i += 2;
     } else if (c === "\n") {
       push();
@@ -289,7 +340,8 @@ function shellWords(command) {
       while (heredocs.length && i < s.length) {
         const end = s.indexOf("\n", i);
         const line = s.slice(i, end === -1 ? s.length : end);
-        if (line.replace(/^\t+/, "").trim() === heredocs[0]) heredocs.shift();
+        if (line.replace(/^\t+/, "").trim() === heredocs[0].delim) heredocs.shift();
+        else if (!heredocs[0].quoted && (line.includes("`") || line.includes("$("))) subst();
         i = end === -1 ? s.length : end + 1;
       }
       words.push({ op: "\n" });
@@ -298,17 +350,29 @@ function shellWords(command) {
       i += 1;
     } else if (cur === null && s.startsWith("<<<", i)) {
       i += 3;
+      words.push({ here: "<<<" });
     } else if (cur === null && s.startsWith("<<", i)) {
       i += s[i + 2] === "-" ? 3 : 2;
       while (i < s.length && /[ \t]/.test(s[i])) i += 1;
       let delim = "";
-      while (i < s.length && !/\s/.test(s[i])) {
+      let quoted = false;
+      while (i < s.length && !/[\s;&|]/.test(s[i])) {
         if (s[i] !== "'" && s[i] !== '"' && s[i] !== "\\") delim += s[i];
+        else quoted = true;
         i += 1;
       }
-      if (delim) heredocs.push(delim);
+      words.push({ here: "<<" });
+      if (delim) heredocs.push({ delim, quoted });
+    } else if (c === "#" && cur === null) {
+      while (i < s.length && s[i] !== "\n") i += 1;
     } else if (c === "&" && (s[i + 1] === ">" || (cur ?? "").endsWith(">"))) {
       cur = (cur ?? "") + c;
+      redir = true;
+      i += 1;
+    } else if (c === "<" || c === ">") {
+      if (s[i + 1] === "(") subst();
+      cur = (cur ?? "") + c;
+      redir = true;
       i += 1;
     } else if (c === "|" || c === "&" || c === ";") {
       push();
@@ -316,6 +380,7 @@ function shellWords(command) {
       words.push({ op });
       i += op.length;
     } else {
+      if (c === "`" || (c === "$" && s[i + 1] === "(")) subst();
       cur = (cur ?? "") + c;
       i += 1;
     }
@@ -324,38 +389,98 @@ function shellWords(command) {
   return words;
 }
 
-/** The helper invocation in a command: {sub, action, flags, compound}. */
-function helperCall(command) {
+const isOp = (w) => typeof w === "object" && w !== null && "op" in w;
+const isAssignment = (w) => typeof w === "string" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
+
+/**
+ * The argument words (after the script) when `command` is, structurally, ONE
+ * genuine run of a node script matching `scriptRe`: optional leading `cd <dir>`
+ * or assignment-only commands joined by && ; or a newline, optional piped feeders
+ * (`cat x.json |`), then `[VAR=v ...] node <script> <args>` with only stderr
+ * redirects and here-documents / here-strings, and nothing after it (a trailing
+ * newline or `;` is fine). Command substitution, a chained command, a pipe from the
+ * script, a stdout redirect or any other shape is not a run: null.
+ */
+function scriptRun(command, scriptRe) {
   const words = shellWords(command);
-  const at = words.findIndex((w) => typeof w === "string" && /jev-control\/cli\.mjs$/.test(w));
-  // A command that chains other commands after a separator (not a pipe) is compound.
-  const compound = words.some((w, k) => typeof w === "object" && w.op !== "|" && w.op !== "||" && words.slice(k + 1).some((x) => typeof x === "string"));
-  if (at === -1) return { sub: cliSub(command), action: null, flags: {}, compound };
-  const args = [];
-  for (const w of words.slice(at + 1)) {
-    if (typeof w !== "string") break;
-    args.push(w);
+  if (words.subst) return null;
+  const segs = [];
+  let cur = [];
+  for (const w of words) {
+    if (isOp(w)) {
+      segs.push({ words: cur, op: w.op });
+      cur = [];
+    } else cur.push(w);
   }
+  segs.push({ words: cur, op: null });
+  // An empty segment is blank-line noise only before a newline or at the very end.
+  const kept = [];
+  for (const seg of segs) {
+    if (seg.words.length === 0) {
+      if (seg.op === "\n" || seg.op === null) continue;
+      return null;
+    }
+    kept.push(seg);
+  }
+  const last = kept[kept.length - 1];
+  // Nothing may follow the script except a trailing `;` or newline.
+  if (!last || (last.op !== null && last.op !== ";" && last.op !== "\n")) return null;
+  // Walk back over the pipe feeders (any command whose output is piped in); everything before is the prefix.
+  let head = kept.length - 1;
+  while (head > 0 && kept[head - 1].op === "|") head -= 1;
+  for (const seg of kept.slice(0, head)) {
+    if (seg.op !== "&&" && seg.op !== ";" && seg.op !== "\n") return null;
+    if (seg.words.some((w) => typeof w !== "string")) return null;
+    if (!(seg.words.length === 2 && seg.words[0] === "cd") && !seg.words.every(isAssignment)) return null;
+  }
+  const body = last.words;
+  let k = 0;
+  while (k < body.length && isAssignment(body[k])) k += 1;
+  const node = body[k];
+  if (typeof node !== "string" || !(node === "node" || node.endsWith("/node"))) return null;
+  const script = body[k + 1];
+  if (typeof script !== "string" || !scriptRe.test(script)) return null;
+  const args = [];
+  for (let j = k + 2; j < body.length; j++) {
+    const w = body[j];
+    if (typeof w === "string") args.push(w);
+    else if (w.here === "<<<") j += 1;
+    else if (w.here) continue;
+    else if (typeof w.redir === "string" && STDERR_REDIRECTS.has(w.redir)) continue;
+    else if (w.redir === "2>" && body[j + 1] === "/dev/null") j += 1;
+    else return null;
+  }
+  return args;
+}
+
+/** The helper invocation in a command: {sub, action, flags}, or null when the command is not a genuine helper run. */
+function helperCall(command) {
+  const args = scriptRun(command, CLI_SCRIPT);
+  if (!args || !HELPER_SUBS.has(args[0])) return null;
   const flags = {};
   const positional = [];
   for (let k = 1; k < args.length; k++) {
     const a = args[k];
     if (!a.startsWith("--")) positional.push(a);
     else if (a.includes("=")) flags[a.slice(2, a.indexOf("="))] = a.slice(a.indexOf("=") + 1);
-    else if (k + 1 < args.length && !args[k + 1].startsWith("--")) flags[a.slice(2)] = args[++k];
+    else if (!BOOL_FLAGS.has(a.slice(2)) && k + 1 < args.length && !args[k + 1].startsWith("--")) flags[a.slice(2)] = args[++k];
     else flags[a.slice(2)] = true;
   }
-  return { sub: args[0] ?? cliSub(command), action: positional[0] ?? null, flags, compound };
+  return { sub: args[0], action: positional[0] ?? null, flags };
 }
+
+/** A command that mentions a jev-control helper script, whether or not it genuinely runs it. */
+const mentionsHelper = (command) => /jev-control\/cli\.mjs|jev-gate-run\.mjs|jev-candidates\.mjs/.test(command);
 
 function classify(e) {
   const jev = toolBase(e.name);
   if (jev) return { cat: "jev_direct", jev };
   if (e.name === "Bash") {
     const command = String(e.input.command ?? "");
-    if (cliSub(command)) return { cat: "protocol", ...helperCall(command) };
-    if (/jev-gate-run\.mjs|jev-candidates\.mjs/.test(command)) return { cat: "protocol", sub: "flow_helper", flags: {}, compound: false };
-    return { cat: "action" };
+    const call = helperCall(command);
+    if (call) return { cat: "protocol", ...call };
+    if (scriptRun(command, FLOW_SCRIPT)) return { cat: "protocol", sub: "flow_helper", flags: {} };
+    return { cat: "action", mention: mentionsHelper(command) };
   }
   if (ACTIONS.has(e.name)) return { cat: "action" };
   if (MECHANICAL.has(e.name)) return { cat: "mechanical" };
@@ -395,11 +520,15 @@ export function audit(records, { threshold = 0.95 } = {}) {
       mechanical: 0,
       protocol: 0,
       protocol_compound: 0,
+      receipt_verified: 0,
+      unverified_binding: 0,
+      search_whole_file_reads: 0,
+      grants_without_receipt: 0,
       uncovered_reasons: {},
       uncovered_samples: [],
       unknown_samples: [],
       by_context: {},
-      grants: { created: 0, consumed: 0, by_type: {} },
+      grants: { created: 0, consumed: 0, revoked: 0, by_type: {} },
     },
     threshold: { decisions: 0, plan_items_checked: 0, violations: [], unknown_scores: 0, threshold_missing: 0, actions_while_blocked: 0, approvals_unbound: 0, blocked_samples: [] },
     ordering: { plans: 0, plans_descending: 0, not_descending: [], order_violations: [], action_order: "measured", tiebreak_plans: 0, pages_applied: 0, pages_ignored: 0, partial_plans_incomplete: 0 },
@@ -409,6 +538,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
       unreserved_direct: [],
       reserved_direct: 0,
       reservations: { opened: 0, consumed: 0, confirmed: 0, released: 0, open_unused: 0 },
+      reservation_source_mismatch: [],
       direct_invalid_results: [],
       direct_decide_not_actionable: [],
       direct_errors: 0,
@@ -417,20 +547,27 @@ export function audit(records, { threshold = 0.95 } = {}) {
       per_request: [],
       violations: [],
     },
-    finalization: { done_calls: 0, last_outcome: null, accepted: false, last_accepted_at: null, edits: 0, violations: [] },
+    budget: { approvals_bound: 0, approvals_unbound: 0 },
+    finalization: { done_calls: 0, last_outcome: null, accepted: false, last_accepted_at: null, edits: 0, incomplete_stops: 0, accepted_without_control: 0, per_request: [], unknown: [], violations: [] },
     approvals: { calls: 0, bound: 0, unbound: [], refused: 0 },
-    receipts: { receipt_verifications: 0, receipt_refusals: 0 },
+    receipts: { receipt_verifications: 0, receipt_refusals: 0, refusals_by_reason: {} },
   };
   const latency = { jev_direct: [], helper: [] };
   const grants = [];
   const decisions = new Map();
+  const receiptIds = new Map();
+  const verifications = [];
   const scopes = new Map();
   const reservations = [];
   const userMessages = requests.map((r) => (r.at >= 0 ? [{ at: r.at, text: r.text }] : []));
   const perRequest = new Map();
+  const reportedLimit = new Map();
+  const finState = new Map();
+  const editLog = [];
   const edits = [];
-  let lastAccepted = null;
   let lastT = null;
+  // The threshold in force for a `done`: the latest numeric threshold any session-level helper output carried.
+  let sessionT = null;
 
   const scope = (e) => {
     const key = `${e.ctx}\n${e.req}`;
@@ -441,18 +578,44 @@ export function audit(records, { threshold = 0.95 } = {}) {
     if (!perRequest.has(req)) perRequest.set(req, { request: req, helper_attempts: 0, direct: 0, approved_extra: 0, limit: BASE_LIMIT });
     return perRequest.get(req);
   };
+  const finOf = (req) => {
+    if (!finState.has(req)) finState.set(req, { request: req, edits: 0, edit_seqs: [], done_calls: 0, done_seq: -1, outcome: null, accepted: false, accepted_at: null, edits_after_accepted: false });
+    return finState.get(req);
+  };
   const ctxStats = (ctx) => (out.coverage.by_context[ctx] ??= { covered: 0, uncovered: 0, unknown: 0, exceptions: 0 });
   const addGrant = (g) => {
-    grants.push({ ...g, consumed: false });
+    grants.push({ ...g, consumed: false, revoked: null });
     out.coverage.grants.created += 1;
     out.coverage.grants.by_type[g.type] = (out.coverage.grants.by_type[g.type] ?? 0) + 1;
   };
   const askGrant = (e, at, extra) => addGrant({ type: "ask", tool: "AskUserQuestion", ctx: e.ctx, req: e.req, at, ...extra });
+  const revoke = (g, reason) => {
+    if (g.consumed || g.revoked) return;
+    g.revoked = reason;
+    out.coverage.grants.revoked += 1;
+  };
+  /** True when `message` (normalized, at least 3 characters) occurs in a real user message of request `req` before position `before`. */
+  const userSaid = (message, req, before) => {
+    const m = norm(message);
+    return m.length >= 3 && userMessages[req].some((u) => u.at < before && norm(u.text).includes(m));
+  };
 
   const matches = (g, desc, ah) => {
     if (g.type === "ask") return desc.tool === "AskUserQuestion";
     if (g.type === "search" || g.type === "direct_read") return g.tool === desc.tool && g.target === desc.target;
     return g.ah === ah;
+  };
+
+  /** Does a Read with these arguments lie inside the hit's line range? whole: no range given (the file length is unknown offline). */
+  const readFits = (g, desc) => {
+    if (!Number.isInteger(g.start_line) || !Number.isInteger(g.end_line)) return { ok: true, whole: false };
+    const o = desc.args?.offset;
+    const l = desc.args?.limit;
+    if (o === undefined && l === undefined) return { ok: true, whole: true };
+    // A missing offset starts at line 1; a missing limit reads to the end of the file, which no known range contains.
+    const from = o === undefined ? 1 : o;
+    if (!Number.isInteger(from) || l === undefined || !Number.isInteger(l) || l < 1) return { ok: false, whole: false };
+    return { ok: from >= g.start_line && from + l - 1 <= g.end_line, whole: false };
   };
 
   const uncovered = (e, desc, reason) => {
@@ -471,7 +634,15 @@ export function audit(records, { threshold = 0.95 } = {}) {
     const desc = observedDescriptor(e.name, e.input, e.root);
     const ah = shortHash(actionHash(desc));
     const st = scope(e);
-    if (EDIT_TOOLS.includes(desc.tool)) edits.push(e.i);
+    if (EDIT_TOOLS.includes(desc.tool)) {
+      edits.push(e.i);
+      editLog.push({ req: e.req, i: e.i, path: desc.target });
+      const f = finOf(e.req);
+      f.edits += 1;
+      f.edit_seqs.push(e.seq);
+      // Any edit of the request, by anyone, ends an accepted done.
+      if (f.accepted) Object.assign(f, { accepted: false, accepted_at: null, edits_after_accepted: true });
+    }
     // Asking the user is what every blocking stop asks for, so it is never an action while blocked.
     if (st.blocked && desc.tool !== "AskUserQuestion") {
       out.threshold.actions_while_blocked += 1;
@@ -479,11 +650,34 @@ export function audit(records, { threshold = 0.95 } = {}) {
       return uncovered(e, desc, "while_blocked");
     }
     // Only results already seen (position before this tool_use) in the same agent context and request.
-    const mine = grants.filter((g) => g.ctx === e.ctx && g.req === e.req && g.at < e.i && matches(g, desc, ah));
+    const scoped = grants.filter((g) => g.ctx === e.ctx && g.req === e.req && g.at < e.i);
+    const mine = scoped.filter((g) => matches(g, desc, ah));
     let chosen = null;
     let miss = null;
+    const why = new Set();
     for (const g of mine) {
-      if (g.consumed) continue;
+      if (g.consumed) {
+        why.add("grant_already_used");
+        continue;
+      }
+      if (g.revoked) {
+        why.add("grant_revoked");
+        continue;
+      }
+      let whole = false;
+      if (g.type === "search" || g.type === "direct_read") {
+        // An edit of the path (any context of the request) after the search and before this Read changed what the hit described.
+        if (editLog.some((x) => x.req === g.req && x.path === g.target && x.i > g.at)) {
+          why.add("hit_changed_since_search");
+          continue;
+        }
+        const fit = readFits(g, desc);
+        if (!fit.ok) {
+          why.add("read_outside_hit");
+          continue;
+        }
+        whole = fit.whole;
+      }
       if (g.type === "plan" && g.kind === "order") {
         const next = grants.find((x) => x.type === "plan" && x.decision_id === g.decision_id && x.ctx === g.ctx && x.req === g.req && !x.consumed);
         if (next !== g) {
@@ -491,7 +685,16 @@ export function audit(records, { threshold = 0.95 } = {}) {
           continue;
         }
       }
+      if (g.type === "search") {
+        // Among the hits of one search result, a better-ranked hit is not read after a worse-ranked one.
+        const worse = grants.find((x) => x.type === "search" && x.search === g.search && x.ctx === g.ctx && x.consumed && x.rank > g.rank);
+        if (worse) {
+          miss ??= { kind: "search_read_order", at: e.i, path: g.path, rank: g.rank, after_rank: worse.rank };
+          continue;
+        }
+      }
       chosen = g;
+      chosen.whole = whole;
       break;
     }
     if (chosen) {
@@ -500,6 +703,10 @@ export function audit(records, { threshold = 0.95 } = {}) {
       if (chosen.type !== "direct_read") {
         out.coverage.covered += 1;
         ctxStats(e.ctx).covered += 1;
+        if (chosen.whole) out.coverage.search_whole_file_reads += 1;
+        // Snapshot and precondition validity at action time is proven only when the decision's option was receipt-verified before.
+        const verified = verifications.some((v) => v.decision_id === chosen.decision_id && v.option === chosen.option && v.ctx === e.ctx && v.req === e.req && v.at < e.i);
+        out.coverage[verified ? "receipt_verified" : "unverified_binding"] += 1;
         return;
       }
       // A direct_read grant is an exception, valid only when the prompt names the path.
@@ -519,11 +726,13 @@ export function audit(records, { threshold = 0.95 } = {}) {
       ctxStats(e.ctx).exceptions += 1;
       return;
     }
-    if (mine.length) return uncovered(e, desc, "grant_already_used");
+    for (const reason of ["grant_revoked", "hit_changed_since_search", "read_outside_hit", "grant_already_used"]) if (why.has(reason)) return uncovered(e, desc, reason);
     if (grants.some((g) => !g.consumed && g.at < e.i && matches(g, desc, ah))) return uncovered(e, desc, "grant_in_other_context_or_request");
     if (st.opaque) return unknown(e, desc, "helper_result_missing");
     // Without a working directory an absolute path cannot be compared with a repository-relative action hash.
     if (!e.root && desc.target.startsWith("/") && grants.some((g) => g.ctx === e.ctx && g.req === e.req && !g.consumed && g.ah)) return unknown(e, desc, "root_unknown");
+    // A Read after a search result of this request that no hit of it covers.
+    if (desc.tool === "Read" && scoped.some((g) => g.type === "search")) return uncovered(e, desc, "read_outside_hit");
     return uncovered(e, desc, "no_grant");
   }
 
@@ -534,7 +743,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
         out.threshold.unknown_scores += 1;
         continue;
       }
-      if (item.action === "suspend" && item.id === "action_ask_user") askGrant(d.e, at, { decision_id: d.id, option: item.id, score: item.score, threshold: d.T });
+      if (item.action === "suspend" && item.id === "action_ask_user" && !d.noGrants) askGrant(d.e, at, { decision_id: d.id, option: item.id, score: item.score, threshold: d.T });
       if (item.action !== "execute") continue;
       out.threshold.plan_items_checked += 1;
       d.scores.push(item.score);
@@ -546,34 +755,98 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (d.firstTaken) continue;
         d.firstTaken = true;
       }
-      if (above && item.ah) addGrant({ type: "plan", decision_id: d.id, option: item.id, ah: item.ah, score: item.score, threshold: d.T, ctx: d.e.ctx, req: d.e.req, at, kind: d.kind, order });
+      if (above && item.ah && !d.noGrants) addGrant({ type: "plan", decision_id: d.id, option: item.id, ah: item.ah, score: item.score, threshold: d.T, ctx: d.e.ctx, req: d.e.req, at, kind: d.kind, order });
     }
+  }
+
+  /** A `receipt verify` refusal: which grants of the decision it revokes. */
+  const DECISION_REFUSALS = new Set(["receipt_stale_snapshot", "receipt_snapshot_unknown", "current_snapshot_unknown", "receipt_missing_or_forged", "receipt_other_session", "receipt_other_request"]);
+  const OPTION_REFUSALS = ["receipt_evidence_changed", "precondition_failed", "preconditions_not_evaluable", "action_mismatch", "option_not_authorized", "option_names_no_action", "option_was_unavailable", "option_not_above_threshold", "receipt_inconsistent"];
+
+  function onReceiptResult(e, c, p, at) {
+    out.receipts.receipt_verifications += p.status === "ok" && p.authorized === true ? 1 : 0;
+    const rid = typeof c.flags.id === "string" ? c.flags.id : null;
+    const known = rid ? receiptIds.get(rid) : null;
+    const option = typeof c.flags.option === "string" ? c.flags.option : null;
+    if (p.status === "ok" && p.authorized === true) {
+      if (known && c.action === "verify" && c.flags["dry-run"] !== true && p.consumed !== false) verifications.push({ decision_id: known.decision_id, option, ctx: e.ctx, req: e.req, at });
+      return;
+    }
+    if (p.status !== "refused") return;
+    out.receipts.receipt_refusals += 1;
+    const reason = typeof p.message === "string" ? p.message : "unknown";
+    const key = reason.split(":")[0].slice(0, 40);
+    out.receipts.refusals_by_reason[key] = (out.receipts.refusals_by_reason[key] ?? 0) + 1;
+    // Only a verification in the decision's own context and request can be tied to its grants.
+    if (!known || known.ctx !== e.ctx || known.req !== e.req || c.action !== "verify") return;
+    const ofDecision = grants.filter((g) => g.type === "plan" && g.decision_id === known.decision_id && g.ctx === known.ctx && g.req === known.req);
+    if (DECISION_REFUSALS.has(reason)) for (const g of ofDecision) revoke(g, reason);
+    else if (OPTION_REFUSALS.some((r) => reason === r || reason.startsWith(`${r}:`)) && option) for (const g of ofDecision) if (g.option === option) revoke(g, reason);
+  }
+
+  function onDoneResult(e, p, at) {
+    const f = finOf(e.req);
+    const outcome = (p && (nonEmpty(p.outcome) ?? nonEmpty(p.status))) || "unknown";
+    f.outcome = outcome;
+    const ctl = p?.control && typeof p.control === "object" ? p.control : null;
+    let accepted = false;
+    if (p?.outcome === "accepted") {
+      if (ctl?.accepted_strictly_above === true && finite(ctl.threshold)) {
+        const inForce = sessionT ?? threshold;
+        if (ctl.threshold === inForce) accepted = true;
+        else out.finalization.violations.push({ kind: "done_threshold_mismatch", request: e.req, at, done_threshold: ctl.threshold, session_threshold: inForce });
+      } else out.finalization.accepted_without_control += 1;
+    }
+    // An edit issued after this done call (even one whose own result came first) invalidates it.
+    if (accepted && f.edit_seqs.some((s) => s > f.done_seq)) {
+      accepted = false;
+      f.edits_after_accepted = true;
+    }
+    f.accepted = accepted;
+    f.accepted_at = accepted ? at : null;
   }
 
   function onHelperResult(e, c) {
     const at = e.result.i;
     const st = scope(e);
     const p = lastJson(e.result.text);
+    if (c.sub === "done") {
+      if (p) {
+        const attempts = Number.isInteger(p.jev_calls) ? p.jev_calls : 0;
+        out.jev_calls.helper_reported_attempts += attempts;
+        reqStats(e.req).helper_attempts += attempts;
+      }
+      return onDoneResult(e, p, at);
+    }
     if (!p || typeof p.status !== "string") {
       if (GRANTING.has(c.sub)) st.opaque = true;
       return;
     }
-    if (["decide", "search", "page", "done"].includes(c.sub)) {
+    if (["decide", "search", "page"].includes(c.sub)) {
       const attempts = Number.isInteger(p.calls) ? p.calls : Number.isInteger(p.jev_calls) ? p.jev_calls : 0;
       out.jev_calls.helper_reported_attempts += attempts;
       reqStats(e.req).helper_attempts += attempts;
     }
     if (finite(p.used)) out.jev_calls.state_used = p.used;
+    if (["decide", "on", "threshold", "status"].includes(c.sub) && finite(p.threshold)) sessionT = p.threshold;
     switch (c.sub) {
       case "decide": {
         if (finite(p.threshold)) lastT = p.threshold;
         st.blocked = DECIDE_BLOCKING.has(p.status) ? { status: p.status, decision_id: String(p.decision_id ?? "") } : null;
         if (st.blocked) askGrant(e, at, { decision_id: String(p.decision_id ?? ""), option: null });
         if (p.status !== "selected" && p.status !== "ordered") return;
+        // The real helper prints these fields for a selection; without them the result is not a grant source.
+        if (!nonEmpty(p.decision_id) || typeof p.kind !== "string" || !finite(p.threshold)) {
+          if (!finite(p.threshold)) out.threshold.threshold_missing += 1;
+          st.opaque = true;
+          return;
+        }
+        const hasReceipt = nonEmpty(p.receipt) !== null;
+        if (!hasReceipt) out.coverage.grants_without_receipt += 1;
         out.threshold.decisions += 1;
-        const d = { id: String(p.decision_id ?? `at:${at}`), kind: String(p.kind ?? "unknown"), T: finite(p.threshold) ? p.threshold : threshold, e, next: Number.isInteger(p.plan_next) ? p.plan_next : null, scores: [], executes: 0, firstTaken: false, tiebreaks: Number(p.tiebreaks) > 0, at };
-        if (!finite(p.threshold)) out.threshold.threshold_missing += 1;
+        const d = { id: p.decision_id, kind: p.kind, T: p.threshold, e, next: Number.isInteger(p.plan_next) ? p.plan_next : null, scores: [], executes: 0, firstTaken: false, tiebreaks: Number(p.tiebreaks) > 0, at, noGrants: !hasReceipt };
         decisions.set(d.id, d);
+        if (hasReceipt) receiptIds.set(p.receipt, { decision_id: d.id, ctx: e.ctx, req: e.req });
         out.ordering.plans += 1;
         if (d.tiebreaks) out.ordering.tiebreak_plans += 1;
         addPlanItems(d, p.plan, at);
@@ -585,7 +858,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (!(st.blocked && st.blocked.decision_id === id)) st.blocked = null;
         if (p.status !== "ok" || p.part !== "plan") return;
         const d = decisions.get(id);
-        if (!d || d.e.ctx !== e.ctx || d.e.req !== e.req || d.next === null || p.from !== d.next) {
+        if (!d || !Array.isArray(p.plan) || d.e.ctx !== e.ctx || d.e.req !== e.req || d.next === null || p.from !== d.next) {
           out.ordering.pages_ignored += 1;
           return;
         }
@@ -595,13 +868,33 @@ export function audit(records, { threshold = 0.95 } = {}) {
         return;
       }
       case "search": {
+        const key = { found: "hits", direct_read: "hits", tie_unresolved: "resolved_hits" }[p.status];
+        const hits = key ? p[key] : [];
+        // A hit status without hits of the real shape (objects with a path) is not a grant source.
+        if (key && !(Array.isArray(hits) && hits.every((h) => h && typeof h === "object" && nonEmpty(h.path)))) {
+          st.opaque = true;
+          return;
+        }
         st.blocked = SEARCH_BLOCKING.has(p.status) ? { status: p.status, decision_id: null } : null;
         if (st.blocked) askGrant(e, at, { decision_id: null, option: null });
-        const hits = p.status === "found" ? p.hits : p.status === "tie_unresolved" ? p.resolved_hits : p.status === "direct_read" ? p.hits : null;
-        for (const h of Array.isArray(hits) ? hits : []) {
-          if (!nonEmpty(h?.path)) continue;
-          addGrant({ type: p.status === "direct_read" ? "direct_read" : "search", tool: "Read", target: normalizePath(h.path, e.root), score: finite(h.score) ? h.score : null, ctx: e.ctx, req: e.req, at });
-        }
+        hits.forEach((h, k) => {
+          const target = normalizePath(h.path, e.root);
+          addGrant({
+            type: p.status === "direct_read" ? "direct_read" : "search",
+            tool: "Read",
+            target,
+            path: target,
+            start_line: Number.isInteger(h.start_line) ? h.start_line : null,
+            end_line: Number.isInteger(h.end_line) ? h.end_line : null,
+            sha256: typeof h.sha256 === "string" ? h.sha256 : null,
+            rank: k + 1,
+            search: at,
+            score: finite(h.score) ? h.score : null,
+            ctx: e.ctx,
+            req: e.req,
+            at,
+          });
+        });
         return;
       }
       case "approve": {
@@ -610,8 +903,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
           out.approvals.refused += 1;
           return;
         }
-        const message = typeof c.flags.message === "string" ? norm(c.flags.message) : "";
-        const bound = message.length >= 3 && userMessages[e.req].some((m) => m.at < e.i && norm(m.text).includes(message));
+        const bound = typeof c.flags.message === "string" && userSaid(c.flags.message, e.req, e.i);
         if (!bound) {
           out.threshold.approvals_unbound += 1;
           out.approvals.unbound.push({ at: e.i, decision_id: p.decision_id ?? null, option: p.option ?? null });
@@ -625,31 +917,38 @@ export function audit(records, { threshold = 0.95 } = {}) {
       case "budget": {
         if (c.action === "reserve" && p.status === "ok" && p.id !== undefined) {
           const tool = toolBase(c.flags.tool) ?? (typeof c.flags.tool === "string" ? c.flags.tool : null);
-          reservations.push({ id: String(p.id), tool, req: e.req, at, consumed: false, closed: false });
+          // The reserve's own --source (default main) must name the side of the context that ran it.
+          const declared = typeof c.flags.source === "string" ? c.flags.source : "main";
+          const actual = e.ctx === "main" ? "main" : "subagent";
+          const mismatch = declared !== actual;
+          if (mismatch) out.jev_calls.reservation_source_mismatch.push({ at: e.i, tool, declared, actual, ctx: e.ctx });
+          reservations.push({ id: String(p.id), tool, ctx: e.ctx, req: e.req, at, consumed: false, closed: false, mismatch });
           out.jev_calls.reservations.opened += 1;
-        } else if ((c.action === "confirm" || c.action === "release") && p.status === "ok") {
-          const r = reservations.find((x) => x.id === String(c.flags.id) && !x.closed);
+        } else if ((c.action === "confirm" || c.action === "release") && p.status === "ok" && p.ok !== false) {
+          // Only the context that reserved can close it.
+          const r = reservations.find((x) => x.id === String(c.flags.id) && x.ctx === e.ctx && x.req === e.req && !x.closed);
           if (r) {
             r.closed = true;
             out.jev_calls.reservations[c.action === "confirm" ? "confirmed" : "released"] += 1;
           }
-        } else if (c.action === "approve" && finite(p.limit)) {
+        } else if (c.action === "approve" && p.status === "ok") {
           const R = reqStats(e.req);
-          R.limit = p.limit;
-          R.approved_extra = p.limit - BASE_LIMIT;
+          const before = reportedLimit.get(e.req) ?? BASE_LIMIT;
+          // The raised limit counts only when the user's own words (the --message) occur in a user message of this request.
+          const message = typeof c.flags.message === "string" ? c.flags.message : typeof p.approval?.msg === "string" ? p.approval.msg : "";
+          if (!userSaid(message, e.req, e.i)) out.budget.approvals_unbound += 1;
+          else {
+            out.budget.approvals_bound += 1;
+            const extra = Number.isInteger(p.approval?.n) && p.approval.n > 0 ? p.approval.n : finite(p.limit) ? Math.max(0, p.limit - before) : 0;
+            R.approved_extra += extra;
+            R.limit = BASE_LIMIT + R.approved_extra;
+          }
+          if (finite(p.limit)) reportedLimit.set(e.req, p.limit);
         }
         return;
       }
       case "receipt":
-        if (p.status === "ok" && p.authorized === true) out.receipts.receipt_verifications += 1;
-        else if (p.status === "refused") out.receipts.receipt_refusals += 1;
-        return;
-      case "done": {
-        const outcome = nonEmpty(p.outcome) ?? nonEmpty(p.status) ?? "unknown";
-        out.finalization.last_outcome = outcome;
-        if (p.outcome === "accepted") lastAccepted = at;
-        return;
-      }
+        return onReceiptResult(e, c, p, at);
       default:
     }
   }
@@ -658,12 +957,14 @@ export function audit(records, { threshold = 0.95 } = {}) {
     out.jev_calls.direct[e.side === "subagent" ? "subagent" : "main"] += 1;
     out.jev_calls.direct.by_tool[c.jev] = (out.jev_calls.direct.by_tool[c.jev] ?? 0) + 1;
     reqStats(e.req).direct += 1;
-    const r = reservations.find((x) => x.req === e.req && x.tool === c.jev && !x.consumed && !x.closed && x.at < e.i);
+    const open = reservations.filter((x) => x.req === e.req && x.tool === c.jev && !x.consumed && !x.closed && x.at < e.i && !x.mismatch);
+    // A reservation is the reserving context's own: a subagent cannot consume the parent's or another subagent's.
+    const r = open.find((x) => x.ctx === e.ctx);
     if (r) {
       r.consumed = true;
       out.jev_calls.reserved_direct += 1;
       out.jev_calls.reservations.consumed += 1;
-    } else out.jev_calls.unreserved_direct.push({ at: e.i, tool: c.jev });
+    } else out.jev_calls.unreserved_direct.push({ at: e.i, tool: c.jev, reason: open.length ? "reservation_of_other_context" : "no_open_reservation" });
   }
 
   function onDirectResult(e, c) {
@@ -696,8 +997,14 @@ export function audit(records, { threshold = 0.95 } = {}) {
   }
   timeline.sort((a, b) => a.pos - b.pos);
 
+  const classes = new Map();
+  const classOf = (e) => {
+    if (!classes.has(e.id)) classes.set(e.id, classify(e));
+    return classes.get(e.id);
+  };
+
   for (const { use, e } of timeline) {
-    const c = classify(e);
+    const c = classOf(e);
     if (use) {
       const ms = e.ts && e.result?.ts ? Date.parse(e.result.ts) - Date.parse(e.ts) : null;
       if (c.cat === "jev_direct") {
@@ -705,13 +1012,21 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (Number.isFinite(ms)) latency.jev_direct.push(ms);
       } else if (c.cat === "protocol") {
         out.coverage.protocol += 1;
-        if (c.compound) out.coverage.protocol_compound += 1;
         if (Number.isFinite(ms)) latency.helper.push(ms);
-        if (c.sub === "done") out.finalization.done_calls += 1;
+        if (c.sub === "done") {
+          // Every done call replaces the request's finalization state, a missing result included.
+          out.finalization.done_calls += 1;
+          Object.assign(finOf(e.req), { done_seq: e.seq, outcome: null, accepted: false, accepted_at: null, edits_after_accepted: false });
+          finOf(e.req).done_calls += 1;
+        }
         if (!e.result && GRANTING.has(c.sub)) scope(e).opaque = true;
       } else if (c.cat === "mechanical") out.coverage.mechanical += 1;
       else if (c.cat === "unclassified") out.coverage.unclassified += 1;
-      else onAction(e);
+      else {
+        // A command that merely mentions a helper is audited as the action it is.
+        if (c.mention) out.coverage.protocol_compound += 1;
+        onAction(e);
+      }
     } else if (c.cat === "jev_direct") onDirectResult(e, c);
     else if (c.cat === "protocol") onHelperResult(e, c);
     else if (c.cat === "action" && e.name === "AskUserQuestion" && !e.result.error) {
@@ -734,18 +1049,32 @@ export function audit(records, { threshold = 0.95 } = {}) {
     if (attempts > R.limit) out.jev_calls.violations.push({ kind: "budget_exceeded", request: R.request, attempts, limit: R.limit });
   }
 
+  // Finalization per request: a request with edits ends accepted, or with an `Incomplete:` final message, or it declared completion without an accepted done.
   const fin = out.finalization;
   fin.edits = edits.length;
-  fin.accepted = lastAccepted !== null;
-  fin.last_accepted_at = lastAccepted;
-  if (edits.length && lastAccepted === null) fin.violations.push({ kind: "finished_without_accepted_done", edits: edits.length });
-  for (const at of edits) if (lastAccepted !== null && at > lastAccepted) fin.violations.push({ kind: "edit_after_last_accepted_done", at });
+  const finals = [...finState.values()].sort((a, b) => a.request - b.request);
+  for (const f of finals) {
+    const row = { request: f.request, edits: f.edits, done_calls: f.done_calls, outcome: f.outcome, accepted: f.accepted, edits_after_accepted: f.edits_after_accepted };
+    fin.per_request.push(row);
+    if (f.edits === 0 || f.accepted) continue;
+    const last = requests[f.request]?.last ?? null;
+    const text = last && !last.toolUse ? last.text : "";
+    if (/^Incomplete:/.test(text)) fin.incomplete_stops += 1;
+    else if (text) fin.violations.push({ kind: "completion_declared_without_accepted_done", request: f.request, last_outcome: f.outcome, edits_after_accepted: f.edits_after_accepted });
+    else fin.unknown.push({ request: f.request, reason: "no_final_message" });
+  }
+  // The headline fields describe the last request that edited or finalized.
+  const relevant = finals.filter((f) => f.edits > 0 || f.done_calls > 0);
+  const tail = relevant[relevant.length - 1] ?? null;
+  fin.last_outcome = tail?.outcome ?? null;
+  fin.accepted = tail?.accepted ?? false;
+  fin.last_accepted_at = tail?.accepted_at ?? null;
 
   const cov = out.coverage;
   cov.numerator = cov.covered;
   cov.denominator = cov.covered + cov.uncovered;
   cov.share = cov.denominator === 0 ? "unknown" : Number((cov.covered / cov.denominator).toFixed(4));
-  cov.note = "covered = bound to an earlier helper result that named exactly that action (same request and agent context, used once, in plan order); exceptions and unknown actions are outside the denominator; choices made internally and never visible as an action are unmeasurable";
+  cov.note = "covered = bound to an earlier helper result that named exactly that action (same request and agent context, used once, in plan order); snapshot and precondition validity at action time is proven only for receipt_verified actions and is not claimed for unverified_binding ones; exceptions and unknown actions are outside the denominator; choices made internally and never visible as an action are unmeasurable";
   out.latency_ms = { jev_direct_median: median(latency.jev_direct), helper_median: median(latency.helper) };
   out.usage = usageSummary(records);
   out.eliminators = {
@@ -773,10 +1102,11 @@ export function toMarkdown(a, label = "session") {
     `# jev-control measurement: ${label}`,
     "",
     `- Coverage: ${a.coverage.numerator}/${a.coverage.denominator} (${a.coverage.share}); unknown ${a.coverage.unknown}; exceptions ${JSON.stringify(a.coverage.exceptions)}; unclassified ${a.coverage.unclassified}; uncovered reasons ${JSON.stringify(a.coverage.uncovered_reasons)}`,
+    `- Binding: ${a.coverage.receipt_verified} receipt-verified, ${a.coverage.unverified_binding} unverified (snapshot and precondition validity not claimed); ${a.coverage.grants.revoked} grants revoked; ${a.coverage.search_whole_file_reads} whole-file search reads; ${a.coverage.protocol_compound} helper mentions audited as actions; ${a.coverage.grants_without_receipt} results without a receipt`,
     `- Threshold: ${a.threshold.decisions} decisions, ${a.threshold.violations.length} violations, ${a.threshold.actions_while_blocked} actions while blocked, ${a.threshold.approvals_unbound} unbound approvals, ${a.threshold.unknown_scores} unknown scores`,
     `- Ordering: ${a.ordering.plans_descending}/${a.ordering.plans} plans descending or tie-broken; action order ${a.ordering.action_order}: ${a.ordering.order_violations.length} order violations`,
-    `- Jev calls: direct ${JSON.stringify(a.jev_calls.direct)}, helper-reported attempts ${a.jev_calls.helper_reported_attempts}, state used ${a.jev_calls.state_used}, reserved direct ${a.jev_calls.reserved_direct}, unreserved direct ${a.jev_calls.unreserved_direct.length}, budget violations ${a.jev_calls.violations.length}; provider calls unknown`,
-    `- Finalization: ${a.finalization.done_calls} done calls, last outcome ${a.finalization.last_outcome ?? "none"}, accepted ${a.finalization.accepted}, ${a.finalization.violations.length} violations`,
+    `- Jev calls: direct ${JSON.stringify(a.jev_calls.direct)}, helper-reported attempts ${a.jev_calls.helper_reported_attempts}, state used ${a.jev_calls.state_used}, reserved direct ${a.jev_calls.reserved_direct}, unreserved direct ${a.jev_calls.unreserved_direct.length}, budget violations ${a.jev_calls.violations.length}, budget approvals bound ${a.budget.approvals_bound} / unbound ${a.budget.approvals_unbound}, reservation source mismatches ${a.jev_calls.reservation_source_mismatch.length}; provider calls unknown`,
+    `- Finalization: ${a.finalization.done_calls} done calls, last outcome ${a.finalization.last_outcome ?? "none"}, accepted ${a.finalization.accepted}, ${a.finalization.incomplete_stops} incomplete stops, ${a.finalization.unknown.length} unknown, ${a.finalization.violations.length} violations`,
     `- Latency (ms, median): direct ${a.latency_ms.jev_direct_median}, helper ${a.latency_ms.helper_median}`,
     `- Parent tokens: ${tokens(u.parent)} (${u.parent.messages} messages)`,
     `- Subagent tokens: ${tokens(u.subagent)} (${u.subagent.messages} messages)`,

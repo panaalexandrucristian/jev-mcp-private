@@ -194,7 +194,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"selected","decision_id":"3f9c2a71d4e85b06","kind":"command","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"plan":["run_unit:e:0.972:2ab22c059ac3"],"plan_total":1}
+{"status":"selected","decision_id":"3f9c2a71d4e85b06","kind":"command","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"plan":["run_unit:e:0.972:b87560aaf505"],"plan_total":1}
 ```
 
 **Comparison (strict):** `run_unit` 0.972 > 0.95 is the only eligible option; no tie-break.

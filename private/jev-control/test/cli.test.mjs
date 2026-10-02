@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { S3 } from "../fixtures/scenarios.mjs";
 import { materialize } from "../fixtures/lib.mjs";
-import { actionHash, planItem, shortHash } from "../actions.mjs";
+import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { compactOut } from "../cli.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
 import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
@@ -186,7 +186,7 @@ describe("decide through the CLI", () => {
     assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500);
     assert.equal(r.stdout.trim().split("\n").length, 1);
     assert.equal(r.json.status, "selected");
-    const ah = (n) => shortHash(actionHash({ tool: "Bash", target: `npm run check-${n}` }));
+    const ah = (n) => shortHash(actionHash(normalizeDescriptor({ tool: "Bash", target: `npm run check-${n}` }).descriptor));
     assert.deepEqual(r.json.plan, [`o2:e:0.97:${ah(2)}`, `o1:r:0.99:${ah(1)}`], "compact items: id, step, raw score, action hash");
     assert.equal(r.json.plan_total, 2);
     assert.equal(r.json.plan_next, undefined, "complete");
@@ -203,7 +203,8 @@ describe("decide through the CLI", () => {
     const reserve = verify(["--option", "o1", "--tool", "Bash", "--target", "npm run check-1"]);
     assert.equal(reserve.code, 4);
     assert.equal(reserve.json.authorized, false);
-    const dry = verify(["--option", "o2", "--tool", "Bash", "--target", "npm   run  check-2", "--dry-run"]);
+    assert.equal(verify(["--option", "o2", "--tool", "Bash", "--target", "npm   run  check-2"]).json.message, "action_mismatch", "a command is bound exactly, spaces included");
+    const dry = verify(["--option", "o2", "--tool", "Bash", "--target", "npm run check-2", "--dry-run"]);
     assert.deepEqual([dry.json.authorized, dry.json.consumed], [true, false]);
     const ok = verify(["--option", "o2", "--tool", "Bash", "--target", "npm run check-2"]);
     assert.deepEqual([ok.json.authorized, ok.json.consumed], [true, true]);
@@ -219,7 +220,11 @@ describe("decide through the CLI", () => {
     batch.options[0].preconditions = [{ kind: "path_exists", path: "a.js" }];
     const d = cli(["decide", ...SID, "--decision-id", "p1", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d.json.status, "selected", d.stdout);
-    const args = ["receipt", "verify", ...SID, "--id", d.json.receipt, "--option", "o1", "--tool", "Edit", "--target", "src/file-1.js"];
+    const action = writeBatch(batch.options[0].action);
+    // An Edit is bound by its replacement too: --tool/--target alone cannot name it.
+    const bare = cli(["receipt", "verify", ...SID, "--id", d.json.receipt, "--option", "o1", "--tool", "Edit", "--target", "src/file-1.js"], { env, cwd: repo });
+    assert.match(bare.json.message, /old_string is required/);
+    const args = ["receipt", "verify", ...SID, "--id", d.json.receipt, "--option", "o1", "--action-file", action];
     // The precondition (a.js exists) held at decision time; deleting it before the action makes the authorization fail.
     unlinkSync(join(repo, "a.js"));
     const stale = cli(args, { env, cwd: repo });
@@ -228,6 +233,39 @@ describe("decide through the CLI", () => {
     const d2 = cli(["decide", ...SID, "--decision-id", "p2", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d2.json.status, "expand", "the option is unavailable now: its precondition is false");
     assert.deepEqual(d2.json.unavailable, ["o1:path_exists_missing"]);
+  });
+  describe("an order plan through the CLI: each later step needs its own evidence unchanged", () => {
+    const orderPlan = (sandbox) => {
+      const repo = makeRepo({ "src/file-1.js": "one\n", "src/file-2.js": "two\n" });
+      const env = controlEnv({ script: { noul: [{ p: p7([0.99, 0.98, 0.5, 0.4, 0.3]) }, { p: p7([0.99, 0.98, 0.5, 0.4, 0.3]) }], decide: [{ selected: "o1", confidence: 0.97 }] } });
+      on(repo, env);
+      const batch = batchOf(5, { kind: "order" });
+      batch.options[0].action = { tool: "Edit", target: "src/file-1.js", old_string: "one", new_string: "uno" };
+      batch.options[1].action = { tool: "Edit", target: "src/file-2.js", old_string: "two", new_string: "dos" };
+      const d = cli(["decide", ...SID, "--decision-id", sandbox, "--file", writeBatch(batch)], { env, cwd: repo });
+      assert.equal(d.json.status, "ordered", d.stdout);
+      const verify = (n) => cli(["receipt", "verify", ...SID, "--id", d.json.receipt, "--option", `o${n}`, "--action-file", writeBatch(batch.options[n - 1].action)], { env, cwd: repo });
+      return { repo, verify };
+    };
+    it("a change to an unrelated file after the first step is allowed", () => {
+      const { repo, verify } = orderPlan("ord1");
+      assert.equal(verify(1).json.authorized, true);
+      writeFiles(repo, { "src/file-1.js": "uno\n", "notes.txt": "something else\n" });
+      assert.equal(verify(2).json.authorized, true);
+    });
+    it("a change to the file the next step works on, even though step one was only authorized, refuses it", () => {
+      const { repo, verify } = orderPlan("ord2");
+      assert.equal(verify(1).json.authorized, true);
+      writeFiles(repo, { "src/file-2.js": "changed by someone else\n" });
+      const r = verify(2);
+      assert.equal(r.json.authorized, false);
+      assert.equal(r.json.message, "receipt_evidence_changed:src/file-2.js");
+    });
+    it("before any use, any change at all refuses the receipt", () => {
+      const { repo, verify } = orderPlan("ord3");
+      writeFiles(repo, { "notes.txt": "something else\n" });
+      assert.equal(verify(1).json.message, "receipt_stale_snapshot");
+    });
   });
   it("a batch with 20 options still prints at most 1.5 KB", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
@@ -323,7 +361,12 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(over.code, 2);
     assert.equal(over.json.status, "budget_exhausted");
     assert.match(over.json.message, /stop and ask the user/);
-    assert.equal(cli(["budget", "approve", ...SID], { env, cwd: repo }).json.limit, 50);
+    const noWords = cli(["budget", "approve", ...SID], { env, cwd: repo });
+    assert.equal(noWords.code, 4, "going past the budget needs the user's own words");
+    assert.match(noWords.json.message, /--message/);
+    const approved = cli(["budget", "approve", ...SID, "--message", "yes, go on beyond the limit"], { env, cwd: repo });
+    assert.equal(approved.json.limit, 50);
+    assert.deepEqual(approved.json.approval, { n: 25, msg: "yes, go on beyond the limit" });
     assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo }).json.status, "ok");
   });
 });

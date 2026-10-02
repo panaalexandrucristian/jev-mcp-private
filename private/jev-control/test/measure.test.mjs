@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { actionHash, planItem, shortHash } from "../actions.mjs";
+import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { audit, collectEvents, compareUsage, parseJsonl, STOP_STATUSES, toMarkdown, usageSummary } from "../measure.mjs";
 import { run, tempDir } from "./helpers.mjs";
 
@@ -21,8 +21,16 @@ const helper = (sub, extra = "") => bash(`node "${CLI} ${sub} ${extra}`);
 /** assistant tool_use + its result as two records */
 const call = (block, text, opts = {}) => [asst([block], opts), res(block, text, opts)];
 const json = (o) => JSON.stringify(o);
-const ah = (tool, target) => shortHash(actionHash({ tool, target }));
-const item = (id, action, score, tool, target) => planItem({ id, action, score, descriptor: tool ? { tool, target } : null });
+/** The arguments the call helpers below pass, so a plan item built for a tool matches the call the helper makes. */
+const DEFAULT_ARGS = { Edit: { old_string: "a", new_string: "b" }, Write: { content: "x" }, Agent: { prompt: "find" } };
+/** The descriptor the real normalizer makes of an option's action (never a hand-built hash). */
+const desc = (tool, target, extra = DEFAULT_ARGS[tool] ?? {}) => {
+  const n = normalizeDescriptor({ tool, target, ...extra });
+  assert.equal(n.ok, true, JSON.stringify(n.problems));
+  return n.descriptor;
+};
+const ah = (tool, target, extra) => shortHash(actionHash(desc(tool, target, extra)));
+const item = (id, action, score, tool, target, extra) => planItem({ id, action, score, descriptor: tool ? desc(tool, target, extra) : null });
 const decideOut = (o) => json({ status: "selected", decision_id: "d1", kind: "edit", threshold: 0.95, round: 1, calls: 1, tiebreaks: 0, receipt: "r1", plan: [], plan_total: 0, ...o });
 const decide = (out, opts) => call(helper("decide", "--file /tmp/b.json"), out, opts);
 const edit = (path, opts) => call(use("Edit", { file_path: `${ROOT}/${path}`, old_string: "a", new_string: "b" }), "ok", opts);
@@ -67,7 +75,7 @@ describe("coverage is bound to a concrete grant, never to a generic slot", () =>
   it("(e) a result recorded after an action never authorizes it, even an action issued with the helper call", () => {
     const plan = [item("o1", "execute", 0.98, "Edit", "src/a.mjs")];
     const d = helper("decide", "--file b.json");
-    const e = use("Edit", { file_path: `${ROOT}/src/a.mjs` });
+    const e = use("Edit", { file_path: `${ROOT}/src/a.mjs`, old_string: "a", new_string: "b" });
     // Both tool_use blocks in one assistant message: the decide result arrives after the Edit was issued.
     const parallel = audit([prompt("go"), asst([d, e]), res(d, decideOut({ plan })), res(e, "ok")]);
     assert.equal(parallel.coverage.covered, 0);
@@ -133,13 +141,6 @@ describe("coverage is bound to a concrete grant, never to a generic slot", () =>
     assert.equal(a.coverage.unknown, 1);
     assert.equal(a.coverage.uncovered, 0);
     assert.equal(a.coverage.unknown_samples[0].reason, "helper_result_missing");
-  });
-  it("a helper chained with other commands is counted as compound; a here-document body is not a command", () => {
-    const heredoc = bash(`node "${CLI} decide --file - <<'EOF'\n{"a": 1}; rm -rf x\nEOF`);
-    const chained = bash(`node "${CLI} status && rm -rf src`);
-    const a = audit([prompt("go"), ...call(heredoc, decideOut({ status: "expand" })), ...call(chained, json({ status: "ok" }))]);
-    assert.equal(a.coverage.protocol, 2);
-    assert.equal(a.coverage.protocol_compound, 1);
   });
 });
 
@@ -312,7 +313,7 @@ describe("requests and agent contexts", () => {
     assert.equal(a.coverage.covered, 1);
   });
   it("(i) a tool_use streamed twice counts once", () => {
-    const e = use("Edit", { file_path: `${ROOT}/src/a.mjs` });
+    const e = use("Edit", { file_path: `${ROOT}/src/a.mjs`, old_string: "a", new_string: "b" });
     const recs = [prompt("go"), ...decide(decideOut({ plan })), asst([e], { id: "m9" }), asst([e], { id: "m9" }), res(e, "ok"), res(e, "ok")];
     assert.equal(collectEvents(recs).length, 2);
     const a = audit(recs);
@@ -371,46 +372,499 @@ describe("Jev calls and budget", () => {
     const sub = audit([prompt("go"), ...call(noul(), noulOut, { agent: "agent-1" })]);
     assert.equal(sub.jev_calls.direct.subagent, 1);
   });
-  it("sums helper-reported attempts per request and flags a request over its limit", () => {
+  it("sums helper-reported attempts per request and flags a request over its limit; a bound approval raises only its own request", () => {
+    const approve = (n, msg) => call(helper("budget", `approve --n ${n} --message "${msg}"`), json({ status: "ok", used: 20, limit: 25 + n, approval: { n, msg } }));
     const a = audit([
       prompt("go"),
       ...decide(decideOut({ calls: 20, status: "expand", scores: [] })),
       ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: 6 })),
-      prompt("again"),
+      prompt("again, and yes spend more calls on it"),
       ...decide(decideOut({ calls: 20, status: "expand", scores: [] })),
-      ...call(helper("budget", "approve --n 25"), json({ status: "ok", used: 20, limit: 50 })),
+      ...approve(25, "spend more calls"),
       ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: 6 })),
     ]);
     assert.equal(a.jev_calls.helper_reported_attempts, 52);
     assert.deepEqual(a.jev_calls.per_request, [
       { request: 1, helper_attempts: 26, direct: 0, approved_extra: 0, limit: 25 },
       { request: 2, helper_attempts: 26, direct: 0, approved_extra: 25, limit: 50 },
-    ]);
+    ], "the second request starts at 25 again and its own approval raised it");
     assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }]);
+    assert.deepEqual(a.budget, { approvals_bound: 1, approvals_unbound: 0 });
+  });
+  it("an invented budget bump (no such user message) keeps the limit at 25, so attempt 26 is a violation", () => {
+    const recs = [
+      prompt("please fix the parser"),
+      ...decide(decideOut({ calls: 20, status: "expand", scores: [] })),
+      ...call(helper("budget", 'approve --n 25 --message "the user said yes"'), json({ status: "ok", used: 20, limit: 50, approval: { n: 25, msg: "the user said yes" } })),
+      ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: 6 })),
+    ];
+    const a = audit(recs);
+    assert.deepEqual(a.jev_calls.per_request, [{ request: 1, helper_attempts: 26, direct: 0, approved_extra: 0, limit: 25 }]);
+    assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }]);
+    assert.deepEqual(a.budget, { approvals_bound: 0, approvals_unbound: 1 });
+    // A message that is too short, one said only AFTER the call, and a missing --message are unbound too.
+    const late = audit([prompt("go"), ...call(helper("budget", 'approve --message "more calls"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "more calls" } })), prompt("more calls")]);
+    assert.equal(late.budget.approvals_unbound, 1);
+    const short = audit([prompt("ok go"), ...call(helper("budget", 'approve --message "ok"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "ok" } }))]);
+    assert.equal(short.budget.approvals_unbound, 1);
+    // The answer to a question counts as the user's words.
+    const asked = audit([prompt("go"), ...call(use("AskUserQuestion", { questions: [] }), "User answered: yes, continue please"), ...call(helper("budget", 'approve --message "continue please"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "continue please" } }))]);
+    assert.equal(asked.budget.approvals_bound, 1);
+  });
+  it("a bound approval raises the limit by approval.n (or the reported limit difference) and sums per request", () => {
+    const a = audit([
+      prompt("keep going, more calls please, and again more calls please"),
+      ...call(helper("budget", 'approve --n 10 --message "more calls please"'), json({ status: "ok", used: 25, limit: 35, approval: { n: 10, msg: "more calls please" } })),
+      ...call(helper("budget", 'approve --message "again more calls please"'), json({ status: "ok", used: 25, limit: 60 })),
+      ...decide(decideOut({ calls: 30, status: "expand", scores: [] })),
+    ]);
+    assert.deepEqual(a.jev_calls.per_request, [{ request: 1, helper_attempts: 30, direct: 0, approved_extra: 35, limit: 60 }]);
+    assert.deepEqual(a.jev_calls.violations, []);
+  });
+  describe("reservations belong to the context that made them", () => {
+    const rsv = (tool, id, extra = "", opts = {}) => call(helper("budget", `reserve --tool ${tool} ${extra}`), json({ status: "ok", id, used: 1, limit: 25 }), opts);
+    it("a subagent cannot consume the parent's reservation, nor another subagent's; its own works", () => {
+      const parent = audit([prompt("go"), ...rsv("noul", "r1"), ...call(noul(), noulOut, { agent: "agent-1" })]);
+      assert.equal(parent.jev_calls.reserved_direct, 0);
+      assert.deepEqual(parent.jev_calls.unreserved_direct, [{ at: 3, tool: "noul", reason: "reservation_of_other_context" }]);
+      assert.equal(parent.jev_calls.reservations.open_unused, 1);
+      const sibling = audit([prompt("go"), ...rsv("noul", "r1", "--source subagent", { agent: "agent-2" }), ...call(noul(), noulOut, { agent: "agent-1" })]);
+      assert.equal(sibling.jev_calls.unreserved_direct[0].reason, "reservation_of_other_context");
+      const own = audit([prompt("go"), ...rsv("noul", "r1", "--source subagent", { agent: "agent-1" }), ...call(noul(), noulOut, { agent: "agent-1" })]);
+      assert.equal(own.jev_calls.reserved_direct, 1);
+      assert.equal(own.jev_calls.unreserved_direct.length, 0);
+      assert.deepEqual(own.jev_calls.reservation_source_mismatch, []);
+      const reverse = audit([prompt("go"), ...rsv("noul", "r1", "--source subagent", { agent: "agent-1" }), ...call(noul(), noulOut)]);
+      assert.equal(reverse.jev_calls.unreserved_direct[0].reason, "reservation_of_other_context");
+    });
+    it("confirm and release close only a reservation of the same context", () => {
+      const other = audit([prompt("go"), ...rsv("noul", "r1"), ...call(helper("budget", "release --id r1"), json({ status: "ok", ok: true }), { agent: "agent-1" }), ...call(noul(), noulOut)]);
+      assert.equal(other.jev_calls.reservations.released, 0);
+      assert.equal(other.jev_calls.reserved_direct, 1, "the parent's reservation stayed open");
+      const failed = audit([prompt("go"), ...rsv("noul", "r1"), ...call(helper("budget", "release --id r1"), json({ status: "ok", ok: false, reason: "unknown_reservation" })), ...call(noul(), noulOut)]);
+      assert.equal(failed.jev_calls.reservations.released, 0);
+    });
+    it("a reserve whose --source does not match its context's side is listed and never matched", () => {
+      const wrongSub = audit([prompt("go"), ...rsv("noul", "r1", "--source subagent"), ...call(noul(), noulOut)]);
+      assert.deepEqual(wrongSub.jev_calls.reservation_source_mismatch, [{ at: 1, tool: "noul", declared: "subagent", actual: "main", ctx: "main" }]);
+      assert.equal(wrongSub.jev_calls.reserved_direct, 0);
+      assert.equal(wrongSub.jev_calls.unreserved_direct.length, 1);
+      const wrongMain = audit([prompt("go"), ...rsv("noul", "r1", "", { agent: "agent-1" }), ...call(noul(), noulOut, { agent: "agent-1" })]);
+      assert.equal(wrongMain.jev_calls.reservation_source_mismatch.length, 1);
+      assert.equal(wrongMain.jev_calls.reservation_source_mismatch[0].declared, "main");
+      assert.equal(wrongMain.jev_calls.reserved_direct, 0);
+    });
   });
 });
 
 describe("finalization", () => {
   const plan = [item("o1", "execute", 0.99, "Edit", "src/a.mjs")];
-  const done = (outcome) => call(helper("done", "--claims c.json"), json({ jev_flow_gate_run: 1, outcome, verdict: outcome, status: "ok", exit: outcome === "accepted" ? 0 : 2, receipt: "x", jev_calls: 2, snapshot: "abc" }));
-  it("(k) edits without an accepted done, and an edit after the last accepted done, are violations", () => {
-    const none = audit([prompt("go"), ...decide(decideOut({ plan })), ...edit("src/a.mjs"), ...done("needs_evidence")]);
-    assert.deepEqual(none.finalization.violations.map((v) => v.kind), ["finished_without_accepted_done"]);
-    assert.equal(none.finalization.done_calls, 1);
-    assert.equal(none.finalization.last_outcome, "needs_evidence");
-    assert.equal(none.finalization.accepted, false);
-    const after = audit([prompt("go"), ...decide(decideOut({ plan })), ...edit("src/a.mjs"), ...done("accepted"), ...write("src/late.mjs")]);
-    assert.deepEqual(after.finalization.violations.map((v) => v.kind), ["edit_after_last_accepted_done"]);
-    assert.equal(after.finalization.accepted, true);
-    const good = audit([prompt("go"), ...decide(decideOut({ plan })), ...edit("src/a.mjs"), ...done("checks_failed"), ...done("accepted")]);
+  const doneOut = (outcome, { T = 0.95, strict = true, control } = {}) =>
+    json({ jev_flow_gate_run: 1, outcome, verdict: outcome, status: "ok", exit: outcome === "accepted" ? 0 : 2, receipt: "x", jev_calls: 2, snapshot: "abc", control: control === undefined ? { threshold: T, accepted_strictly_above: strict } : control });
+  const done = (outcome, opts) => call(helper("done", "--claims c.json"), doneOut(outcome, opts));
+  const say = (text) => asst([{ type: "text", text }]);
+  const editing = [...decide(decideOut({ plan })), ...edit("src/a.mjs")];
+  const kinds = (a) => a.finalization.violations.map((v) => v.kind);
+  it("(k) an accepted done after the last edit is fine; edits that end with a completion claim and no accepted done are a violation", () => {
+    const good = audit([prompt("go"), ...editing, ...done("checks_failed"), ...done("accepted"), say("Done.")]);
     assert.deepEqual(good.finalization.violations, []);
+    assert.equal(good.finalization.accepted, true);
     assert.equal(good.finalization.done_calls, 2);
+    assert.equal(good.finalization.last_outcome, "accepted");
+    assert.equal(good.finalization.last_accepted_at, 8);
+    assert.equal(good.finalization.edits, 1);
     assert.equal(good.jev_calls.helper_reported_attempts, 5);
-    assert.equal(audit([prompt("just a question")]).finalization.violations.length, 0);
+    const none = audit([prompt("go"), ...editing, ...done("needs_evidence"), say("All done, the change is complete.")]);
+    assert.deepEqual(none.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "needs_evidence", edits_after_accepted: false }]);
+    assert.equal(none.finalization.accepted, false);
+    assert.equal(none.finalization.last_outcome, "needs_evidence");
+    assert.equal(audit([prompt("just a question"), say("42")]).finalization.violations.length, 0);
   });
-  it("counts receipt verifications and refusals", () => {
-    const a = audit([prompt("go"), ...call(helper("receipt", "verify --id x"), json({ status: "ok", authorized: true })), ...call(helper("receipt", "verify --id y"), json({ status: "refused", authorized: false }))]);
-    assert.deepEqual(a.receipts, { receipt_verifications: 1, receipt_refusals: 1 });
+  it("an accepted done followed by an unavailable or checks_failed attempt is no longer accepted", () => {
+    for (const outcome of ["unavailable", "checks_failed", "refused"]) {
+      const a = audit([prompt("go"), ...editing, ...done("accepted"), ...done(outcome), say("Finished.")]);
+      assert.deepEqual(kinds(a), ["completion_declared_without_accepted_done"], outcome);
+      assert.equal(a.finalization.accepted, false);
+      assert.equal(a.finalization.last_outcome, outcome);
+      assert.equal(a.finalization.violations[0].edits_after_accepted, false);
+    }
+  });
+  it("a new done attempt without any result also replaces an earlier accepted state", () => {
+    const a = audit([prompt("go"), ...editing, ...done("accepted"), asst([helper("done", "--claims c.json")]), say("Finished.")]);
+    assert.equal(a.finalization.done_calls, 2);
+    assert.equal(a.finalization.accepted, false);
+    assert.equal(a.finalization.last_outcome, null);
+    assert.deepEqual(kinds(a), ["completion_declared_without_accepted_done"]);
+  });
+  it("an edit after the accepted done invalidates it, whoever made it (a subagent too)", () => {
+    const a = audit([prompt("go"), ...editing, ...done("accepted"), ...write("src/late.mjs"), say("Done.")]);
+    assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "accepted", edits_after_accepted: true }]);
+    assert.equal(a.finalization.accepted, false);
+    assert.equal(a.finalization.last_accepted_at, null);
+    const sub = audit([prompt("go"), ...editing, ...done("accepted"), ...write("src/late.mjs", { agent: "agent-1" }), say("Done.")]);
+    assert.equal(sub.finalization.violations[0].edits_after_accepted, true);
+    // A new accepted done after that edit restores it.
+    const again = audit([prompt("go"), ...editing, ...done("accepted"), ...write("src/late.mjs"), ...done("accepted"), say("Done.")]);
+    assert.deepEqual(again.finalization.violations, []);
+    assert.equal(again.finalization.accepted, true);
+    // An edit issued in the same message as the done (after it) is not covered by it either.
+    const d = helper("done", "--claims c.json");
+    const w = use("Write", { file_path: `${ROOT}/src/p.mjs`, content: "x" });
+    const parallel = audit([prompt("go"), ...editing, asst([d, w]), res(w, "ok"), res(d, doneOut("accepted")), say("Done.")]);
+    assert.equal(parallel.finalization.accepted, false);
+    assert.equal(parallel.finalization.violations[0].edits_after_accepted, true);
+  });
+  it("finalization is per request: a done accepted in an earlier request does not cover the next request's edits", () => {
+    const a = audit([prompt("one"), ...editing, ...done("accepted"), say("Done."), prompt("two"), ...write("src/b.mjs"), say("Done again.")]);
+    assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 2, last_outcome: null, edits_after_accepted: false }]);
+    assert.deepEqual(a.finalization.per_request.map((r) => [r.request, r.accepted]), [[1, true], [2, false]]);
+    assert.equal(a.finalization.accepted, false, "the headline state is the last request's");
+  });
+  it("an `Incomplete:` final message is a legitimate stop, counted; a missing final message is unknown, not a violation", () => {
+    const stop = audit([prompt("go"), ...editing, ...done("checks_failed"), say("Incomplete: the checks still fail on src/a.mjs.")]);
+    assert.deepEqual(stop.finalization.violations, []);
+    assert.equal(stop.finalization.incomplete_stops, 1);
+    assert.deepEqual(stop.finalization.unknown, []);
+    const cut = audit([prompt("go"), ...editing, ...done("checks_failed")]);
+    assert.deepEqual(cut.finalization.violations, []);
+    assert.deepEqual(cut.finalization.unknown, [{ request: 1, reason: "no_final_message" }]);
+    // A last record that still calls a tool is not a final message.
+    const midway = audit([prompt("go"), ...editing, asst([{ type: "text", text: "Running the checks now." }, use("Bash", { command: "npm test" })])]);
+    assert.deepEqual(midway.finalization.unknown, [{ request: 1, reason: "no_final_message" }]);
+    // A subagent's closing message is not the request's final message.
+    const subLast = audit([prompt("go"), ...editing, say("Incomplete: stuck."), asst([{ type: "text", text: "all fine" }], { agent: "agent-1" })]);
+    assert.equal(subLast.finalization.incomplete_stops, 1);
+  });
+  it("an accepted done whose control threshold differs from the session threshold is not accepted", () => {
+    const wrong = audit([prompt("go"), ...editing, ...done("accepted", { T: 0.9 }), say("Done.")]);
+    assert.equal(wrong.finalization.accepted, false);
+    assert.deepEqual(wrong.finalization.violations.map((v) => v.kind), ["done_threshold_mismatch", "completion_declared_without_accepted_done"]);
+    assert.equal(wrong.finalization.violations[0].done_threshold, 0.9);
+    assert.equal(wrong.finalization.violations[0].session_threshold, 0.95);
+    // The threshold in force is the latest one a helper output carried.
+    const lowered = audit([prompt("go"), ...call(helper("threshold", "0.9"), json({ status: "ok", threshold: 0.9 })), ...decide(decideOut({ threshold: 0.9, plan })), ...edit("src/a.mjs"), ...done("accepted", { T: 0.9 }), say("Done.")]);
+    assert.deepEqual(lowered.finalization.violations, []);
+    assert.equal(lowered.finalization.accepted, true);
+    // Not strictly above, a missing control block or a non-numeric control threshold is not accepted either.
+    const raw = (extra) => call(helper("done", "--claims c.json"), json({ outcome: "accepted", status: "ok", ...extra }));
+    for (const extra of [{ control: { threshold: 0.95, accepted_strictly_above: false } }, {}, { control: null }, { control: { threshold: "0.95", accepted_strictly_above: true } }]) {
+      const a = audit([prompt("go"), ...editing, ...raw(extra), say("Done.")]);
+      assert.equal(a.finalization.accepted, false, JSON.stringify(extra));
+      assert.deepEqual(kinds(a), ["completion_declared_without_accepted_done"]);
+    }
+    assert.equal(audit([prompt("go"), ...editing, ...raw({}), say("Done.")]).finalization.accepted_without_control, 1);
+  });
+  it("counts receipt verifications and refusals by reason", () => {
+    const a = audit([
+      prompt("go"),
+      ...call(helper("receipt", "verify --id x --option o1"), json({ status: "ok", authorized: true, consumed: true })),
+      ...call(helper("receipt", "verify --id y --option o1"), json({ status: "refused", authorized: false, message: "receipt_replayed" })),
+      ...call(helper("receipt", "verify --id y --option o2"), json({ status: "refused", authorized: false, message: "precondition_failed:path_exists:missing" })),
+    ]);
+    assert.deepEqual(a.receipts, { receipt_verifications: 1, receipt_refusals: 2, refusals_by_reason: { receipt_replayed: 1, precondition_failed: 1 } });
+  });
+});
+
+describe("grants distinguish the arguments of an action", () => {
+  const plannedOne = (planned) => decide(decideOut({ plan: [item("o1", "execute", 0.99, ...planned)] }));
+  const run = (planned, observed) => audit([prompt("go"), ...plannedOne(planned), ...call(observed, "ok")]).coverage;
+  const abs = (path) => `${ROOT}/${path}`;
+  it("a Write with other content on the same path is not covered by the plan item of another Write", () => {
+    const planned = ["Write", "a.js", { content: "x" }];
+    assert.equal(run(planned, use("Write", { file_path: abs("a.js"), content: "x" })).covered, 1);
+    const other = run(planned, use("Write", { file_path: abs("a.js"), content: "y" }));
+    assert.equal(other.covered, 0);
+    assert.deepEqual(other.uncovered_reasons, { no_grant: 1 });
+  });
+  it("an Edit with another replacement (or replace_all) is a different action", () => {
+    const planned = ["Edit", "a.js", { old_string: "a", new_string: "b" }];
+    assert.equal(run(planned, use("Edit", { file_path: abs("a.js"), old_string: "a", new_string: "b" })).covered, 1);
+    assert.equal(run(planned, use("Edit", { file_path: abs("a.js"), old_string: "a", new_string: "c" })).covered, 0);
+    assert.equal(run(planned, use("Edit", { file_path: abs("a.js"), old_string: "a", new_string: "b", replace_all: true })).covered, 0);
+  });
+  it("a Read with another offset or limit is a different action; a user-named path still excuses any Read of it", () => {
+    const planned = ["Read", "a.js", { offset: 1, limit: 10 }];
+    assert.equal(run(planned, use("Read", { file_path: abs("a.js"), offset: 1, limit: 10 })).covered, 1);
+    assert.equal(run(planned, use("Read", { file_path: abs("a.js"), offset: 5, limit: 10 })).covered, 0);
+    assert.equal(run(planned, use("Read", { file_path: abs("a.js"), limit: 10 })).covered, 0);
+    assert.equal(run(planned, use("Read", { file_path: abs("a.js") })).covered, 0);
+    const named = audit([prompt("please read a.js"), ...call(use("Read", { file_path: abs("a.js"), offset: 7, limit: 3 }), "x")]);
+    assert.equal(named.coverage.exceptions.user_named_path, 1);
+  });
+  it("an Agent call with another prompt or model is a different action", () => {
+    const planned = ["Agent", "worker", { prompt: "find the parser" }];
+    assert.equal(run(planned, use("Task", { subagent_type: "worker", prompt: "find the parser" })).covered, 1);
+    assert.equal(run(planned, use("Task", { subagent_type: "worker", prompt: "find the lexer" })).covered, 0);
+    assert.equal(run(planned, use("Task", { subagent_type: "worker", prompt: "find the parser", model: "haiku" })).covered, 0);
+  });
+  it("Bash printf with one space inside the quotes is not the command with two", () => {
+    const planned = ["Bash", "printf 'a  b'"];
+    assert.equal(run(planned, bash("printf 'a  b'")).covered, 1);
+    const one = run(planned, bash("printf 'a b'"));
+    assert.equal(one.covered, 0);
+    assert.equal(one.uncovered, 1);
+  });
+  it("the plan item hash is built by the real helpers (the same descriptor, whatever the key order of the input)", () => {
+    const d = normalizeDescriptor({ content: "x", target: "a.js", tool: "Write" }).descriptor;
+    assert.equal(item("o1", "execute", 0.99, "Write", "a.js"), planItem({ id: "o1", action: "execute", score: 0.99, descriptor: d }));
+    assert.equal(run(["Write", "a.js"], use("Write", { content: "x", file_path: abs("a.js") })).covered, 1);
+  });
+});
+
+describe("a refused receipt revokes grants", () => {
+  const order = [item("o1", "execute", 0.99, "Write", "a.js"), item("o2", "execute", 0.98, "Write", "b.js")];
+  const verify = (opt, out, extra = "", opts = {}) => call(helper("receipt", `verify --id r1 --option ${opt} --tool Write --target x.js ${extra}`), json(out), opts);
+  const okV = { status: "ok", authorized: true, consumed: true };
+  const refused = (message) => ({ status: "refused", authorized: false, message });
+  const ordered = () => decide(decideOut({ status: "ordered", kind: "order", plan: order }));
+  it("a stale snapshot refusal revokes every unconsumed grant of the decision: a listed Write stays uncovered (grant_revoked)", () => {
+    const a = audit([prompt("go"), ...ordered(), ...verify("o1", refused("receipt_stale_snapshot")), ...write("a.js"), ...write("b.js")]);
+    assert.equal(a.coverage.covered, 0);
+    assert.deepEqual(a.coverage.uncovered_reasons, { grant_revoked: 2 });
+    assert.equal(a.coverage.grants.revoked, 2);
+    assert.deepEqual(a.receipts.refusals_by_reason, { receipt_stale_snapshot: 1 });
+    for (const reason of ["receipt_snapshot_unknown", "current_snapshot_unknown", "receipt_missing_or_forged", "receipt_other_session", "receipt_other_request"]) {
+      const b = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...verify("o1", refused(reason)), ...write("a.js")]);
+      assert.deepEqual(b.coverage.uncovered_reasons, { grant_revoked: 1 }, reason);
+    }
+  });
+  it("grants already consumed before the refusal stay covered; only the unconsumed ones are revoked", () => {
+    const a = audit([prompt("go"), ...ordered(), ...write("a.js"), ...verify("o2", refused("receipt_stale_snapshot")), ...write("b.js")]);
+    assert.equal(a.coverage.covered, 1);
+    assert.deepEqual(a.coverage.uncovered_reasons, { grant_revoked: 1 });
+    assert.equal(a.coverage.grants.revoked, 1);
+  });
+  it("a precondition failure revokes only that option's grant", () => {
+    const a = audit([prompt("go"), ...ordered(), ...verify("o2", refused("precondition_failed:path_sha256:content_changed")), ...write("a.js"), ...write("b.js")]);
+    assert.equal(a.coverage.covered, 1, "o1 is unaffected");
+    assert.deepEqual(a.coverage.uncovered_reasons, { grant_revoked: 1 });
+    assert.equal(a.coverage.grants.revoked, 1);
+    assert.deepEqual(a.receipts.refusals_by_reason, { precondition_failed: 1 });
+    for (const reason of ["receipt_evidence_changed:a.js", "preconditions_not_evaluable", "action_mismatch", "option_not_authorized", "option_names_no_action", "option_was_unavailable", "option_not_above_threshold", "receipt_inconsistent"]) {
+      const b = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...verify("o1", refused(reason)), ...write("a.js")]);
+      assert.deepEqual(b.coverage.uncovered_reasons, { grant_revoked: 1 }, reason);
+    }
+  });
+  it("a replay, out-of-order or incomplete-call refusal revokes nothing but is counted", () => {
+    const a = audit([
+      prompt("go"),
+      ...decide(decideOut({ plan: [order[0]] })),
+      ...verify("o1", refused("receipt_replayed")),
+      ...verify("o1", refused("receipt_out_of_order")),
+      ...verify("o1", refused("action_required")),
+      ...verify("o1", refused("option_required")),
+      ...verify("o1", refused("something the helper may say tomorrow")),
+      ...write("a.js"),
+    ]);
+    assert.equal(a.coverage.covered, 1);
+    assert.equal(a.coverage.grants.revoked, 0);
+    assert.equal(a.receipts.receipt_refusals, 5);
+    assert.deepEqual(a.receipts.refusals_by_reason, { receipt_replayed: 1, receipt_out_of_order: 1, action_required: 1, option_required: 1, "something the helper may say tomorrow": 1 });
+  });
+  it("a refusal from another context or request, or for an unknown receipt id, revokes nothing", () => {
+    const sub = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...verify("o1", refused("receipt_stale_snapshot"), "", { agent: "agent-1" }), ...write("a.js")]);
+    assert.equal(sub.coverage.covered, 1);
+    const later = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), prompt("next"), ...verify("o1", refused("receipt_other_request")), prompt("again")]);
+    assert.equal(later.coverage.grants.revoked, 0);
+    const unknownId = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...call(helper("receipt", "verify --id nope --option o1"), json(refused("receipt_stale_snapshot"))), ...write("a.js")]);
+    assert.equal(unknownId.coverage.covered, 1);
+  });
+  it("covered actions with and without a prior authorized receipt verification are counted apart", () => {
+    const withV = audit([prompt("go"), ...ordered(), ...verify("o1", okV), ...write("a.js"), ...write("b.js")]);
+    assert.equal(withV.coverage.covered, 2);
+    assert.equal(withV.coverage.receipt_verified, 1, "o1 was verified, o2 was not");
+    assert.equal(withV.coverage.unverified_binding, 1);
+    assert.equal(withV.receipts.receipt_verifications, 1);
+    const dry = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...verify("o1", { ...okV, consumed: false }, "--dry-run"), ...write("a.js")]);
+    assert.equal(dry.coverage.covered, 1);
+    assert.equal(dry.coverage.receipt_verified, 0, "a dry run proves nothing");
+    assert.equal(dry.coverage.unverified_binding, 1);
+    const late = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...write("a.js"), ...verify("o1", okV)]);
+    assert.equal(late.coverage.unverified_binding, 1, "a verification after the action does not count");
+    const otherDecision = audit([prompt("go"), ...decide(decideOut({ plan: [order[0]] })), ...decide(decideOut({ decision_id: "d2", receipt: "r2", plan: [item("o1", "execute", 0.99, "Write", "b.js")] })), ...verify("o1", okV), ...write("b.js")]);
+    assert.equal(otherDecision.coverage.receipt_verified, 0, "r1 verified decision d1, not d2");
+  });
+});
+
+describe("search grants are bound to the hit's range, freshness and rank", () => {
+  const H = (path, s, e, extra = {}) => ({ path, start_line: s, end_line: e, sha256: "a".repeat(64), score: 0.97, ...extra });
+  const found = (hits, status = "found") => json({ status, jev_calls: 2, ...(status === "tie_unresolved" ? { resolved_hits: hits } : { hits }) });
+  const search = (hits, status) => call(helper("search", '--query "where is x"'), found(hits, status));
+  const rd = (path, args = {}, opts) => call(use("Read", { file_path: `${ROOT}/${path}`, ...args }), "x", opts);
+  const one = (args, hit = H("src/a.mjs", 10, 30)) => audit([prompt("find x"), ...search([hit]), ...rd("src/a.mjs", args)]);
+  it("a Read inside the hit's lines is covered; one that leaves them is read_outside_hit", () => {
+    assert.equal(one({ offset: 10, limit: 21 }).coverage.covered, 1);
+    assert.equal(one({ offset: 20, limit: 5 }).coverage.covered, 1);
+    for (const args of [{ offset: 10, limit: 22 }, { offset: 9, limit: 5 }, { offset: 31, limit: 1 }, { offset: 10 }, { limit: 5 }, { offset: 10, limit: 0 }]) {
+      const a = one(args);
+      assert.equal(a.coverage.covered, 0, JSON.stringify(args));
+      assert.deepEqual(a.coverage.uncovered_reasons, { read_outside_hit: 1 }, JSON.stringify(args));
+    }
+  });
+  it("a limit alone starts at line 1; an offset alone reads to the end of an unknown file", () => {
+    assert.equal(one({ limit: 20 }, H("src/a.mjs", 1, 50)).coverage.covered, 1);
+    assert.equal(one({ limit: 60 }, H("src/a.mjs", 1, 50)).coverage.covered, 0);
+    assert.equal(one({ offset: 5 }, H("src/a.mjs", 1, 50)).coverage.covered, 0);
+  });
+  it("a whole-file Read is accepted and counted; a Read of another path is read_outside_hit", () => {
+    const whole = one({});
+    assert.equal(whole.coverage.covered, 1);
+    assert.equal(whole.coverage.search_whole_file_reads, 1);
+    const ranged = one({ offset: 12, limit: 3 });
+    assert.equal(ranged.coverage.search_whole_file_reads, 0);
+    const other = audit([prompt("find x"), ...search([H("src/a.mjs", 10, 30)]), ...rd("src/b.mjs")]);
+    assert.equal(other.coverage.covered, 0);
+    assert.deepEqual(other.coverage.uncovered_reasons, { read_outside_hit: 1 });
+  });
+  it("a hit without a line range (a direct_read, an older shape) accepts any Read of its path", () => {
+    const a = audit([prompt("find x"), ...call(helper("search", "--exact-path src/a.mjs"), json({ status: "direct_read", hits: [{ path: "src/a.mjs" }] })), ...rd("src/a.mjs", { offset: 5, limit: 5 })]);
+    assert.equal(a.coverage.exceptions.user_named_path + a.coverage.uncovered, 1);
+    const found2 = audit([prompt("find x"), ...search([{ path: "src/a.mjs" }]), ...rd("src/a.mjs", { offset: 5, limit: 5 })]);
+    assert.equal(found2.coverage.covered, 1);
+    assert.equal(found2.coverage.search_whole_file_reads, 0);
+  });
+  it("an edit of the path between the search and the Read revokes the hit (hit_changed_since_search), whoever made it", () => {
+    const hit = H("src/a.mjs", 1, 50);
+    const byMain = audit([prompt("find x"), ...search([hit]), ...edit("src/a.mjs"), ...rd("src/a.mjs")]);
+    assert.equal(byMain.coverage.covered, 0);
+    assert.deepEqual(byMain.coverage.uncovered_reasons, { no_grant: 1, hit_changed_since_search: 1 });
+    const bySub = audit([prompt("find x"), ...search([hit]), ...write("src/a.mjs", { agent: "agent-1" }), ...rd("src/a.mjs")]);
+    assert.equal(bySub.coverage.uncovered_reasons.hit_changed_since_search, 1);
+    const viaMulti = audit([prompt("find x"), ...search([hit]), ...call(use("MultiEdit", { file_path: `${ROOT}/src/a.mjs`, edits: [{ old_string: "a", new_string: "b" }] }), "ok"), ...rd("src/a.mjs")]);
+    assert.equal(viaMulti.coverage.uncovered_reasons.hit_changed_since_search, 1);
+    const notebook = audit([prompt("find x"), ...search([hit]), ...call(use("NotebookEdit", { notebook_path: `${ROOT}/src/a.mjs`, new_source: "x" }), "ok"), ...rd("src/a.mjs")]);
+    assert.equal(notebook.coverage.uncovered_reasons.hit_changed_since_search, 1);
+    // Another path, an edit before the search and an edit after the Read do not matter.
+    const other = audit([prompt("find x"), ...edit("src/b.mjs"), ...search([hit]), ...edit("src/b.mjs"), ...rd("src/a.mjs"), ...edit("src/a.mjs")]);
+    assert.equal(other.coverage.covered, 1);
+    const before = audit([prompt("find x"), ...edit("src/a.mjs"), ...search([hit]), ...rd("src/a.mjs")]);
+    assert.equal(before.coverage.covered, 1);
+    // An edit in another request does not touch this request's hit.
+    const next = audit([prompt("one"), ...edit("src/a.mjs"), prompt("two"), ...search([hit]), ...rd("src/a.mjs")]);
+    assert.equal(next.coverage.covered, 1);
+  });
+  it("reading a hit after a worse-ranked hit of the same search is an order violation; reading some or only the best is fine", () => {
+    const hits = [H("src/a.mjs", 1, 9), H("src/b.mjs", 1, 9), H("src/c.mjs", 1, 9)];
+    const swapped = audit([prompt("find x"), ...search(hits), ...rd("src/b.mjs"), ...rd("src/a.mjs")]);
+    assert.equal(swapped.coverage.covered, 1);
+    assert.deepEqual(swapped.coverage.uncovered_reasons, { out_of_order: 1 });
+    assert.deepEqual(swapped.ordering.order_violations, [{ kind: "search_read_order", at: 5, path: "src/a.mjs", rank: 1, after_rank: 2 }]);
+    assert.equal(swapped.eliminators.below_threshold_actions_without_approval, 1);
+    const inOrder = audit([prompt("find x"), ...search(hits), ...rd("src/a.mjs"), ...rd("src/c.mjs")]);
+    assert.equal(inOrder.coverage.covered, 2);
+    assert.deepEqual(inOrder.ordering.order_violations, []);
+    const onlyBest = audit([prompt("find x"), ...search(hits), ...rd("src/a.mjs")]);
+    assert.equal(onlyBest.coverage.covered, 1);
+    const onlyWorst = audit([prompt("find x"), ...search(hits), ...rd("src/c.mjs")]);
+    assert.equal(onlyWorst.coverage.covered, 1);
+    assert.deepEqual(onlyWorst.ordering.order_violations, []);
+    // Two searches are independent: a worse hit of an earlier search does not constrain the later one.
+    const second = audit([prompt("find x"), ...search(hits), ...rd("src/c.mjs"), ...search([H("src/a.mjs", 1, 9)]), ...rd("src/a.mjs")]);
+    assert.equal(second.coverage.covered, 2);
+    // A tie_unresolved result grants its resolved hits in rank order too.
+    const tie = audit([prompt("find x"), ...search(hits.slice(0, 2), "tie_unresolved"), ...rd("src/b.mjs"), ...rd("src/a.mjs")]);
+    assert.deepEqual(tie.coverage.uncovered_reasons, { out_of_order: 1 });
+  });
+});
+
+describe("only a genuine helper call is a grant source", () => {
+  const CLI_W = "/p/private/jev-control/cli.mjs";
+  const plan = [item("o1", "execute", 0.99, "Write", "src/new.mjs")];
+  const sel = decideOut({ plan });
+  /** the coverage of a transcript where `cmd` printed a good selection and an unrelated-looking Write followed */
+  const after = (cmd, out = sel) => audit([prompt("go"), ...call(bash(cmd), out), ...write("src/new.mjs")]).coverage;
+  const genuine = (cmd) => {
+    const c = after(cmd);
+    assert.equal(c.protocol, 1, cmd);
+    assert.equal(c.protocol_compound, 0, cmd);
+    assert.equal(c.covered, 1, cmd);
+    assert.equal(c.uncovered, 0, cmd);
+  };
+  const action = (cmd) => {
+    const c = after(cmd);
+    assert.equal(c.protocol, 0, cmd);
+    assert.equal(c.protocol_compound, 1, cmd);
+    assert.equal(c.covered, 0, cmd);
+    assert.equal(c.uncovered, 2, `${cmd}: the command itself and the Write`);
+    assert.equal(c.grants.created, 0, cmd);
+  };
+  it("echo-forged JSON never creates a grant, even when a real Write the forged plan listed follows", () => {
+    action(`echo '${sel}' # ${CLI_W} decide`);
+    action(`printf '%s\\n' '${sel}' && echo ${CLI_W} decide`);
+    action(`cat ${CLI_W}`);
+    action(`grep -n decide ${CLI_W}`);
+    const c = after(`echo 'node ${CLI_W} decide --file b.json'`);
+    assert.equal(c.uncovered_reasons.no_grant, 2);
+  });
+  it("a helper chained with another command is one Bash action that needs its own grant", () => {
+    action(`node "${CLI_W}" decide --file b.json; sed -i s/a/b/ f`);
+    action(`node "${CLI_W}" decide --file b.json && rm -rf build`);
+    action(`node "${CLI_W}" decide --file b.json || true`);
+    action(`node "${CLI_W}" decide --file b.json & `);
+    action(`rm -rf build; node "${CLI_W}" decide --file b.json`);
+    action(`node "${CLI_W}" decide --file b.json\nrm -rf build`);
+    action(`node "${CLI_W}" decide --file - <<'EOF'\n{}\nEOF\nrm -rf build`);
+    const a = audit([prompt("go"), ...call(bash(`node "${CLI_W}" decide --file b.json; sed -i s/a/b/ f`), sel)]);
+    assert.equal(a.coverage.uncovered, 1);
+    assert.equal(a.coverage.uncovered_samples[0].tool, "Bash");
+    assert.equal(a.coverage.uncovered_samples[0].reason, "no_grant");
+  });
+  it("a pipe FROM the helper, a substitution or a redirect of its output makes it an ordinary action", () => {
+    action(`node "${CLI_W}" decide --file b.json | tail -1`);
+    action(`echo $(node "${CLI_W}" decide --file b.json)`);
+    action(`echo \`node "${CLI_W}" decide --file b.json\``);
+    action(`node "${CLI_W}" decide --file "$(cat f)"`);
+    action(`node "${CLI_W}" decide --file b.json > out.txt`);
+    action(`node "${CLI_W}" decide --file b.json >out.txt 2>&1`);
+    action(`( node "${CLI_W}" decide --file b.json )`);
+    action(`bash -c 'node ${CLI_W} decide --file b.json'`);
+    action(`node --inspect "${CLI_W}" decide --file b.json`);
+    action(`node ${CLI_W} decide --file - <<EOF\n$(rm -rf build)\nEOF`);
+    action(`rm -rf x # jev-gate-run.mjs`);
+  });
+  it("cd and variable prefixes, a feeding pipe, here-documents, here-strings and stderr redirects are still genuine", () => {
+    genuine(`node "${CLI_W}" decide --file b.json`);
+    genuine(`cd /repo && node "${CLI_W}" decide --file - <<'EOF'\n{"decision": "x"; rm -rf y}\nEOF`);
+    genuine(`cd /repo; node "${CLI_W}" decide --file -`);
+    genuine(`cat b.json | node "${CLI_W}" decide --file -`);
+    genuine(`cd /repo && cat b.json | node "${CLI_W}" decide --file - 2>&1`);
+    genuine(`JEV_X=1 node ${CLI_W} decide --file b.json 2>/dev/null`);
+    genuine(`FOO=1 BAR=2 /usr/local/bin/node '${CLI_W}' decide --file b.json 2> /dev/null`);
+    genuine(`node "\${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file - <<< '{"a": 1}'`);
+    genuine(`node ${CLI_W} decide --file b.json\n`);
+    genuine(`node ${CLI_W} decide --file b.json ;`);
+    genuine(`node ${CLI_W} decide --file - --decision-id "a && b; c | d" <<'EOF'\n{}\nEOF`);
+    genuine(`node ${CLI_W} decide --file b.json # && rm -rf x`);
+  });
+  it("a decide result without a receipt creates no grants and is counted", () => {
+    const noReceipt = decideOut({ plan, receipt: undefined, receipt_note: "receipt not written: disk full" });
+    const a = audit([prompt("go"), ...decide(noReceipt), ...write("src/new.mjs")]);
+    assert.equal(a.coverage.covered, 0);
+    assert.equal(a.coverage.grants_without_receipt, 1);
+    assert.equal(a.coverage.grants.created, 0);
+    assert.equal(a.threshold.decisions, 1, "its plan is still checked");
+    assert.equal(a.coverage.uncovered_reasons.no_grant, 1);
+    const bare = audit([prompt("go"), ...decide(decideOut({ plan, receipt: undefined })), ...write("src/new.mjs")]);
+    assert.equal(bare.coverage.grants_without_receipt, 1);
+    assert.equal(bare.coverage.covered, 0);
+    const empty = audit([prompt("go"), ...decide(decideOut({ plan, receipt: "" })), ...write("src/new.mjs")]);
+    assert.equal(empty.coverage.grants_without_receipt, 1);
+  });
+  it("a result without the structure the real helper prints is opaque, never a grant source", () => {
+    for (const bad of [{ decision_id: undefined }, { decision_id: 7 }, { kind: undefined }, { threshold: "0.95" }, { threshold: undefined }]) {
+      const a = audit([prompt("go"), ...decide(decideOut({ plan, ...bad })), ...write("src/new.mjs")]);
+      assert.equal(a.coverage.covered, 0, JSON.stringify(bad));
+      assert.equal(a.coverage.grants.created, 0, JSON.stringify(bad));
+      assert.equal(a.coverage.unknown, 1, JSON.stringify(bad));
+      assert.equal(a.coverage.unknown_samples[0].reason, "helper_result_missing");
+    }
+    for (const out of [{ status: "found", hits: "src/a.mjs" }, { status: "found" }, { status: "found", hits: [{ file: "src/a.mjs" }] }, { status: "tie_unresolved", hits: [{ path: "src/a.mjs" }] }]) {
+      const a = audit([prompt("go"), ...call(helper("search", "--query q"), json(out)), ...read("src/a.mjs")]);
+      assert.equal(a.coverage.grants.created, 0, JSON.stringify(out));
+      assert.equal(a.coverage.unknown, 1, JSON.stringify(out));
+    }
+    const noStatus = audit([prompt("go"), ...decide(JSON.stringify({ decision_id: "d1", plan })), ...write("src/new.mjs")]);
+    assert.equal(noStatus.coverage.unknown, 1);
   });
 });
 
