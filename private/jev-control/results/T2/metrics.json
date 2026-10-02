@@ -103,6 +103,12 @@
     "finalization_mutations": "Bash, Agent, Task and unclassified tools after an accepted done invalidate it (changed_after_accepted); Incomplete stays a legitimate stop",
     "live": "unmeasured"
   },
+  "fix_round_6": {
+    "whole_sentence_approval": "a budget approval is lead words + a budget verb + only the budget, a quantity and fillers; an option approval is lead words + a granting verb + the id + politeness (an exclusion clause is cut off first); any word saying what the approval is for (testing, discussing, evaluating, another id) leaves the sentence unrecognized; a list in one sentence is not read",
+    "question_binding": "a bare yes completes only a one-sentence question that is itself a complete approval of the scope; an answer that selects an option concerns that option alone; a yes to alternatives authorizes none",
+    "tests": {"control": "414 tests, 77 suites (new cases are assertions in existing tests)"},
+    "live": "unmeasured"
+  },
   "fix_round_5": {
     "grant_aimed_at_target": "a budget grant is a budget verb within four words of the limit/calls (or 'N more calls'); 'Jev' is not an object; an option grant is a granting word within four words before the id with no exclusion (instead of, rather than, over, except) and no other identifier in between; the question of a short answer is judged the same way; unreadable formulations are refused",
     "quantity": "no number = default step; zero = quantum_zero; fraction/negative/grouped = quantum_invalid; ambiguous = quantum_ambiguous; a stated quantity never becomes the default",

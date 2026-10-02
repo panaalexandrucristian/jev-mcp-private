@@ -76,7 +76,7 @@ describe("the shared budget (D15, D26)", () => {
     assert.equal(ten.n, 10, "without --n the quantity the words state is used");
     assert.equal(limit(), 35);
     assert.deepEqual(approveMore(dir, 10, "Yes, approve 10 MORE   calls"), { ok: false, reason: "approval_already_used" }, "the same words do not authorize twice in one request");
-    assert.deepEqual(approveMore(dir, 10, "yes, approve 10 more calls again"), { ok: false, reason: "approval_already_used" }, "words that contain an earlier approval's words are the same authorization");
+    assert.deepEqual(approveMore(dir, 10, "yes, approve 10 more calls please"), { ok: false, reason: "approval_already_used" }, "words that contain an earlier approval's words are the same authorization");
     assert.equal(approveMore(dir, 10, "yes, approve another 10 more calls").ok, true, "other words are another authorization (the audit still needs the user to have said them)");
     assert.equal(limit(), 45);
   });

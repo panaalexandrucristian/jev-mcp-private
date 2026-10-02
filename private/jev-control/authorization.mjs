@@ -31,12 +31,11 @@ const REPORTED = words("says|said|states|stated|wrote|writes|written|reads|accor
 const CUE = words(
   "yes|yeah|yep|yup|sure|ok|okay|fine|approve|approved|approves|approval|go ahead|go on|go with|proceed|continue|do it|allow|allowed|permit|permitted|permission|grant|granted|authorize|authorise|authorized|authorised|accept|accepted|choose|pick|select|take|use|increase|raise|extend|da|bine|desigur|aprob|aprobat|aprobă|aprobare|permit|permis|continuă|continua|continuați|procedează|procedeaza|mergi|alege|alegeți|folosește|foloseste|accept|acceptat|autorizez|autorizat|mărește|mareste|ridică|ridica|extinde|fă|fa",
 );
-// A grant is aimed at a TARGET: the budget raise or the option, never merely mentioned next to a granting word. A budget
-// grant is a verb that changes or spends the budget followed closely by what it changes («increase the budget», «approve
-// 10 more calls», «continue past the limit»); «Use Jev.» or «Use Node 22 for the calls.» mention a word but grant nothing.
+// BUDGET_NOUN / BUDGET_VERB / OPTION_GRANT are the vocabulary of the approvals recognized below (budgetApproval, optionApproval):
+// «Use Jev.» or «Use Node 22 for the calls.» mention a word but grant nothing.
 const BUDGET_NOUN = new Set(["budget", "limit", "limits", "call", "calls", "attempt", "attempts", "buget", "bugetul", "bugetului", "limită", "limita", "limitei", "apel", "apelul", "apeluri", "apelurile", "apelurilor", "încercări", "incercari"]);
 const BUDGET_VERB = new Set(["increase", "raise", "extend", "bump", "expand", "grow", "allow", "approve", "grant", "authorize", "authorise", "permit", "add", "spend", "continue", "proceed", "give", "mărește", "mareste", "ridică", "ridica", "extinde", "aprob", "aprobă", "permit", "autorizez", "adaugă", "adauga", "continuă", "continua", "procedează", "procedeaza", "mergi", "cheltui"]);
-// An option grant: a granting word closely before the option, with nothing that excludes the option in between.
+// The granting words of an option approval.
 const OPTION_GRANT = new Set(["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "fine", "approve", "approved", "approves", "choose", "pick", "select", "take", "use", "go", "proceed", "continue", "allow", "allowed", "accept", "accepted", "authorize", "authorise", "authorized", "authorised", "permit", "permitted", "grant", "granted", "do", "run", "apply", "da", "bine", "desigur", "aprob", "aprobat", "aprobă", "alege", "alegeți", "folosește", "foloseste", "acceptat", "autorizez", "autorizat", "mergi", "continuă", "continua", "procedează", "procedeaza", "fă", "fa"]);
 // Words that put an option aside: «approve o1 instead of o2» does not approve o2.
 const EXCLUDES = words("instead of|rather than|in place of|other than|over|versus|vs|except|apart from|besides|but not|not|nor|in loc de|în loc de|decât|decat|exceptând|exceptand|în afară de|in afara de");
@@ -49,46 +48,74 @@ export const optionScope = (id) => Object.freeze({ kind: "option", id: String(id
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Is a grant aimed at the budget: a budget verb at most four words before a budget noun, or «N more calls»? */
-function budgetTargeted(text) {
+// A complete approval is recognized by its WHOLE shape, never by a granting word and a target that merely occur near each other:
+// every word of the sentence must be a granting verb, the object it grants, or a plain filler; a word that says what the
+// approval is FOR («tests», «testing», «discussing», «Node», «o2») makes the sentence unrecognized, and an unrecognized
+// sentence authorizes nothing. «Approve testing o2.» approves testing, not running o2; «Approve tests for calls.» raises nothing.
+const LEAD = new Set(["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "fine", "please", "pls", "i", "we", "you", "can", "may", "could", "should", "shall", "would", "like", "to", "want", "let", "lets", "us", "me", "and", "then", "also", "just", "now", "go", "ahead", "on", "da", "bine", "desigur", "te", "rog", "hai", "vrei", "să", "sa", "putem", "pot", "poți", "poti", "ar", "trebui", "și", "si", "apoi", "acum"]);
+const BUDGET_FILLER = new Set(["the", "a", "an", "this", "that", "your", "my", "our", "its", "it", "current", "new", "more", "extra", "additional", "another", "further", "higher", "bigger", "larger", "total", "in", "by", "to", "of", "with", "for", "up", "past", "beyond", "above", "over", "increase", "extension", "number", "amount", "please", "now", "then", "too", "de", "cu", "la", "pe", "încă", "inca", "suplimentare", "suplimentar", "un", "o", "mai", "multe", "câteva", "cateva", "te", "rog", "și", "si", "and"]);
+const OPTION_VERB = OPTION_GRANT;
+const OPTION_FILLER = new Set(["the", "a", "an", "option", "variant", "choice", "alternative", "opțiunea", "optiunea", "opțiune", "optiune", "varianta", "alternativa", "with", "on", "ahead", "it", "to", "for", "now", "please"]);
+const OPTION_TAG = new Set(["option", "variant", "choice", "alternative", "opțiunea", "optiunea", "opțiune", "optiune", "varianta", "alternativa"]);
+const OPTION_TAIL = new Set(["please", "now", "then", "too", "thanks", "thank", "you", "te", "rog", "mulțumesc", "multumesc"]);
+// A bare answer that names no target: its object can only come from the question it answers.
+const BARE_AFFIRMATION = new Set(["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "fine", "please", "pls", "approve", "approved", "accept", "accepted", "agreed", "agree", "confirm", "confirmed", "proceed", "continue", "go", "ahead", "do", "it", "that", "this", "is", "sounds", "good", "great", "right", "correct", "i", "we", "you", "and", "thanks", "thank", "allow", "allowed", "da", "bine", "desigur", "aprob", "aprobat", "continuă", "continua", "procedează", "procedeaza", "mergi", "te", "rog", "hai", "fă", "fa"]);
+const isBareAffirmation = (s) => {
+  const t = tokensOf(s);
+  return t.length > 0 && t.every((w) => BARE_AFFIRMATION.has(w)) && t.some((w) => CUE.test(w));
+};
+
+/** Is this sentence a complete approval of raising or spending the call budget: lead words, a budget verb, then only the budget, a quantity and fillers? */
+function budgetApproval(text) {
   const t = tokensOf(text);
-  const isVerb = (i) => BUDGET_VERB.has(t[i]) || (t[i] === "go" && (t[i + 1] === "ahead" || t[i + 1] === "on"));
-  for (let j = 0; j < t.length; j++) {
-    if (!BUDGET_NOUN.has(t[j])) continue;
-    for (let i = Math.max(0, j - 4); i < j; i++) if (isVerb(i)) return true;
-    if (j >= 2 && INCREMENT_AFTER.has(t[j - 1]) && numberOf(t[j - 2]) !== undefined) return true;
-  }
-  return false;
+  let v = t.findIndex((w) => BUDGET_VERB.has(w));
+  if (v === -1) v = t.findIndex((w, i) => t[i - 1] === "go" && (w === "ahead" || w === "on")); // «go on beyond the limit»
+  if (v === -1 || !t.slice(0, v).every((w) => LEAD.has(w))) return false;
+  const rest = t.slice(v + 1);
+  return rest.some((w) => BUDGET_NOUN.has(w)) && rest.every((w) => BUDGET_NOUN.has(w) || BUDGET_VERB.has(w) || BUDGET_FILLER.has(w) || numberOf(w) !== undefined);
 }
 
+const idTokens = (id) => tokensOf(String(id).replace(/[_-]+/g, " "));
+const isShortId = (id) => /^[a-z]{1,2}$/.test(norm(id));
+/** Positions of the id's words in `t`; an id of one or two letters, which is also a word, only after «option». */
+function idPositions(t, id) {
+  const idt = idTokens(id);
+  const out = [];
+  if (idt.length === 0) return out;
+  for (let p = 0; p + idt.length <= t.length; p++) {
+    if (!idt.every((w, k) => t[p + k] === w)) continue;
+    if (isShortId(id) && !OPTION_TAG.has(t[p - 1])) continue;
+    out.push({ p, n: idt.length });
+  }
+  return out;
+}
+/** The words of a sentence that say what is approved: what comes before an exclusion («over o2», «instead of o2», «except o2») is the choice. */
+function chosenPart(text) {
+  let s = norm(text).replace(/[\s.!?]+$/g, "");
+  const ex = EXCLUDES.exec(s);
+  if (!ex) return s;
+  if (ex.index > 0) return s.slice(0, ex.index);
+  const cut = s.search(/[,;]/); // «Instead of o2, approve o1.»: the exclusion clause ends at the comma
+  return cut === -1 ? "" : chosenPart(s.slice(cut + 1));
+}
 /**
- * Is a grant aimed at this option: its id (parts separated by spaces, _ or -; an id of one or two letters, which is also a
- * word, only as «option a») with a granting word at most four words before it, nothing that excludes it in between or right
- * before it (a longer id such as «edit_a_long» is another option)? `grantFromQuestion`: the answer is a bare label of an
- * approval question, so the granting word is the question's.
+ * Is this sentence a complete approval of THIS option: lead words, a granting verb (none for the bare label of an approval
+ * question, `label`), fillers, the id and at most politeness after it. Another option, a list («o1 and o2», «o1, o2») or
+ * any word that says what the approval is for («testing o2») makes it unrecognized; an exclusion clause («instead of o2»)
+ * is cut off first, so «Approve o1 instead of o2.» approves o1 and nothing else.
  */
-function optionTargeted(text, id, grantFromQuestion) {
-  const phrase = norm(String(id).replace(/[_-]+/g, " "));
-  if (!phrase) return false;
-  const t = norm(text);
-  const body = escape(phrase).replace(/ /g, "[\\s_-]+");
-  const edge = "[\\p{L}\\p{N}_-]";
-  const bare = `(?<!${edge})${body}(?!${edge})`;
-  const tagged = `(?<!${edge})(?:option|opțiunea|optiunea|opțiune|optiune|variant|varianta|choice|alternative|alternativa)\\s+${body}(?!${edge})`;
-  const re = new RegExp(/^[a-z]{1,2}$/.test(phrase) ? tagged : bare, "gu");
-  for (const m of t.matchAll(re)) {
-    const before = tokensOf(t.slice(0, m.index)).slice(-5);
-    let g = -1;
-    for (let k = before.length - 1; k >= 0; k--) if (OPTION_GRANT.has(before[k])) { g = k; break; }
-    const gap = g === -1 ? before.slice(-3) : before.slice(g + 1);
-    // Excluded («instead of o2»), or behind another identifier («approve o1 and o2», «approve o1, o2 stays out»): a list is
-    // not interpreted, the grant belongs to the first option named and each other option needs its own words.
-    if (EXCLUDES.test(gap.join(" ")) || gap.some((w) => /[\d_-]/.test(w))) continue;
-    if (g !== -1 || grantFromQuestion) return true;
+function optionApproval(text, id, label = false) {
+  const t = tokensOf(chosenPart(text));
+  for (const { p, n } of idPositions(t, id)) {
+    const before = t.slice(0, p);
+    const after = t.slice(p + n);
+    if (!before.every((w) => LEAD.has(w) || OPTION_VERB.has(w) || OPTION_FILLER.has(w))) continue;
+    if (!after.every((w) => OPTION_TAIL.has(w))) continue;
+    if (label ? before.every((w) => OPTION_FILLER.has(w) && w !== "it") : before.some((w) => OPTION_VERB.has(w))) return true;
   }
   return false;
 }
-const concerns = (text, scope, grantFromQuestion = false) => (scope.kind === "option" ? optionTargeted(text, scope.id, grantFromQuestion) : budgetTargeted(text));
+const approvesScope = (text, scope) => (scope.kind === "option" ? optionApproval(text, scope.id) : budgetApproval(text));
 
 /** The sentences of a text (split at line breaks and after . ! ?), normalized (lower case, single spaces). */
 export function sentencesOf(text) {
@@ -163,25 +190,31 @@ export function affirmative(sentences) {
 
 /**
  * Do these sentences authorize `scope`? {ok: true, quantity} or {ok: false, reason: not_affirmative | no_grant | object_missing}.
- * The sentence(s) must be affirmative AND concern the scope (the budget, or the option named); a short answer is linked to
- * the `question` it answers: the question may supply the object (and the quantity), but never rescues a negated answer,
- * and a negated or conditional question is no authorization either. Without the link, «yes» authorizes nothing.
+ * The sentence(s) must be affirmative AND be a complete approval of the scope (the budget raise, or running the option
+ * named: see budgetApproval / optionApproval). A short answer is linked to the `question` it answers, but the question only
+ * completes an answer that names nothing: a bare «yes» is an approval of the question's operation when the question has ONE
+ * demonstrable target (a single sentence that is itself a complete approval of the scope); an answer that selects an option
+ * («Use o1», «o1») concerns that option and no other, however many alternatives the question offers; a «yes» to a question
+ * with alternatives authorizes none of them. A negated or conditional question is no authorization either. Without the link,
+ * «yes» authorizes nothing.
  */
 export function judge(sentences, scope, question = null) {
   if (sentences.length === 0) return { ok: false, reason: "no_grant" };
   for (const s of sentences) if (refuses(s)) return { ok: false, reason: "not_affirmative" };
   const q = question ? norm(question) : "";
   if (q && (NEGATION.test(q) || CONDITION.test(q))) return { ok: false, reason: "not_affirmative" };
-  const own = sentences.join(" ");
-  const questionGrants = q !== "" && CUE.test(q);
-  const ownConcerns = concerns(own, scope, questionGrants);
-  const grants = sentences.some((s) => CUE.test(s)) || (questionGrants && ownConcerns);
-  if (!grants) return { ok: false, reason: "no_grant" };
-  if (!ownConcerns && !(q !== "" && concerns(q, scope))) return { ok: false, reason: "object_missing" };
+  const qSentences = q ? sentencesOf(q) : [];
+  const own = sentences.some((s) => approvesScope(s, scope));
+  const asLabel = !own && scope.kind === "option" && qSentences.some((s) => CUE.test(s)) && sentences.some((s) => optionApproval(s, scope.id, true));
+  const bare = !own && !asLabel && qSentences.length === 1 && sentences.every(isBareAffirmation) && approvesScope(qSentences[0], scope);
+  if (!own && !asLabel && !bare) {
+    const cue = sentences.some((s) => CUE.test(s)) || qSentences.some((s) => CUE.test(s));
+    return { ok: false, reason: cue ? "object_missing" : "no_grant" };
+  }
   let quantity = { kind: "none" };
   if (scope.kind === "budget") {
     quantity = quantityOf(sentences);
-    if (quantity.kind === "none" && q) quantity = quantityOf([q]);
+    if (quantity.kind === "none" && bare) quantity = quantityOf(qSentences);
   }
   return { ok: true, quantity };
 }

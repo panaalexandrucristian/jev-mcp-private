@@ -35,16 +35,36 @@ describe("the user's words as an authorization", () => {
   });
   it("mentioning the object is not authorizing the operation: the grant must be aimed at the budget or the option", () => {
     for (const no of ["Use Jev.", "Use Node 22 for the calls.", "Approve the pull request for calls.", "Yes, the budget.", "Jev is fine.", "Yes, calls are cheap."]) assert.equal(grants(no), false, no);
-    for (const yes of ["Increase the budget.", "Yes, 25 more calls.", "yes spend five more calls", "Ok, continue past the limit", "Da, mărește bugetul cu 30."]) assert.equal(grants(yes), true, yes);
+    for (const yes of ["Increase the budget.", "Yes, approve 25 more calls.", "yes spend five more calls", "Ok, continue past the limit", "Da, mărește bugetul cu 30."]) assert.equal(grants(yes), true, yes);
     assert.equal(grants("yes", BUDGET_SCOPE, "Use Jev?"), false, "nor does a question that only mentions Jev");
     // An option set aside is not approved: «approve o1 instead of o2» approves o1 only.
-    for (const [words, o1, o2] of [["Approve o1 instead of o2.", true, false], ["Use o1 over o2", true, false], ["Instead of o2, approve o1.", true, false], ["Approve o1 rather than o2", true, false], ["Choose o1 in place of o2", true, false], ["Approve o1 and o2", true, false], ["Approve o1, o2 stays out", true, false]]) {
+    for (const [words, o1, o2] of [["Approve o1 instead of o2.", true, false], ["Use o1 over o2", true, false], ["Instead of o2, approve o1.", true, false], ["Approve o1 rather than o2", true, false], ["Choose o1 in place of o2", true, false], ["Approve o1 and o2", false, false], ["Approve o1, o2 stays out", false, false]]) {
       assert.equal(grants(words, optionScope("o1")), o1, `${words} for o1`);
       assert.equal(grants(words, optionScope("o2")), o2, `${words} for o2`);
     }
-    assert.equal(grants("Approve o1 and approve o2", optionScope("o2")), true, "each option with its own grant");
+    assert.equal(grants("Approve o1 and approve o2", optionScope("o2")), false, "a list in one sentence is not interpreted");
+    assert.equal(grants("Approve o1. Approve o2.", optionScope("o2")), true, "each option with its own sentence");
+    assert.equal(grants("Approve o1. Approve o2.", optionScope("o1")), true);
     assert.equal(grants("yes", optionScope("o2"), "Approve o1 instead of o2?"), false, "the question puts o2 aside");
     assert.equal(grants("yes", optionScope("o1"), "Approve o1 instead of o2?"), true);
+    // A question completes only a bare answer, and only when it has ONE demonstrable target; an answer that selects an option stays with it.
+    const either = "Should we approve o1 or approve o2?";
+    assert.equal(grants("Use o1", optionScope("o1"), either), true);
+    assert.equal(grants("Use o1", optionScope("o2"), either), false, "the question cannot extend the user's choice to o2");
+    assert.equal(grants("o1", optionScope("o2"), either), false);
+    assert.equal(grants("o1", optionScope("o1"), either), true, "choosing the label of one alternative");
+    assert.equal(grants("yes", optionScope("o1"), either), false, "a yes to alternatives picks none of them");
+    assert.equal(grants("yes", optionScope("o2"), either), false);
+    assert.equal(grants("Yes, approve it", optionScope("o2"), either), false);
+    assert.equal(grants("yes", optionScope("o2"), "Should we approve o2?"), true, "one demonstrable target: a bare yes works");
+    assert.equal(grants("yes", optionScope("o2"), "Should we approve o2? Or o1?"), false, "a question that is not one sentence has no demonstrable single target");
+    assert.equal(grants("yes", BUDGET_SCOPE, "Should we increase the budget or wait?"), false);
+    // Approving a test, a discussion or an evaluation is not approving the operation.
+    for (const no of ["Approve tests for calls.", "Approve testing the budget.", "Approve discussing the budget.", "Approve evaluating the limit.", "Approve the budget for testing."]) assert.equal(grants(no), false, no);
+    for (const no of ["Approve testing o2.", "Approve evaluating o2.", "Approve discussing option o2.", "Approve o2 testing.", "Approve o2 for testing."]) assert.equal(grants(no, optionScope("o2")), false, no);
+    assert.equal(grants("yes", optionScope("o2"), "Approve testing o2?"), false);
+    assert.equal(grants("yes", BUDGET_SCOPE, "Approve testing the budget?"), false);
+    for (const yes of ["Approve o2.", "Use o2.", "Yes, go with o2", "Please choose option o2", "Run o2 now"]) assert.equal(grants(yes, optionScope("o2")), true, yes);
     assert.equal(grants("I will use o1 later, after reading the long report, o2", optionScope("o2")), false, "a verb far from the id is not the grant of that id");
   });
   it("a short answer counts only with the concrete question it answers", () => {
@@ -53,8 +73,8 @@ describe("the user's words as an authorization", () => {
     assert.equal(grants("yes", BUDGET_SCOPE, "Use Node 22?"), false, "the question is about something else");
     assert.equal(grants("no", BUDGET_SCOPE, "Raise the budget by 25 calls?"), false, "a negated answer is not rescued by its question");
     assert.equal(grants("yes", BUDGET_SCOPE, "Do not raise the budget by 25 calls?"), false, "nor is a negated question an authorization");
-    assert.equal(grants("yes", optionScope("edit_a"), "Approve edit_a below the threshold?"), true);
-    assert.equal(grants("yes", optionScope("edit_b"), "Approve edit_a below the threshold?"), false, "the answer is for the option the question names");
+    assert.equal(grants("yes", optionScope("edit_a"), "Approve edit_a?"), true);
+    assert.equal(grants("yes", optionScope("edit_b"), "Approve edit_a?"), false, "the answer is for the option the question names");
     assert.equal(grants("edit_a", optionScope("edit_a"), "Which option do you approve?"), true, "choosing the label of an approval question");
     assert.equal(grants("edit_a", optionScope("edit_a"), "Which option should I reject?"), false);
     assert.deepEqual(readMessage("yes", BUDGET_SCOPE, "Raise the budget by 25 calls?").quantity, { kind: "increment", n: 25 }, "the question supplies the quantity");
@@ -96,7 +116,7 @@ describe("the user's words as an authorization", () => {
     assert.equal(findAuthorizations("nothing here", "increase the budget").found, false);
     assert.equal(findAuthorizations("yes", "yes").found, true);
     assert.equal(findAuthorizations("yes ok", "ok").found, false, "words shorter than 3 characters are never matched");
-    const both = findAuthorizations("Do not increase the budget. Later: yes, increase the budget by 5.", "increase the budget");
+    const both = findAuthorizations("Do not increase the budget. Yes, increase the budget by 5.", "increase the budget");
     assert.equal(both.found, true);
     assert.equal(both.occurrences.length, 1, "only the granting occurrence counts");
     assert.equal(findAuthorizations("Yes, go ahead and\nincrease the budget", "go ahead and increase the budget").occurrences.length, 1, "a line break inside the words is whitespace");

@@ -341,7 +341,7 @@ describe("approvals, budget and direct calls", () => {
     on(repo, env);
     const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
     assert.equal(d.json.status, "expand");
-    const ok = cli(["approve", ...SID, "--decision", "dec9", "--option", "o1", "--message", "yes, use o1 although it scored 0.9"], { env, cwd: repo });
+    const ok = cli(["approve", ...SID, "--decision", "dec9", "--option", "o1", "--message", "yes, use o1"], { env, cwd: repo });
     assert.equal(ok.json.override, "user");
     const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
     assert.equal(state.approvals.length, 1);
@@ -350,7 +350,7 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(quoted.code, 4);
     assert.equal(quoted.json.reason, "message_not_authorization");
     assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.length, 1, "a quoted refusal records no approval");
-    const other = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes, use o1 although it scored 0.9"], { env, cwd: repo });
+    const other = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes, use o1"], { env, cwd: repo });
     assert.equal(other.code, 4);
     assert.equal(other.json.reason, "message_not_about_option", "approving o1 is not approving o2");
     const unrelated = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "Use Node 22."], { env, cwd: repo });
@@ -359,7 +359,18 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(instead.json.reason, "message_not_about_option", "o2 was put aside in those words");
     const bare = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes"], { env, cwd: repo });
     assert.equal(bare.json.reason, "message_not_about_option", "a bare yes names no option");
-    const answered = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes", "--question", "Approve o2 below the threshold?"], { env, cwd: repo });
+    for (const words of ["Approve testing o2.", "Approve evaluating o2.", "Approve o2 for testing."]) {
+      const r = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", words], { env, cwd: repo });
+      assert.equal(r.json.reason, "message_not_about_option", `${words}: approving a test is not approving the run`);
+    }
+    const either = "Should we approve o1 or approve o2?";
+    const useO1 = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "Use o1", "--question", either], { env, cwd: repo });
+    assert.equal(useO1.json.reason, "message_not_about_option", "a question with alternatives cannot extend «Use o1» to o2");
+    const yesEither = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes", "--question", either], { env, cwd: repo });
+    assert.equal(yesEither.json.reason, "message_not_about_option", "a yes to alternatives picks none of them");
+    const yesEither1 = cli(["approve", ...SID, "--decision", "dec9", "--option", "o1", "--message", "yes", "--question", either], { env, cwd: repo });
+    assert.equal(yesEither1.json.reason, "message_not_about_option");
+    const answered = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes", "--question", "Approve o2?"], { env, cwd: repo });
     assert.equal(answered.json.override, "user", "a short answer counts with the question it answers");
     assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.map((a) => a.option).join(), "o1,o2");
     assert.equal(cli(["approve", ...SID, "--decision", "nope", "--option", "o1", "--message", "yes, use o1"], { env, cwd: repo }).code, 4);
@@ -386,7 +397,7 @@ describe("approvals, budget and direct calls", () => {
     assert.match(quoted.json.message, /not an authorization/);
     const unrelated = cli(["budget", "approve", ...SID, "--n", "100", "--message", "Use Node 22."], { env, cwd: repo });
     assert.equal(unrelated.json.reason, "message_not_about_budget");
-    assert.match(unrelated.json.message, /do not concern the budget/);
+    assert.match(unrelated.json.message, /not a complete approval of raising the budget/);
     const quotation = cli(["budget", "approve", ...SID, "--n", "100", "--message", "The documentation says \"increase the budget by 100 calls\"."], { env, cwd: repo });
     assert.equal(quotation.json.reason, "message_not_authorization");
     const total = cli(["budget", "approve", ...SID, "--n", "30", "--message", "Increase the budget to 30 calls."], { env, cwd: repo });
@@ -394,6 +405,8 @@ describe("approvals, budget and direct calls", () => {
     assert.match(total.json.message, /at most 5/);
     assert.equal(cli(["budget", "approve", ...SID, "--message", "Yes, approve 30 calls."], { env, cwd: repo }).json.reason, "quantum_ambiguous");
     assert.equal(cli(["budget", "approve", ...SID, "--message", "Use Jev."], { env, cwd: repo }).json.reason, "message_not_about_budget");
+    for (const words of ["Approve tests for calls.", "Approve testing the budget.", "Approve discussing the budget.", "Approve the budget for testing."]) assert.equal(cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo }).json.reason, "message_not_about_budget", words);
+    assert.equal(cli(["budget", "approve", ...SID, "--message", "yes", "--question", "Should we increase the budget or wait?"], { env, cwd: repo }).json.reason, "message_not_about_budget");
     for (const [words, reason] of [["Increase the budget by 0 calls.", "quantum_zero"], ["Increase the budget by 0.5 calls.", "quantum_invalid"]]) {
       const r = cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo });
       assert.equal(r.code, 4);

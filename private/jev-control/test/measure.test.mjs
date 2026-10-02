@@ -269,7 +269,7 @@ describe("threshold, stops and approvals", () => {
     assert.equal(unbound.approvals.bound, 0);
     assert.equal(unbound.threshold.actions_while_blocked, 1, "an unbound approval does not unblock");
     assert.equal(unbound.coverage.covered, 0);
-    const bound = audit([prompt("Use   o1, Fix the parser"), ...decide(stop), ...call(approve("o1, fix the  parser"), ok), ...edit("src/x.mjs"), ...edit("src/y.mjs"), ...edit("src/x.mjs")]);
+    const bound = audit([prompt("Yes,   use o1 please"), ...decide(stop), ...call(approve("use  o1"), ok), ...edit("src/x.mjs"), ...edit("src/y.mjs"), ...edit("src/x.mjs")]);
     assert.equal(bound.approvals.bound, 1);
     assert.equal(bound.threshold.approvals_unbound, 0);
     assert.equal(bound.threshold.actions_while_blocked, 0);
@@ -292,15 +292,15 @@ describe("threshold, stops and approvals", () => {
     const stop = decideOut({ status: "ask_user", scores: ["o1:0.7"] });
     const ok = json({ status: "ok", override: "user", decision_id: "d1", option: "o1", ah: ah("Edit", "src/x.mjs") });
     const answer = (q, a) => `User has answered your questions: "${q}"="${a}". You can now continue with the user's answers in mind.`;
-    const approveYes = helper("approve", '--decision d1 --option o1 --message "yes" --question "Approve o1 below the threshold?"');
-    const a = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Approve o1 below the threshold?", "yes")), ...call(approveYes, ok), ...edit("src/x.mjs")]);
+    const approveYes = helper("approve", '--decision d1 --option o1 --message "yes" --question "Approve o1?"');
+    const a = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Approve o1?", "yes")), ...call(approveYes, ok), ...edit("src/x.mjs")]);
     assert.equal(a.approvals.bound, 1, "a short answer is bound through the question it answered");
     assert.equal(a.coverage.covered, 2);
     const aboutOther = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Use Node 22?", "yes")), ...call(approveYes, ok)]);
     assert.equal(aboutOther.approvals.bound, 0, "the real question was about something else, whatever --question said");
-    const forB = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Approve o2 below the threshold?", "yes")), ...call(approveYes, ok)]);
+    const forB = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Approve o2?", "yes")), ...call(approveYes, ok)]);
     assert.equal(forB.approvals.bound, 0, "the answer was for o2");
-    const noPair = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), "User answered: yes, use o1"), ...call(helper("approve", '--decision d1 --option o1 --message "use o1"'), ok)]);
+    const noPair = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), "yes, use o1"), ...call(helper("approve", '--decision d1 --option o1 --message "use o1"'), ok)]);
     assert.equal(noPair.approvals.bound, 1, "an answer whose pairs cannot be read is the raw text, judged on its own words");
   });
 });
@@ -394,7 +394,7 @@ describe("Jev calls and budget", () => {
       prompt("go"),
       ...decide(decideOut({ calls: 20, status: "expand", scores: [] })),
       ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: 6 })),
-      prompt("again, and yes spend more calls on it"),
+      prompt("yes spend more calls please"),
       ...decide(decideOut({ calls: 20, status: "expand", scores: [] })),
       ...approve(25, "yes spend more calls"),
       ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: 6 })),
@@ -432,9 +432,9 @@ describe("Jev calls and budget", () => {
   });
   it("a bound approval raises the limit by approval.n (or the reported limit difference) and sums per request", () => {
     const a = audit([
-      prompt("Yes, continue past the limit. Yes, again: 25 more calls please."),
+      prompt("Yes, continue past the limit. Yes, approve 25 more calls please."),
       ...call(helper("budget", 'approve --n 10 --message "yes, continue past the limit"'), json({ status: "ok", used: 25, limit: 35, approval: { n: 10, msg: "yes, continue past the limit" } })),
-      ...call(helper("budget", 'approve --message "yes, again: 25 more calls please"'), json({ status: "ok", used: 25, limit: 60 })),
+      ...call(helper("budget", 'approve --message "yes, approve 25 more calls please"'), json({ status: "ok", used: 25, limit: 60 })),
       ...decide(decideOut({ calls: 30, status: "expand", scores: [] })),
     ]);
     assert.deepEqual(a.jev_calls.per_request, [{ request: 1, helper_attempts: 30, direct: 0, approved_extra: 35, limit: 60 }]);
@@ -471,7 +471,7 @@ describe("Jev calls and budget", () => {
       const twice = audit([prompt("Yes, continue with 10 more calls."), ...approve(10, "continue with 10 more calls"), prompt("Yes, continue with 10 more calls."), ...approve(10, "continue with 10 more calls")]);
       assert.equal(twice.budget.approvals_bound, 2, "the second user message opens a new request: it is its own authorization there");
       assert.deepEqual(twice.jev_calls.per_request.map((r) => r.approved_extra), [10, 10]);
-      const sameRequest = audit([prompt("Yes, continue with 10 more calls. Later: yes, continue with 10 more calls."), ...approve(10, "continue with 10 more calls"), ...approve(10, "continue with 10 more calls")]);
+      const sameRequest = audit([prompt("Yes, continue with 10 more calls. Yes, continue with 10 more calls."), ...approve(10, "continue with 10 more calls"), ...approve(10, "continue with 10 more calls")]);
       assert.equal(sameRequest.budget.approvals_bound, 2, "said twice in one message: two authorizations");
     });
     it("an option approval is judged the same way: quoting a refusal is not approving", () => {
@@ -488,6 +488,19 @@ describe("Jev calls and budget", () => {
       const forO1 = audit([prompt("Approve o1 instead of o2."), ...decide(stop), ...approveO("Approve o1 instead of o2."), ...edit("src/x.mjs")]);
       assert.equal(forO1.threshold.approvals_unbound, 0, "but it does approve o1");
       assert.equal(forO1.coverage.covered, 1);
+      // The question that was really asked (AskUserQuestion), not --question, completes only a bare answer with ONE demonstrable target.
+      const answer = (q, a) => `User has answered your questions: "${q}"="${a}". You can now continue with the user's answers in mind.`;
+      const asked = (q, a, id, msg) => audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer(q, a)), ...call(helper("approve", `--decision d1 --option ${id} --message "${msg}" --question "Approve ${id}?"`), json({ status: "ok", override: "user", decision_id: "d1", option: id, ah: ah("Edit", "src/x.mjs") })), ...edit("src/x.mjs")]);
+      const either = "Should we approve o1 or approve o2?";
+      assert.equal(asked(either, "Use o1", "o2", "Use o1").approvals.bound, 0, "«Use o1» to alternatives does not approve o2, whatever --question said");
+      assert.equal(asked(either, "Use o1", "o1", "Use o1").approvals.bound, 1, "but it approves o1");
+      assert.equal(asked(either, "yes", "o1", "yes").approvals.bound, 0, "a yes to alternatives picks none");
+      assert.equal(asked(either, "yes", "o2", "yes").approvals.bound, 0);
+      assert.equal(asked("Should we approve o1?", "yes", "o1", "yes").approvals.bound, 1, "one demonstrable target: a yes works");
+      assert.equal(asked("Should we approve testing o1?", "yes", "o1", "yes").approvals.bound, 0, "approving a test is not approving the run");
+      const tested = audit([prompt("Approve testing o1."), ...decide(stop), ...approveO("Approve testing o1."), ...edit("src/x.mjs")]);
+      assert.equal(tested.threshold.approvals_unbound, 1);
+      assert.equal(tested.coverage.covered, 0);
       const said = audit([prompt("Yes, use o1."), ...decide(stop), ...approveO("use o1"), ...edit("src/x.mjs")]);
       assert.equal(said.threshold.approvals_unbound, 0);
       assert.equal(said.coverage.covered, 1);
@@ -507,7 +520,7 @@ describe("Jev calls and budget", () => {
     });
     it("mentioning Jev raises nothing; a stated zero or fraction keeps the limit at 25 and call 26 is a violation", () => {
       const spend = (calls) => [...decide(decideOut({ calls: 20, status: "expand", scores: [] })), ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: calls }))];
-      for (const said of ["Use Jev.", "Use Node 22 for the calls.", "Increase the budget by 0 calls.", "Increase the budget by 0.5 calls.", "Increase the budget by -5 calls."]) {
+      for (const said of ["Use Jev.", "Use Node 22 for the calls.", "Approve tests for calls.", "Approve testing the budget.", "Increase the budget by 0 calls.", "Increase the budget by 0.5 calls.", "Increase the budget by -5 calls."]) {
         const a = audit([prompt(said), ...approve(25, said), ...spend(6)]);
         assert.equal(a.jev_calls.per_request[0].approved_extra, 0, said);
         assert.equal(a.jev_calls.per_request[0].limit, 25, said);
