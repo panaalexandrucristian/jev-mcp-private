@@ -1,0 +1,10 @@
+{
+  "algorithm": "sha256 over canonical JSON {id, kind, prompt, files, solution, oracle source, expects}",
+  "scenarios": {
+    "s1-bug-several-files": "d134fbb9d686b0cf0e2207d6b06f3fc1e68a801208ab5062ddef4c81ccae42ac",
+    "s2-ordered-tasks": "050982912291a86502b9725068a5c04cbaea031ee0a3a66a51100fa35f44f2b0",
+    "s3-ambiguous-search": "4c25541607e177ad472ae78b824b3daf4f88d471be450512dc61c343e2d91317",
+    "s4-missing-requirement": "81116268ce57f5afb8e7d25b61bc729201db841e1a86f62e08c80c0f79239053"
+  },
+  "note": "dev oracles fixed before the runs"
+}

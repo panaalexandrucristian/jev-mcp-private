@@ -1,0 +1,8 @@
+{
+  "algorithm": "sha256 over canonical JSON {id, kind, prompt, files, solution, oracle source, expects}",
+  "scenarios": {
+    "f1-ambiguous-ttl": "8c22eb66a2d77d6f4eb92ab6cfb4ce2965b4b6b4e1a1f9689ff07d391062c464",
+    "f2-inclusive-range": "86a9887b1b17149044a724b344b9b050fd7cd50dbcdfb78ea9ee0933381b7d56"
+  },
+  "note": "sealed until R10: not run, opened for tuning or adjusted before then"
+}

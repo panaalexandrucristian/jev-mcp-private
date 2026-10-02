@@ -1,0 +1,38 @@
+{
+  "round": "T2",
+  "kind": "build + offline tests",
+  "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
+  "branch": "jev-control-skill",
+  "plugin_version": "0.7.0",
+  "live": "unmeasured",
+  "live_sessions_used": 0,
+  "ledger": { "path": "/Users/apana/Dev/council-runs/2026-10-02/jev-control-budget/ledger.tsv", "lines_before": 0, "lines_after": 0, "cap": 20 },
+  "metrics_live": {
+    "correctness": "unmeasured",
+    "decision_coverage": "unmeasured",
+    "threshold_and_ordering_compliance": "unmeasured",
+    "orchestrator_tokens": { "input_tokens": "unmeasured", "output_tokens": "unmeasured", "cache_read_input_tokens": "unmeasured", "cache_creation_input_tokens": "unmeasured" },
+    "jev_latency_and_cost": "unmeasured",
+    "provider_calls": "unknown"
+  },
+  "offline_checks": {
+    "node --test private/jev-flow/test/": { "tests": 324, "suites": 61, "pass": 324, "fail": 0, "exit": 0 },
+    "node --test private/jev-control/test/": { "tests": 209, "suites": 49, "pass": 209, "fail": 0, "exit": 0 },
+    "claude plugin validate .": { "result": "passed", "exit": 0 },
+    "node private/jev-control/fixtures/seal.mjs verify": { "result": "ok", "exit": 0 },
+    "git diff --check": { "exit": 0 }
+  },
+  "versions": { "node": "v22.23.1", "claude_code": "2.1.288", "jev_server": "fake stdio server (private/jev-control/test/fixtures/fake-control-server.mjs); no real Jev server was used" },
+  "fixtures": {
+    "dev_oracle_hashes": {
+      "s1-bug-several-files": "d134fbb9d686b0cf0e2207d6b06f3fc1e68a801208ab5062ddef4c81ccae42ac",
+      "s2-ordered-tasks": "050982912291a86502b9725068a5c04cbaea031ee0a3a66a51100fa35f44f2b0",
+      "s3-ambiguous-search": "4c25541607e177ad472ae78b824b3daf4f88d471be450512dc61c343e2d91317",
+      "s4-missing-requirement": "81116268ce57f5afb8e7d25b61bc729201db841e1a86f62e08c80c0f79239053"
+    },
+    "sealed_final_hashes": {
+      "f1-ambiguous-ttl": "8c22eb66a2d77d6f4eb92ab6cfb4ce2965b4b6b4e1a1f9689ff07d391062c464",
+      "f2-inclusive-range": "86a9887b1b17149044a724b344b9b050fd7cd50dbcdfb78ea9ee0933381b7d56"
+    }
+  }
+}

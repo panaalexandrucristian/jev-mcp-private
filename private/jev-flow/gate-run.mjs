@@ -538,13 +538,16 @@ export function startAttempt({ repoRoot, sessionKeyArg, env = process.env, now =
 
 /**
  * Run the gate. `opts`: {repoRoot, denylist, input, checks (argv arrays),
- * checkTimeoutMs, attempt (from startAttempt), sessionKeyArg, env, now}.
+ * checkTimeoutMs, attempt (from startAttempt), sessionKeyArg, env, now, policy}.
+ * `policy` is the jev-control seam (absent for the flow: nothing changes): the
+ * session threshold as `accept` options for the result checks, `decorateInput`
+ * (auto_accept) and a budgeted `call` in place of callWithRetry.
  * Returns {code, summary} (summary is an object; the CLI prints
  * compactSummary(summary)). Acceptance needs every part auto and valid AND
  * every check passing (exit 0, no timeout, started).
  */
 export async function runGate(opts) {
-  const { repoRoot, denylist, input, checks = [], env = process.env } = opts;
+  const { repoRoot, denylist, input, checks = [], env = process.env, policy = null } = opts;
   const now = opts.now ?? Date.now;
   const handle = opts.attempt ?? startAttempt({ repoRoot, sessionKeyArg: opts.sessionKeyArg, env, now });
   const { session, s0, attempt } = handle;
@@ -726,7 +729,11 @@ export async function runGate(opts) {
           }
         }
         // interpretGate's retry_or_unavailable route (malformed or invalid answer) is retried once with identical input.
-        const reply = await callWithRetry(jev, "jev_gate", call.input, { invalid: (result) => interpretGate(result, { claims: call.input.claims }).route === "retry_or_unavailable" });
+        // `opts.policy` (jev-control only): {accept: {minimums, strictAbove}, decorateInput(input), call(jev, input, {invalid})}.
+        const accept = policy?.accept ?? {};
+        const sendInput = policy?.decorateInput ? policy.decorateInput(call.input) : call.input;
+        const invalid = (result) => interpretGate(result, { claims: call.input.claims, ...accept }).route === "retry_or_unavailable";
+        const reply = policy?.call ? await policy.call(jev, sendInput, { invalid }) : await callWithRetry(jev, "jev_gate", sendInput, { invalid });
         calls += reply.attempts ?? 0;
         if (!reply.ok) {
           unavailable.push(`part ${call.part}: ${reply.kind}: ${clip(reply.message, 200)}${reply.retry ? ` (retry ${reply.retry})` : ""}; ${reply.attempts} call(s) sent`);
@@ -735,8 +742,8 @@ export async function runGate(opts) {
           reconnect = true;
           continue;
         }
-        let { route } = interpretGate(reply.result, { claims: call.input.claims });
-        if (route === "accepted" && !validateGateResult(reply.result, { claims: call.input.claims }).accepted) route = "ask_user";
+        let { route } = interpretGate(reply.result, { claims: call.input.claims, ...accept });
+        if (route === "accepted" && !validateGateResult(reply.result, { claims: call.input.claims, ...accept }).accepted) route = "ask_user";
         if (!summary.jev) summary.jev = { provider: clip(reply.result.provider ?? "unknown", 40), model: clip(reply.result.model ?? "unknown", 60) };
         const verdict = partVerdict(route, reply.result.action);
         parts.push({

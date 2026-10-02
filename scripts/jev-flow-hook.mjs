@@ -3,6 +3,7 @@
 //   node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-flow-hook.mjs" <EventName>  < hook-input.json
 // Prints the hook JSON output (if any) and always exits 0: an internal error
 // yields one stderr diagnostic and no decision, never a silent approval.
+import { handleControlHook, mergeOutputs } from "../private/jev-control/hook.mjs";
 import { handleHook } from "../private/jev-flow/hook.mjs";
 
 async function readStdin() {
@@ -15,7 +16,16 @@ try {
   const event = process.argv[2];
   const raw = await readStdin();
   const input = raw.trim() ? JSON.parse(raw) : {};
-  const output = handleHook(event ?? input.hook_event_name, input);
+  // jev-control first (reminder, session binding, new request); then the flow, which
+  // stands down by itself while the control mode is ON for the session.
+  const name = event ?? input.hook_event_name;
+  let control = null;
+  try {
+    control = handleControlHook(name, input);
+  } catch (error) {
+    process.stderr.write(`[jev-control] hook error: ${String(error?.message ?? error)}\n`);
+  }
+  const output = mergeOutputs(control, handleHook(name, input));
   if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
 } catch (error) {
   process.stderr.write(`[jev-flow] hook error: ${String(error?.message ?? error)}\n`);

@@ -161,7 +161,7 @@ By default the Claude Code `Stop` hook only shows a notice when code changed wit
 
 ### Plugin version
 
-`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner, `0.3.0` for the aggregated gate report of round 3, R5/R6, `0.4.0` for the mechanical locator rerank of round 4, R7, `0.5.0` for the opt-in flow, `0.6.0` for the `handoff-verify` skill), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
+`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner, `0.3.0` for the aggregated gate report of round 3, R5/R6, `0.4.0` for the mechanical locator rerank of round 4, R7, `0.5.0` for the opt-in flow, `0.6.0` for the `handoff-verify` skill, `0.7.0` for the `jev-control` skill), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
 
 ### Local state and checks
 
@@ -173,6 +173,7 @@ Checks for changes to the flow:
 
 ```sh
 node --test private/jev-flow/test/
+node --test private/jev-control/test/
 npm test
 claude plugin validate .
 node -e "import('./opencode-plugin.js').then(m=>console.log(typeof m.default.setup))"
@@ -180,6 +181,36 @@ git diff --stat private-main -- src skills/jev README.md package.json package-lo
 ```
 
 Known limitations: the state lock is never broken automatically, not even when its owner process is gone; until it is removed the flow treats the session state as unknown and never approves, and the `Stop` notice names the lock file (after checking that no hook of that session is running, delete `~/.cache/jev-flow/<repo-hash>/<session-hash>/lock`, or the same path under `JEV_FLOW_CACHE_DIR`, by hand); OpenCode V2 registration, hooks and permissions are feature-detected but not verified at runtime; OpenCode commands are registered only when `command.list` lets the plugin rule out name collisions; the locator's OpenCode permissions are not set, so in OpenCode its lack of Jev tools and its background launch are instructions only (one setup diagnostic says so); OpenCode strict mode is an instruction only; Claude Code test results are normally unknown because the Bash tool response has no exit code; Claude Code behavior beyond `claude plugin validate` needs a live smoke test on 2.1.283.
+
+## Jev control
+
+The private plugin also ships `jev-control` (`skills/jev-control/`, `/jev:jev-control` in Claude Code): an explicitly enabled mode in which Jev decides every choice with two or more real alternatives (approach, task order, which files to search or read, commands and tests, edit variants, delegation and model, when to ask the user, when the work is done) at a configurable confidence, with compact helper output to keep the orchestrator's token use low. It adds no MCP tool and does not modify the upstream `jev` skill; it uses the eleven documented Jev tools (`jev_audit` is optional). The contract is in [`skills/jev-control/reference/protocol.md`](skills/jev-control/reference/protocol.md); seven worked examples are in `skills/jev-control/examples/` (replayed against the real protocol by the offline tests). It is Claude Code only: `opencode-plugin.js` does not register it. **Nothing has been measured live yet:** no token saving, coverage or latency figure is claimed; the campaign (R01–R10, at most 20 Sonnet sessions, 2 baseline + 14 development + 2 sealed final + 2 reserve) will report them from the transcripts' `usage`.
+
+| Piece | Where |
+| --- | --- |
+| Skill, references, examples | `skills/jev-control/` |
+| Command | `/jev:jev-control on [threshold] \| off \| status \| threshold <x>` (`commands/jev-control.md`) |
+| Helper CLI (Node 22) | `private/jev-control/cli.mjs`: `on`, `off`, `status`, `threshold`, `decide`, `search`, `approve`, `budget`, `receipt`, `done` |
+| Control branches | `/jev:jev-done` (gate at the session threshold), `/jev:jev-locate` and `agents/jev-locator.md` (no shortcuts, no lexical fallback) |
+| Hook | `private/jev-control/hook.mjs`, delegated to first by `scripts/jev-flow-hook.mjs`; `hooks/hooks.json` is unchanged |
+| Measuring | `private/jev-control/measure.mjs` (transcript audit and token usage); `run-session.mjs` (campaign runner) |
+| Fixtures, results | `private/jev-control/fixtures/` (dev scenarios S1–S4, sealed finals F1–F2, `CUSTODY.md`), `private/jev-control/results/` |
+
+All new code is under `private/jev-control/`; the only edits to existing private files are seams: the hook delegation in `scripts/jev-flow-hook.mjs`, the flow standing down in `private/jev-flow/hook.mjs`, and an optional `policy` (threshold, no 0.8 floor, budgeted call) in `private/jev-flow/gate-run.mjs` and `policy.mjs`; without the control mode everything behaves as before. `src/`, `skills/jev`, `README.md`, `handoff-verify` and the OpenCode plugin are untouched.
+
+**Threshold.** Default `0.95`, strictly `>` on the raw number a tool returns (never a tool's `likely`/`auto`/`action` label, which mean `>=`), valid in (0.5, 1); a session value (`/jev:jev-control on <x>` or `threshold <x>`) beats `JEV_CONTROL_THRESHOLD`; an invalid value gives `0.95` and one notice; a change affects later decisions only. Eligibility is an independent `jev_noul` probability per option (files: `jev_rerank` relevance); near-equal top scores (gap < 0.02) or exclusive options go to successive `jev_decide` selections (at most 6, each accepted only with confidence `> T`); nothing eligible gives at most two expansion rounds with genuinely new material, then a question to the user (headless: a report starting `Incomplete:`); nothing below the threshold runs without the user's recorded approval; Jev unavailable gives one identical retry, then "Jev unavailable".
+
+**Budget.** At most 25 MCP `tools/call` attempts per user request, from every source (model, subagents, helpers, gate parts, tie-breaks), retries included, reserved before each send; the server's own provider calls are reported "unknown". Activation is not refused for such transports; the server is not instrumented.
+
+**State.** Metadata only (ids, hashes, scores, counters; never code, prompts or Jev responses) in `~/.cache/jev-control/<repo-hash>/<session-hash>/`, removed after 30 days; set `JEV_CONTROL_CACHE_DIR` to move it. Decision receipts (HMAC under a per-session key) prove the helper's metadata, not that an action ran; the same threat model as the gate runner's receipts applies.
+
+**Not verified outside the offline tests** (to be confirmed in the first live development session, R02): that Claude Code exports `CLAUDE_CODE_SESSION_ID` to the Bash tool and passes the raw slash-command text in the prompt hook's `prompt`; that a subagent's hook payload carries `agent_id`; that `/jev:jev-control` works in `claude -p`; that `--plugin-dir` combines with an installed `jev` plugin. Without a real session identity the mode refuses to start.
+
+```sh
+node --test private/jev-control/test/
+node private/jev-control/fixtures/seal.mjs verify
+node private/jev-control/measure.mjs --transcript <session.jsonl> [--baseline <session.jsonl>]
+```
 
 ## Provider configuration
 

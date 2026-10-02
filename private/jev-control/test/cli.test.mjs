@@ -1,0 +1,322 @@
+import assert from "node:assert/strict";
+import { symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, it } from "node:test";
+import { S3 } from "../fixtures/scenarios.mjs";
+import { materialize } from "../fixtures/lib.mjs";
+import { controlSessionDir, loadControlState, writeBinding } from "../state.mjs";
+import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
+
+const SID = ["--session-id", "cli-session-1"];
+const on = (repo, env, extra = []) => cli(["on", ...SID, "--priorities", "fix it with the smallest change", ...extra], { env, cwd: repo });
+const writeBatch = (obj) => {
+  const file = join(tempDir(), "batch.json");
+  writeFileSync(file, JSON.stringify(obj));
+  return file;
+};
+const noulScript = (probs, more = {}) => ({ noul: [{ p: probs }], ...more });
+const p7 = (real) => [...real, 0.1, 0.1];
+
+describe("activation (D1, D2, D13, D16)", () => {
+  it("on checks the contracts, stores the mode, threshold and priorities, and reports them", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const r = on(repo, env);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    assert.equal(r.json.status, "ok");
+    assert.equal(r.json.mode, "on");
+    assert.equal(r.json.threshold, 0.95);
+    assert.equal(r.json.threshold_source, "default");
+    assert.equal(r.json.priorities, "fix it with the smallest change");
+    assert.equal(r.json.audit, "available");
+    assert.match(r.json.server, /fake-jev@9\.9\.9/);
+    const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
+    assert.equal(state.mode, "on");
+    assert.equal(state.request.seq, 1);
+    assert.equal(serverLog(env).length, 0, "activation spends no tools/call");
+  });
+  it("status, off and a changed threshold (later decisions only)", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: noulScript(p7([0.9, 0.5, 0.4, 0.3, 0.2])) });
+    on(repo, env);
+    const status = cli(["status", ...SID], { env, cwd: repo });
+    assert.equal(status.json.mode, "on");
+    assert.equal(status.json.budget.limit, 25);
+    assert.equal(status.json.budget.provider_calls, "unknown");
+    const decided = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(decided.json.status, "expand", "0.9 is not above 0.95");
+    const t = cli(["threshold", "0.85", ...SID], { env, cwd: repo });
+    assert.equal(t.json.threshold, 0.85);
+    assert.equal(t.json.applies_to, "later decisions only");
+    const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
+    assert.equal(state.decisions[0].t, 0.95, "the logged decision keeps the threshold it was taken with");
+    assert.equal(state.threshold.value, 0.85);
+    assert.equal(cli(["off", ...SID], { env, cwd: repo }).json.mode, "off");
+    assert.equal(cli(["status", ...SID], { env, cwd: repo }).json.mode, "off");
+  });
+  it("the threshold: session argument beats the environment; invalid values give 0.95 and one notice", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ extra: { JEV_CONTROL_THRESHOLD: "0.8" } });
+    assert.equal(on(repo, env).json.threshold, 0.8);
+    assert.equal(on(repo, env, ["--threshold", "0.9"]).json.threshold, 0.9);
+    const bad = on(repo, env, ["--threshold", "1"]);
+    assert.equal(bad.json.threshold, 0.95);
+    assert.match(bad.json.notice, /not a number in \(0\.5, 1\)/);
+    const badEnv = controlEnv({ extra: { JEV_CONTROL_THRESHOLD: "abc" } });
+    assert.equal(on(repo, badEnv).json.threshold, 0.95);
+    const t = cli(["threshold", "0.5", ...SID], { env, cwd: repo });
+    assert.equal(t.json.threshold, 0.95);
+    assert.match(t.json.notice, /using 0\.95/);
+  });
+  it("refuses without a real session identity (nothing is activated)", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const r = cli(["on"], { env, cwd: repo });
+    assert.equal(r.code, 4);
+    assert.match(r.json.message, /no real session identity/);
+  });
+  it("takes the identity from CLAUDE_CODE_SESSION_ID or from the hook's fresh, unambiguous binding", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const viaEnv = controlEnv({ extra: { CLAUDE_CODE_SESSION_ID: "env-session" } });
+    const a = cli(["on"], { env: viaEnv, cwd: repo });
+    assert.equal(a.json.session, "environment");
+    const env = controlEnv();
+    writeBinding(repo, "bound-session", env);
+    const b = cli(["on"], { env, cwd: repo });
+    assert.equal(b.json.session, "hook_binding");
+    assert.equal(loadControlState(controlSessionDir(repo, "bound-session", env)).mode, "on");
+    writeBinding(repo, "another-session", env);
+    const c = cli(["on"], { env, cwd: repo });
+    assert.equal(c.code, 4);
+    assert.match(c.json.message, /ambiguous_binding/);
+  });
+  it("refuses when the repository opts out of Jev", () => {
+    const repo = makeRepo({ "a.txt": "a\n", ".jev-flow-denylist": "*\n" });
+    const r = on(repo, controlEnv());
+    assert.equal(r.code, 4);
+    assert.match(r.json.message, /opts out of Jev/);
+  });
+  it("refuses when Jev cannot be reached (the contracts cannot be checked): no credentials", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    delete env.OPENROUTER_API_KEY;
+    const r = on(repo, env);
+    assert.equal(r.code, 4);
+    assert.match(r.json.message, /Jev unavailable/);
+  });
+  it("refuses and names a missing core tool; an incompatible schema is refused too", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const names = "screen,verify,noul,find,rerank,classify,compare,extract,review,gate,audit";
+    const missing = on(repo, controlEnv({ extra: { FAKE_CONTROL_TOOLS: names } }));
+    assert.equal(missing.code, 4);
+    assert.match(missing.json.message, /decide/);
+    const noSchema = on(repo, controlEnv({ extra: { FAKE_CONTROL_NO_SCHEMA: "1" } }));
+    assert.equal(noSchema.code, 4);
+    assert.match(noSchema.json.message, /missing or incompatible/);
+  });
+  it("without jev_audit only that function is off", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const names = "screen,verify,noul,find,rerank,classify,decide,compare,extract,review,gate";
+    const r = on(repo, controlEnv({ extra: { FAKE_CONTROL_TOOLS: names } }));
+    assert.equal(r.code, 0);
+    assert.match(r.json.audit, /unavailable/);
+  });
+  it("every command except on refuses while the mode is off", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    for (const args of [["decide", "--file", "x"], ["search", "--query", "q"], ["done", "--claims", "x"]]) {
+      const r = cli([...args, ...SID], { env, cwd: repo });
+      assert.equal(r.code, 4, args[0]);
+      assert.match(r.json.message, /jev-control is off/);
+    }
+  });
+});
+
+describe("decide through the CLI", () => {
+  it("selected: compact one-line output, a signed receipt, counts and reserves", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: { noul: [{ p: p7([0.99, 0.97, 0.5, 0.4, 0.3]) }], decide: [{ selected: "o2", confidence: 0.96 }] } });
+    on(repo, env);
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(r.code, 0, r.stdout);
+    assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500);
+    assert.equal(r.stdout.trim().split("\n").length, 1);
+    assert.equal(r.json.status, "selected");
+    assert.deepEqual(r.json.plan.map((p) => `${p.id}:${p.action}`), ["o2:execute", "o1:reserve"]);
+    assert.match(r.json.receipt, /^[0-9a-f]{32}$/);
+    assert.equal(serverLog(env).map((l) => l.name).join(), "jev_noul,jev_decide");
+    const budget = cli(["budget", "status", ...SID], { env, cwd: repo });
+    assert.equal(budget.json.used, 2);
+    assert.equal(budget.json.by_source.helper, 1);
+    assert.equal(budget.json.by_source.tiebreak, 1);
+    const ok = cli(["receipt", "verify", ...SID, "--id", r.json.receipt, "--option", "o2"], { env, cwd: repo });
+    assert.equal(ok.json.authorized, true);
+    const reserve = cli(["receipt", "verify", ...SID, "--id", r.json.receipt, "--option", "o1"], { env, cwd: repo });
+    assert.equal(reserve.code, 4);
+    assert.equal(reserve.json.authorized, false);
+  });
+  it("a batch with 20 options still prints at most 1.5 KB", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const probs = [0.99, ...Array(19).fill(0.2)];
+    const env = controlEnv({ script: { noul: [{ p: probs }] } });
+    on(repo, env);
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(18))], { env, cwd: repo });
+    assert.equal(r.json.status, "selected");
+    assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500, String(Buffer.byteLength(r.stdout.trim())));
+  });
+  it("an invalid batch is refused before anything is sent (exit 4)", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    on(repo, env);
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(3))], { env, cwd: repo });
+    assert.equal(r.code, 4);
+    assert.equal(r.json.status, "invalid");
+    assert.equal(serverLog(env).length, 0);
+  });
+  it("Jev unavailable after the single retry: exit 3 and 'Jev unavailable'; both attempts counted", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: { noul: [{ fail: "transport" }, { fail: "transport" }] } });
+    on(repo, env);
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(r.code, 3);
+    assert.match(r.json.message, /^Jev unavailable/);
+    assert.equal(serverLog(env).length, 2);
+    assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.used, 2);
+  });
+  it("headless: no eligible option after the rounds ends as incomplete, report starting Incomplete:", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const none = { p: p7([0.8, 0.7, 0.6, 0.5, 0.4]) };
+    const env = controlEnv({ script: { noul: [none, none, none] } });
+    on(repo, env);
+    const run1 = cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(run1.json.status, "expand");
+    const b1 = batchOf(5, { extra: { new_material: "n1" } });
+    b1.options[0].evidence = ["new 1"];
+    assert.equal(cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", writeBatch(b1)], { env, cwd: repo }).json.status, "expand");
+    const b2 = batchOf(5, { extra: { new_material: "n2" } });
+    b2.options[1].evidence = ["new 2"];
+    const last = cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", writeBatch(b2)], { env, cwd: repo });
+    assert.equal(last.json.status, "incomplete");
+    assert.match(last.json.report, /^Incomplete: /);
+    assert.equal(last.code, 2);
+  });
+  it("sanitizes: a credential in the evidence never reaches the server", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: noulScript(p7([0.99, 0.5, 0.4, 0.3, 0.2])) });
+    on(repo, env);
+    const batch = batchOf(5);
+    batch.options[0].evidence = [`the token is ${"sk-or-v1-" + "b".repeat(40)} in config`];
+    cli(["decide", ...SID, "--file", writeBatch(batch)], { env, cwd: repo });
+    const sent = JSON.stringify(serverLog(env));
+    assert.equal(sent.includes("sk-or-v1-bbbb"), false);
+    assert.equal(serverLog(env).length, 1);
+  });
+  it("a repository that opts out after activation sends nothing", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    on(repo, env);
+    writeFileSync(join(repo, ".jev-flow-denylist"), "*\n");
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(r.code, 4);
+    assert.equal(serverLog(env).length, 0);
+  });
+});
+
+describe("approvals, budget and direct calls", () => {
+  it("a user approval is bound to a logged decision and option and recorded as an override", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: noulScript(p7([0.9, 0.5, 0.4, 0.3, 0.2])) });
+    on(repo, env);
+    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(d.json.status, "expand");
+    const ok = cli(["approve", ...SID, "--decision", "dec9", "--option", "o1", "--message", "yes, use o1 although it scored 0.9"], { env, cwd: repo });
+    assert.equal(ok.json.override, "user");
+    const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
+    assert.equal(state.approvals.length, 1);
+    assert.equal(state.approvals[0].option, "o1");
+    assert.equal(cli(["approve", ...SID, "--decision", "nope", "--option", "o1", "--message", "yes"], { env, cwd: repo }).code, 4);
+    assert.equal(cli(["approve", ...SID, "--decision", "dec9", "--option", "zz", "--message", "yes"], { env, cwd: repo }).code, 4);
+  });
+  it("direct calls: reserve before, confirm after; at 25 the reservation is refused until the user approves more", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    on(repo, env);
+    const first = cli(["budget", "reserve", ...SID, "--tool", "jev_verify", "--source", "main"], { env, cwd: repo });
+    assert.equal(first.json.status, "ok");
+    assert.equal(cli(["budget", "confirm", ...SID, "--id", first.json.id, "--ok", "1", "--ms", "120"], { env, cwd: repo }).json.ok, true);
+    for (let i = 0; i < 24; i++) assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "subagent"], { env, cwd: repo }).json.status, "ok");
+    const over = cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo });
+    assert.equal(over.code, 2);
+    assert.equal(over.json.status, "budget_exhausted");
+    assert.match(over.json.message, /stop and ask the user/);
+    assert.equal(cli(["budget", "approve", ...SID], { env, cwd: repo }).json.limit, 50);
+    assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo }).json.status, "ok");
+  });
+});
+
+describe("the entry point", () => {
+  it("runs when started through a symlinked plugin path (Node leaves argv[1] unresolved)", () => {
+    const link = join(tempDir(), "plugin-link");
+    symlinkSync(join(REPO_ROOT, "private", "jev-control"), link);
+    const r = run(process.execPath, [join(link, "cli.mjs"), "--help"]);
+    assert.match(r.stdout, /^Usage: cli\.mjs on\|off\|status/);
+    const direct = run(process.execPath, [CONTROL_CLI, "--help"]);
+    assert.equal(direct.stdout, r.stdout);
+  });
+  it("prints a JSON error and a non-zero exit for an unknown command", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const r = cli(["frobnicate", ...SID], { env: controlEnv(), cwd: repo });
+    assert.equal(r.code, 4);
+    assert.match(r.json.message, /unknown command/);
+  });
+});
+
+describe("subagents and completion through the CLI", () => {
+  it("--source subagent attributes the helper's calls to the subagent; tie-breaks stay tiebreak", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: { noul: [{ p: p7([0.99, 0.97, 0.5, 0.4, 0.3]) }], decide: [{ selected: "o1", confidence: 0.97 }] } });
+    on(repo, env);
+    cli(["decide", ...SID, "--source", "subagent", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    const view = cli(["budget", "status", ...SID], { env, cwd: repo }).json;
+    assert.equal(view.by_source.subagent, 1);
+    assert.equal(view.by_source.tiebreak, 1);
+    assert.equal(view.by_source.helper, 0);
+  });
+  it("done runs the gate at the session threshold and counts the part as source gate", () => {
+    const repo = makeRepo({ "a.js": "export const a = 1;\n" });
+    const claims = ["a.js exports a = 2", "b.js is a new file exporting b = 3"];
+    const env = controlEnv({ script: { gate: [{ result: gateAnswer(0.9, { conf: 0.95 }, claims) }] } });
+    on(repo, env, ["--threshold", "0.9"]);
+    writeFiles(repo, { "a.js": "export const a = 2;\n", "b.js": "export const b = 3;\n" });
+    const file = join(tempDir(), "claims.json");
+    writeFileSync(file, JSON.stringify({ request: "set a to 2 and add b", claims: [{ text: claims[0], evidence: ["file:a.js"] }, { text: claims[1], evidence: ["file:b.js"] }] }));
+    const r = cli(["done", ...SID, "--claims", file], { env, cwd: repo });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(r.json.outcome, "accepted");
+    assert.equal(r.json.control.threshold, 0.9);
+    assert.equal(serverLog(env).filter((l) => l.name === "jev_gate")[0].args.auto_accept, 0.9);
+    assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.by_source.gate, 1);
+  });
+});
+
+describe("search through the CLI", () => {
+  it("finds the location with jev_rerank and prints a compact line", () => {
+    const repo = materialize(S3);
+    const env = controlEnv({ script: { rerank: [{ scores: { c0: 0.962, c1: 0.3, c2: 0.2, c3: 0.1 } }] } });
+    on(repo, env);
+    const r = cli(["search", ...SID, "--query", "delay between retries of a failed upload"], { env, cwd: repo });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(r.json.status, "found");
+    assert.equal(r.json.hits[0].path, "src/upload/retry.mjs");
+    assert.ok(Buffer.byteLength(r.stdout.trim()) <= 4096);
+    assert.equal(serverLog(env).map((l) => l.name).join(), "jev_rerank");
+  });
+  it("an exact path is a direct read with no Jev call", () => {
+    const repo = materialize(S3);
+    const env = controlEnv();
+    on(repo, env);
+    const r = cli(["search", ...SID, "--exact-path", "src/upload/retry.mjs"], { env, cwd: repo });
+    assert.equal(r.json.status, "direct_read");
+    assert.equal(serverLog(env).length, 0);
+  });
+});

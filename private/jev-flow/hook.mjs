@@ -6,6 +6,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { claimIdsOf, coversEarlierBatches, coversRunnerAttempts, diffHash, parseBatchLabel, verifyBatchContents } from "./gate-batch.mjs";
 import { extractLocatorHits, freshHits, grepCovers, HINT_RANGE_GREP, HINT_RANGE_READ, readExceedsHits, rememberHits } from "./locator-hits.mjs";
+import { controlActive } from "../jev-control/hook.mjs";
 import { loadDenylist } from "./paths.mjs";
 import {
   classifyShellCommand,
@@ -770,6 +771,10 @@ export function handleHook(event, input, env = process.env, now = Date.now()) {
   if (!handler) return null;
   const repoRoot = repoFor(input);
   if (!repoRoot) return null;
+  // jev-control takes over a session where its mode is ON: the flow's directives,
+  // hints and Stop redirects stand down (as with JEV_FLOW=off). The data guard,
+  // the state tracking and the denylist notice are unchanged. OFF changes nothing.
+  if (controlActive(repoRoot, input?.session_id, env)) env = { ...env, JEV_FLOW: "off" };
   const dir = sessionDir(repoRoot, input?.session_id, env);
   const isChild = typeof input?.agent_id === "string" && input.agent_id !== "";
   if (event === "Stop" && isChild) return null;

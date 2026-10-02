@@ -143,16 +143,19 @@ function reviewComposite(scores) {
  * is well formed and only misses the stricter flow minimums, `malformed` is
  * false and `below_flow_minimum` lists those misses.
  */
-export function validateGateResult(result, { claims } = {}) {
+export function validateGateResult(result, { claims, minimums = FLOW_GATE_MINIMUMS, strictAbove = null } = {}) {
   const problems = [];
   const belowFlow = [];
   // A value in [0,1] must satisfy the call's own threshold (else the `auto`
   // contradicts the tool's policy: malformed) and the flow minimum (else it is
-  // a valid answer that is not strong enough for the flow).
-  const atLeast = (value, callMin, flowMin, where) => {
+  // a valid answer that is not strong enough for the flow). jev-control passes
+  // its own `minimums` (no 0.8 floor) and `strictAbove`, the session threshold:
+  // a decision confidence must then be strictly above it (p > T, not p >= T).
+  const atLeast = (value, callMin, flowMin, where, isDecision = true) => {
     if (!inUnit(value)) return problems.push(`${where}_domain`);
     if (inUnit(callMin) && value < callMin) return problems.push(`${where}_below_call_threshold`);
     if (value < Math.max(inUnit(callMin) ? callMin : 1, flowMin)) belowFlow.push(`${where}_below_flow_minimum`);
+    if (strictAbove !== null && isDecision && !(value > strictAbove)) belowFlow.push(`${where}_not_above_threshold`);
   };
   if (!result || typeof result !== "object" || result.tool !== "jev_gate") {
     return { accepted: false, problems: ["not_a_jev_gate_result"], malformed: true, below_flow_minimum: [] };
@@ -185,7 +188,7 @@ export function validateGateResult(result, { claims } = {}) {
           continue;
         }
         if (!isNumber(entry.score) || entry.score < 0 || entry.score > 2) problems.push(`review_${rubric}_score_domain`);
-        atLeast(entry.confidence, t.auto_accept, FLOW_GATE_MINIMUMS.confidence, `review_${rubric}_confidence`);
+        atLeast(entry.confidence, t.auto_accept, minimums.confidence, `review_${rubric}_confidence`);
         problems.push(...scoreDistributionProblems(entry.probabilities, entry.score, `review_${rubric}`));
         rubricScores[rubric] = entry.score;
       }
@@ -193,9 +196,9 @@ export function validateGateResult(result, { claims } = {}) {
     if (!inUnit(review.composite)) problems.push("review_composite_domain");
     else {
       if (Object.keys(rubricScores).length === 4 && Math.abs(reviewComposite(rubricScores) - review.composite) > 1e-6) problems.push("review_composite_inconsistent");
-      atLeast(review.composite, t.composite_floor, FLOW_GATE_MINIMUMS.composite, "review_composite");
+      atLeast(review.composite, t.composite_floor, minimums.composite, "review_composite", false);
     }
-    atLeast(review.safe_to_apply, t.auto_accept, FLOW_GATE_MINIMUMS.safe_to_apply, "review_safe_to_apply");
+    atLeast(review.safe_to_apply, t.auto_accept, minimums.safe_to_apply, "review_safe_to_apply");
   }
 
   const verification = result.verification;
@@ -210,7 +213,7 @@ export function validateGateResult(result, { claims } = {}) {
       if (claim.status !== undefined) problems.push(`claim_${i}_status_${claim.status}`);
       if (claim.verdict !== "verified") problems.push(`claim_${i}_${claim.verdict ?? "no_verdict"}`);
       if (claim.action !== "auto") problems.push(`claim_${i}_action_${claim.action ?? "missing"}`);
-      atLeast(claim.confidence, t.auto_accept, FLOW_GATE_MINIMUMS.confidence, `claim_${i}_confidence`);
+      atLeast(claim.confidence, t.auto_accept, minimums.confidence, `claim_${i}_confidence`);
       problems.push(...distributionProblems(claim.probabilities, CLAIM_VERDICTS, claim.verdict, `claim_${i}`));
     });
     const summary = verification.summary;
@@ -250,7 +253,7 @@ export function validateGateResult(result, { claims } = {}) {
  * Routes: stop_contradiction | retry_or_unavailable | ask_user | needs_evidence | accepted
  * (a well-formed auto below the flow minimums routes to ask_user, a malformed one to retry_or_unavailable)
  */
-export function interpretGate(result, { claims } = {}) {
+export function interpretGate(result, { claims, minimums, strictAbove } = {}) {
   if (!result || result.tool !== "jev_gate") {
     return { route: "retry_or_unavailable", reasons: ["missing_or_unparseable_result"] };
   }
@@ -268,7 +271,7 @@ export function interpretGate(result, { claims } = {}) {
     return { route: "retry_or_unavailable", reasons: ["invalid_response"] };
   }
   if (result.action === "auto") {
-    const check = validateGateResult(result, { claims });
+    const check = validateGateResult(result, { claims, ...(minimums ? { minimums } : {}), ...(strictAbove !== undefined ? { strictAbove } : {}) });
     if (check.accepted) return { route: "accepted", reasons: codes };
     // A malformed or inconsistent "auto" is treated like an invalid response.
     if (check.malformed) return { route: "retry_or_unavailable", reasons: check.problems };

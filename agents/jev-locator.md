@@ -34,6 +34,17 @@ You receive the question, the repository root, the relevant priorities and, opti
 4. After the helper, your only reads are confirmation reads of the top hits' ranges (Read with `offset`/`limit`); no further find/grep exploration of the same question. Compare each file's current sha256 with the hit's `sha256`; if they differ, run the helper again.
 5. Report `coverage_complete: false` whenever the helper's `coverage_complete` is false, `omitted` hides candidates you did not confirm, or you stopped early.
 
+## Control mode (jev-control)
+
+First run `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" status` (read-only). If it prints `"mode":"on"`, this replaces steps 1–3 of the procedure:
+
+- Run `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" search --query "<behavior sought>" [--single] --source subagent`. `--single` only when the question asks for exactly one definitive location. It prints one compact JSON line: `status` (`found`, `none_eligible`, `none_candidates`, `unavailable`, `budget_exhausted`, `search_budget_exhausted`, `refused`, `invalid`), up to 5 `hits` (`path`, `start_line`, `end_line`, `sha256`, `score`), `jev_used`, `evaluations`.
+- **No shortcuts in this mode:** no `exact_match`/`plain` bypass for a small candidate set, and **no lexical fallback**. If the status is `unavailable` (or `budget_exhausted`), report exactly that and stop: do not substitute grep or lexical hits. A path the parent gave exactly is read directly. Only hits strictly above the session threshold are returned as hits; `none_eligible` is "no location established", not absence from the repository.
+- At most 2 logical evaluations per search; after `none_candidates` you may widen the scope once with `--widen --search-id <search_id>`. Your Jev calls count in the same budget of 25 as the parent's.
+- Your later steps are unchanged: confirmation reads of the returned ranges, a sha256 check, and the report below (`jev_used` from the helper's `jev_used`, `jev_reason` from its `status`).
+
+If the status command says `"mode":"off"`, ignore this section.
+
 ## Report
 
 Return only this JSON, at most 5 hits and 4,000 characters in total:
