@@ -120,7 +120,7 @@ describe("the user's words as an authorization", () => {
     assert.equal(findAuthorizations("yes ok", "ok").found, false, "words shorter than 3 characters are never matched");
     const both = findAuthorizations("Do not increase the budget. Yes, increase the budget by 5.", "increase the budget");
     assert.equal(both.found, true);
-    assert.equal(both.occurrences.length, 1, "only the granting occurrence counts");
+    assert.equal(both.occurrences.length, 0, "a restriction before the approval is not overridden by it: order is no revocation");
     assert.equal(findAuthorizations("Yes, go ahead and\nincrease the budget", "go ahead and increase the budget").occurrences.length, 1, "a line break inside the words is whitespace");
     assert.equal(findAuthorizations("Use Node 22.", "use node 22").occurrences.length, 0, "an unrelated instruction is found but is no authorization");
     assert.equal(findAuthorizations("Use Node 22.", "use node 22").found, true);
@@ -133,8 +133,29 @@ describe("the user's words as an authorization", () => {
     assert.equal(n("Increase the budget by 25 calls. Then fix the parser.", "Increase the budget by 25 calls."), 1, "an unrelated later sentence is fine");
     assert.equal(n("Approve o1. Actually no, do not approve o1.", "Approve o1.", optionScope("o1")), 0);
     assert.equal(n("Approve o1. Keep o1 out.", "Approve o1.", optionScope("o1")), 0);
-    assert.equal(n("Approve o1. Approve o2.", "Approve o1.", optionScope("o1")), 1, "a later approval of another option is no retraction");
-    assert.equal(n("Do not increase the budget. Yes, increase the budget by 5.", "increase the budget"), 1, "a retraction BEFORE the approval is overridden by it");
+    assert.equal(n("Approve o1. Approve o2.", "Approve o1.", optionScope("o1")), 0, "a short later sentence about something else may be a change of choice: asked again");
+    assert.equal(n("Approve o1. Then approve o2 as well once o1 is done.", "Approve o1.", optionScope("o1")), 0, "a later sentence that names the option without approving it");
+    assert.equal(n("Do not increase the budget. Yes, increase the budget by 5.", "increase the budget"), 0, "a restriction BEFORE the approval is not revoked by its order");
+    // The retraction need not be on any list: a later short sentence that is not plain politeness voids, a polite one or a long unrelated one does not.
+    for (const later of ["Skip that.", "Forget that.", "Change of plan.", "Hold off.", "Skip it.", "I changed my mind.", "Nope.", "Hmm, ok.", "Disregard what I said above, please."]) {
+      assert.equal(n(`Increase the budget by 25 calls. ${later}`, "Increase the budget by 25 calls."), 0, later);
+      assert.equal(n(`Approve o1. ${later}`, "Approve o1.", optionScope("o1")), 0, later);
+    }
+    assert.equal(n("Mărește bugetul cu 25. M-am răzgândit.", "Mărește bugetul cu 25."), 0);
+    for (const later of ["Thanks!", "Thank you.", "Mersi!", "Then fix the parser and run the whole suite afterwards."]) {
+      assert.equal(n(`Increase the budget by 25 calls. ${later}`, "Increase the budget by 25 calls."), 1, later);
+      assert.equal(n(`Approve o1. ${later}`, "Approve o1.", optionScope("o1")), 1, later);
+    }
+    // The whole message is read, before and after: a ceiling or a contradicting approval is not silently overridden.
+    assert.equal(n("The maximum total budget is 30 calls. Increase the budget.", "Increase the budget."), 0, "a ceiling before the approval");
+    assert.equal(n("Increase the budget to 30 calls. Increase the budget to 27 calls.", "Increase the budget to 30 calls."), 0, "a contradicting approval after");
+    assert.equal(n("Increase the budget to 30 calls. Increase the budget to 27 calls.", "Increase the budget to 27 calls."), 0, "or before");
+    assert.equal(n("Increase the budget by 25 calls. Increase the budget by 5 calls instead.", "Increase the budget by 25 calls."), 0);
+    assert.equal(n("Increase the budget to 30 calls. Increase the budget by 5 calls.", "Increase the budget to 30 calls."), 0, "a total and an increment are not compared");
+    assert.equal(n("Increase the budget by 10 calls. Increase the budget by 10 calls.", "Increase the budget by 10 calls."), 2, "the same approval said twice does not contradict itself");
+    assert.equal(n("Yes, continue past the limit. Yes, approve 25 more calls please.", "continue past the limit"), 1, "no number is the default step of 25");
+    assert.equal(n("Approve o1. Keep o1 out.", "Approve o1.", optionScope("o1")), 0);
+    assert.equal(n("Approve o1. Approve o1.", "Approve o1.", optionScope("o1")), 2);
   });
   it("the identity of an authorization is the sentence, not where the quoted fragment starts", () => {
     const whole = findAuthorizations("Yes, increase the budget by 5 calls.", "Yes, increase the budget by 5 calls.");

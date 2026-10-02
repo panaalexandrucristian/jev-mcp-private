@@ -537,8 +537,9 @@ describe("Jev calls and budget", () => {
     });
     it("a retraction or narrowing in the same source message voids the sentence the model quotes", () => {
       const spend = (calls) => [...decide(decideOut({ calls: 20, status: "expand", scores: [] })), ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: calls }))];
-      for (const said of ["Increase the budget by 25 calls. Actually no, keep the limit.", "Increase the budget by 25 calls. Actually, keep the limit.", "Increase the budget by 25 calls. But only 10."]) {
-        const a = audit([prompt(said), ...approve(25, "Increase the budget by 25 calls."), ...spend(6)]);
+      for (const said of ["Increase the budget by 25 calls. Actually no, keep the limit.", "Increase the budget by 25 calls. Actually, keep the limit.", "Increase the budget by 25 calls. But only 10.", "Increase the budget by 25 calls. Nope.", "Increase the budget by 25 calls. I changed my mind.", "Increase the budget by 25 calls. Skip that.", "Mărește bugetul cu 25. M-am răzgândit."]) {
+        const quoted = said.split(/(?<=\.)\s+/)[0];
+        const a = audit([prompt(said), ...approve(25, quoted), ...spend(6)]);
         assert.deepEqual(a.budget.unbound.map((u) => u.reason), ["not_an_authorization"], said);
         assert.equal(a.jev_calls.per_request[0].approved_extra, 0, said);
         assert.equal(a.jev_calls.per_request[0].limit, 25, said);
@@ -546,9 +547,39 @@ describe("Jev calls and budget", () => {
       }
       const whole = audit([prompt("Increase the budget by 25 calls. Actually no, keep the limit."), ...approve(25, "Increase the budget by 25 calls. Actually no, keep the limit.")]);
       assert.equal(whole.budget.approvals_bound, 0, "the whole message is no authorization either");
-      const fine = audit([prompt("Increase the budget by 25 calls. Then fix the parser."), ...approve(25, "Increase the budget by 25 calls."), ...spend(6)]);
-      assert.equal(fine.jev_calls.per_request[0].approved_extra, 25, "a later sentence that talks about something else does not void it");
-      assert.deepEqual(fine.jev_calls.violations, []);
+      for (const ok of ["Increase the budget by 25 calls. Then fix the parser and run the whole suite afterwards.", "Increase the budget by 25 calls. Thanks!"]) {
+        const fine = audit([prompt(ok), ...approve(25, "Increase the budget by 25 calls."), ...spend(6)]);
+        assert.equal(fine.jev_calls.per_request[0].approved_extra, 25, `${ok}: a polite or long unrelated later sentence does not void it`);
+        assert.deepEqual(fine.jev_calls.violations, []);
+      }
+    });
+    it("the whole source message is read before and after the quoted sentence: a ceiling or a contradicting approval is not overridden", () => {
+      const spend = (calls) => [...decide(decideOut({ calls: 20, status: "expand", scores: [] })), ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: calls }))];
+      const cases = [
+        ["The maximum total budget is 30 calls. Increase the budget.", "Increase the budget."],
+        ["Increase the budget to 30 calls. Increase the budget to 27 calls.", "Increase the budget to 30 calls."],
+        ["Increase the budget to 30 calls. Increase the budget to 27 calls.", "Increase the budget to 27 calls."],
+        ["Increase the budget by 25 calls. Increase the budget by 5 calls instead.", "Increase the budget by 25 calls."],
+        ["Do not increase the budget. Yes, increase the budget by 25 calls.", "Yes, increase the budget by 25 calls."],
+      ];
+      for (const [said, quoted] of cases) {
+        const a = audit([prompt(said), ...approve(25, quoted), ...spend(6)]);
+        assert.equal(a.jev_calls.per_request[0].approved_extra, 0, said);
+        assert.equal(a.jev_calls.per_request[0].limit, 25, said);
+        assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }], `${said}: call 26 (quoted ${quoted})`);
+      }
+    });
+    it("a retraction after an option approval voids the quoted sentence too", () => {
+      const stop = decideOut({ status: "ask_user", scores: ["o1:0.7"] });
+      const okOut = json({ status: "ok", override: "user", decision_id: "d1", option: "o1", ah: ah("Edit", "src/x.mjs") });
+      for (const said of ["Approve o1. I changed my mind.", "Approve o1. Skip that.", "Approve o1. Nope.", "Approve o1. Actually no, do not approve o1.", "Approve o1. Keep o1 out."]) {
+        const a = audit([prompt(said), ...decide(stop), ...call(helper("approve", '--decision d1 --option o1 --message "Approve o1."'), okOut), ...edit("src/x.mjs")]);
+        assert.equal(a.threshold.approvals_unbound, 1, said);
+        assert.equal(a.coverage.covered, 0, said);
+      }
+      const fine = audit([prompt("Approve o1. Thanks!"), ...decide(stop), ...call(helper("approve", '--decision d1 --option o1 --message "Approve o1."'), okOut), ...edit("src/x.mjs")]);
+      assert.equal(fine.threshold.approvals_unbound, 0);
+      assert.equal(fine.coverage.covered, 1);
     });
     it("the whole sentence and then a fragment of it are ONE authorization: at most 5 more calls, limit 30", () => {
       const rec = [prompt("Yes, increase the budget by 5 calls."), ...call(helper("budget", 'approve --n 5 --message "Yes, increase the budget by 5 calls."'), json({ status: "ok", used: 20, limit: 30, approval: { n: 5, msg: "Yes, increase the budget by 5 calls." } })), ...call(helper("budget", 'approve --n 5 --message "increase the budget by 5 calls."'), json({ status: "ok", used: 20, limit: 35, approval: { n: 5, msg: "increase the budget by 5 calls." } }))];

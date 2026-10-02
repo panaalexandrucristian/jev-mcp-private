@@ -17,7 +17,7 @@ const words = (list) => new RegExp(wordsSrc(list), "u");
 
 // A negated, refused or forbidden sentence is never an authorization.
 const NEGATION = new RegExp(
-  `${wordsSrc("not|no|never|none|nothing|nobody|dont|don['’]t|doesnt|doesn['’]t|didnt|didn['’]t|wont|won['’]t|wouldnt|wouldn['’]t|shouldnt|shouldn['’]t|cant|can['’]t|cannot|couldnt|couldn['’]t|without|stop|deny|denied|refuse|refused|reject|rejected|decline|declined|forbid|forbidden|prohibit|prohibited|neither|nor|avoid|nu|nici|nicio|niciun|niciodată|niciodata|nimic|fără|fara|refuz|refuza|refuzat|interzis|interzic|oprește|opreste|stop")}|n['’]t(?![\\p{L}])`,
+  `${wordsSrc("not|no|never|none|nothing|nobody|dont|don['’]t|doesnt|doesn['’]t|didnt|didn['’]t|wont|won['’]t|wouldnt|wouldn['’]t|shouldnt|shouldn['’]t|cant|can['’]t|cannot|couldnt|couldn['’]t|without|stop|deny|denied|refuse|refused|reject|rejected|decline|declined|forbid|forbidden|prohibit|prohibited|neither|nor|nope|nah|nicidecum|deloc|avoid|nu|nici|nicio|niciun|niciodată|niciodata|nimic|fără|fara|refuz|refuza|refuzat|interzis|interzic|oprește|opreste|stop")}|n['’]t(?![\\p{L}])`,
   "u",
 );
 // A question or a condition is not a decision yet.
@@ -243,19 +243,46 @@ export function sameAuthorization(msg, question, prev, prevQuestion) {
   return a.includes(b) || b.includes(a);
 }
 
-// A later sentence of the same message that takes an approval back or narrows it: «Actually no, keep the limit.», «But only 10.»
+// A later sentence of the same message that takes an approval back or narrows it. Not the only protection (see contextAllows:
+// a short non-polite sentence also voids), only the explicit expressions: «Actually no, keep the limit.», «I changed my mind.»
 const RETRACT = new RegExp(
-  `(?:^|[;:]\\s*)(?:and |ok |okay |well |so )?${wordsSrc("actually|wait|however|but|sorry|correction|oops|hold on|on second thought|de fapt|stai|totuși|totusi|dar|ps")}|${wordsSrc("only|doar|exclusiv|cancel|cancelled|canceled|retract|retracted|revoke|revoked|undo|scratch that|never mind|nevermind|forget it|ignore|disregard|ignoră|ignora|anulez|anulează|anuleaza|retrag|uită|uita")}`,
+  `(?:^|[;:]\\s*)(?:and |ok |okay |well |so )?${wordsSrc("actually|wait|however|but|sorry|correction|oops|hold on|hold off|on second thought|de fapt|stai|totuși|totusi|dar|ps")}|${wordsSrc("only|doar|exclusiv|cancel|cancelled|canceled|retract|retracted|revoke|revoked|undo|revert|rollback|scratch|scratch that|never mind|nevermind|forget|forget it|skip|ignore|disregard|changed my mind|change my mind|changing my mind|second thoughts|ignoră|ignora|anulez|anulează|anuleaza|retrag|uită|uita|lasă|lasa|răzgândit|razgandit|răzgândesc|razgandesc|nope|nah|nicidecum|deloc")}`,
   "u",
 );
+// Pure politeness or a closing: the only short sentences that leave an approval standing.
+const POLITE = new Set(["thanks", "thank", "thx", "you", "a", "lot", "mersi", "mulțumesc", "multumesc", "please", "pls", "ok", "okay", "great", "perfect", "cheers", "yes", "yeah", "sure", "da", "te", "rog", "awesome", "good", "nice"]);
+const isShortNonPolite = (s) => {
+  const t = tokensOf(s);
+  return t.length <= 3 && !t.every((w) => POLITE.has(w));
+};
 const mentions = (s, scope) => (scope.kind === "option" ? idPositions(tokensOf(s), scope.id).length > 0 : tokensOf(s).some((w) => BUDGET_NOUN.has(w) || numberOf(w) !== undefined));
+/** The quantity as it would be spent: no number at all is the default step. */
+const effectiveQuantity = (q) => (q.kind === "none" ? { kind: "increment", n: BUDGET_LIMIT } : q);
+const sameQuantity = (a, b) => (a.kind === "increment" || a.kind === "total") && a.kind === b.kind && a.n === b.n;
 /**
- * Does this LATER sentence of the source message void an approval before it? One that is itself refused (a negation, a
- * question, a condition, a quotation), one that retracts or narrows («actually», «but only», «cancel»), or one that talks about
- * the scope (the budget, a number, the option) without being a complete approval of it («keep the limit», «10 only»). A later
- * approval of the same scope does not void it. What cannot be read safely voids: the user is asked again.
+ * May the approval found in `idx` stand in the context of the WHOLE source message? Every other sentence is read:
+ *  - one that talks about the scope (the budget, a number, the option) must itself be a complete approval of it, with the same
+ *    quantity («Increase the budget to 30 calls. Increase the budget to 27 calls.» contradict each other; «The maximum total
+ *    budget is 30 calls.» before an approval is a ceiling nobody read: neither stands). Order is no revocation: a restriction
+ *    before the approval is not overridden by it, nor is an approval after a restriction;
+ *  - a LATER one that is refused (negation, question, condition, quotation), retracts or narrows, or is a short sentence
+ *    (three words at most) that is not plain politeness voids it («Nope.», «Skip that.», «I changed my mind.»);
+ *  - any other sentence (a longer, unrelated one) leaves it standing.
+ * What cannot be read safely voids: the user is asked again.
  */
-const voidsEarlier = (sentence, scope) => refuses(sentence) || RETRACT.test(sentence) || (mentions(sentence, scope) && !approvesScope(sentence, scope));
+function contextAllows(sentences, idx, scope, quantity) {
+  const last = Math.max(...idx);
+  const mine = effectiveQuantity(quantity);
+  for (let i = 0; i < sentences.length; i++) {
+    if (idx.includes(i)) continue;
+    const s = sentences[i];
+    if (mentions(s, scope)) {
+      if (refuses(s) || !approvesScope(s, scope)) return false;
+      if (scope.kind === "budget" && !sameQuantity(mine, effectiveQuantity(quantityOf([s])))) return false;
+    } else if (i > last && (refuses(s) || RETRACT.test(s) || isShortNonPolite(s))) return false;
+  }
+  return true;
+}
 
 /**
  * Where `message` occurs in the user's `text` as an authorization of `scope`. Each occurrence is judged with the WHOLE
@@ -282,8 +309,8 @@ export function findAuthorizations(text, message, scope = BUDGET_SCOPE, question
     const to = from + m.length;
     const idx = sentences.map((_, i) => i).filter((i) => spans[i][0] < to && spans[i][1] > from);
     const r = judge(idx.map((i) => sentences[i]), scope, question);
-    // The fragment is judged in the context of the whole source message: a later retraction or narrowing in it voids the grant.
-    if (r.ok && !sentences.slice(Math.max(...idx) + 1).some((later) => voidsEarlier(later, scope))) out.occurrences.push({ sentences: idx, quantity: r.quantity });
+    // The fragment is judged in the context of the whole source message: a restriction or a contradiction in it, before or after, and a later retraction void the grant.
+    if (r.ok && contextAllows(sentences, idx, scope, r.quantity)) out.occurrences.push({ sentences: idx, quantity: r.quantity });
   }
   return out;
 }

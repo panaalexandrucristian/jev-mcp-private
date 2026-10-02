@@ -5,7 +5,7 @@
 | Check | Result |
 | --- | --- |
 | `node --test private/jev-flow/test/` | 324 tests, 61 suites, 324 pass, exit 0 |
-| `node --test private/jev-control/test/` | 416 tests, 77 suites, 416 pass, exit 0 |
+| `node --test private/jev-control/test/` | 418 tests, 77 suites, 418 pass, exit 0 |
 | `claude plugin validate .` (Claude Code 2.1.288) | passed, exit 0 (it does not check hook event names) |
 | `node private/jev-control/fixtures/seal.mjs verify` | ok (dev oracle hashes and sealed final hashes recorded) |
 | `git diff --check` | clean |
@@ -70,6 +70,14 @@ The seventh review found that «Continue with the current budget.» and «Spend 
 
 - **Using the budget is not raising it** (`authorization.mjs`; `cli.mjs`, `budget.mjs`, `measure.mjs` share it): a budget approval must also be an approval of a raise or of going beyond the limit (a raise verb, «more/extra/another», «past/beyond/over the limit», a stated number); «Continue with the current budget.», «Spend the current budget.», «Approve the budget.» and «Continue.» raise nothing, so the limit stays 25 and call 26 is a violation. The default step of 25 applies only to an approval that demonstrably raises or exceeds the limit («Increase the budget.», «Continue past the limit.»). The phrase «Yes, go ahead with the budget.» in the older tests became «Yes, go ahead and raise the budget.».
 - **The quoted fragment is judged in the context of the whole source message** (`findAuthorizations`, used by the audit): a LATER sentence of the same message that is refused (negation, question, condition, quotation), retracts or narrows («actually», «but», «only», «cancel», «ignore», …), or talks about the scope (the budget, a number, the option) without being a complete approval of it («keep the limit», «10 only», «Keep o1 out») voids the earlier approval; a later approval of the same scope, or an unrelated sentence, does not. A retraction before the approval is overridden by it. What cannot be read safely is not granted; the user is asked again. Audit tests cover the full source message and the selective quotation for the budget and for an option.
+
+## Fix round 8 (after the eighth review)
+
+The eighth review found that the retraction check of fix round 7 was still a word list («Nope.», «I changed my mind.», «Skip that.», «M-am răzgândit.» after an approval did not void it) and that only LATER sentences were read: a ceiling before the quoted sentence («The maximum total budget is 30 calls. Increase the budget.») or a contradicting approval after it («Increase the budget to 30 calls. Increase the budget to 27 calls.») was ignored, so the audit granted calls the user had not authorized. Fixed and tested offline (418 tests, 77 suites):
+
+- **The whole source message is read** (`authorization.mjs` `contextAllows`, used by `findAuthorizations` and therefore by the audit; the helper sees only `--message` and is unchanged): every OTHER sentence of the message that talks about the scope (the budget, a number, the option) — before or after the quoted one — must itself be a complete approval of it with the same quantity (no number is the default step of 25; a total and an increment are never compared); a restriction, a ceiling or a contradicting approval makes the quoted sentence void. Order is no revocation: «Do not increase the budget. Yes, increase the budget by 25 calls.» is no longer granted (it was in fix round 7).
+- **A LATER sentence voids when** it is refused (negation incl. nope/nah/nicidecum/deloc, question, condition, quotation), retracts or narrows (explicit expressions: changed my mind, scratch, forget, skip, undo, revert, cancel, hold on/off, m-am răzgândit, anulează, stai, …), or is a short sentence (three words or fewer) that is not plain thanks (thanks, thank you, mersi, mulțumesc, please, ok, great, …). A longer unrelated sentence («Then fix the parser and run the whole suite afterwards.») and plain thanks leave the approval standing. «Approve o1. Approve o2.» is now asked again (a short later sentence may be a change of choice).
+- **Consequence:** an approval is best given alone or as the last substantive sentence of the user's message; otherwise the user is asked again. Parser tests, and audit tests with the full source message and the selective quotation for the budget (call 26 is a violation) and for an option (unbound, no coverage).
 
 ## Not measured, not verified
 

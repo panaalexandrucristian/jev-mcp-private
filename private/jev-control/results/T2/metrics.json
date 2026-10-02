@@ -34,9 +34,9 @@
       "exit": 0
     },
     "node --test private/jev-control/test/": {
-      "tests": 416,
+      "tests": 418,
       "suites": 77,
-      "pass": 416,
+      "pass": 418,
       "fail": 0,
       "exit": 0
     },
@@ -101,6 +101,12 @@
     "authorization_identity": "an authorization is spent by source message and sentence indexes; the helper treats words contained in an earlier approval's words as the same authorization",
     "total_vs_increment": "a total (to N, N in total) is measured against the limit in force; an increment (by N, N more) is added; an ambiguous number raises nothing",
     "finalization_mutations": "Bash, Agent, Task and unclassified tools after an accepted done invalidate it (changed_after_accepted); Incomplete stays a legitimate stop",
+    "live": "unmeasured"
+  },
+  "fix_round_8": {
+    "whole_message_context": "findAuthorizations reads every other sentence of the source message: one that talks about the scope (budget noun, number, option id) must itself be a complete approval with the same quantity, before or after the quoted sentence; a ceiling, restriction or contradicting approval voids it; order is no revocation",
+    "later_sentences": "a later refused, explicitly retracting, or short (<=3 words, not plain thanks) sentence voids the approval; a long unrelated sentence or plain thanks does not",
+    "tests": {"control": "418 tests, 77 suites"},
     "live": "unmeasured"
   },
   "fix_round_7": {
