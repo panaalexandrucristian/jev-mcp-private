@@ -547,9 +547,27 @@ describe("Jev calls and budget", () => {
       }
       const whole = audit([prompt("Increase the budget by 25 calls. Actually no, keep the limit."), ...approve(25, "Increase the budget by 25 calls. Actually no, keep the limit.")]);
       assert.equal(whole.budget.approvals_bound, 0, "the whole message is no authorization either");
-      for (const ok of ["Increase the budget by 25 calls. Then fix the parser and run the whole suite afterwards.", "Increase the budget by 25 calls. Thanks!"]) {
+      // Closed world: after the approval only politeness or the same approval again; a long paraphrased retraction or an unrelated instruction voids it, quoted in part or whole.
+      for (const said of ["Increase the budget by 25 calls. Then fix the parser and run the whole suite afterwards.", "Increase the budget by 25 calls. Please refrain from doing that, it is too expensive for us.", "Increase the budget by 25 calls. On reflection I would prefer that you leave things as they are.", "Increase the budget by 25 calls. Let's hold off on that for now though.", "Increase the budget by 25 calls. Keep it under the ceiling we agreed yesterday."]) {
+        const quoted = said.split(/(?<=\.)\s+/)[0];
+        for (const q of [quoted, said]) {
+          const a = audit([prompt(said), ...approve(25, q), ...spend(6)]);
+          assert.deepEqual(a.budget.unbound.map((u) => u.reason), ["not_an_authorization"], `${said} (quoted ${q})`);
+          assert.equal(a.jev_calls.per_request[0].approved_extra, 0, said);
+          assert.equal(a.jev_calls.per_request[0].limit, 25, said);
+          assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }], `${said}: call 26`);
+        }
+      }
+      // A retraction does not become harmless by being quoted with the approval: the whole message, or a part that holds both but not the whole message.
+      for (const [said, q] of [["Increase the budget by 25 calls. Skip that.", "Increase the budget by 25 calls. Skip that."], ["Increase the budget by 25 calls. I changed my mind.", "Increase the budget by 25 calls. I changed my mind."], ["Increase the budget by 25 calls. Skip that. Thanks!", "Increase the budget by 25 calls. Skip that."], ["Thanks. Increase the budget by 25 calls. I changed my mind.", "Increase the budget by 25 calls. I changed my mind."]]) {
+        const a = audit([prompt(said), ...approve(25, q), ...spend(6)]);
+        assert.equal(a.budget.approvals_bound, 0, `${said} (quoted ${q})`);
+        assert.equal(a.jev_calls.per_request[0].limit, 25, said);
+        assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }], `${said}: call 26`);
+      }
+      for (const ok of ["Increase the budget by 25 calls. Thanks!", "Increase the budget by 25 calls. Thank you, please.", "Increase the budget by 25 calls. Increase the budget by 25 calls."]) {
         const fine = audit([prompt(ok), ...approve(25, "Increase the budget by 25 calls."), ...spend(6)]);
-        assert.equal(fine.jev_calls.per_request[0].approved_extra, 25, `${ok}: a polite or long unrelated later sentence does not void it`);
+        assert.equal(fine.jev_calls.per_request[0].approved_extra, 25, `${ok}: plain politeness or the identical approval does not void it`);
         assert.deepEqual(fine.jev_calls.violations, []);
       }
     });
@@ -572,10 +590,16 @@ describe("Jev calls and budget", () => {
     it("a retraction after an option approval voids the quoted sentence too", () => {
       const stop = decideOut({ status: "ask_user", scores: ["o1:0.7"] });
       const okOut = json({ status: "ok", override: "user", decision_id: "d1", option: "o1", ah: ah("Edit", "src/x.mjs") });
-      for (const said of ["Approve o1. I changed my mind.", "Approve o1. Skip that.", "Approve o1. Nope.", "Approve o1. Actually no, do not approve o1.", "Approve o1. Keep o1 out."]) {
-        const a = audit([prompt(said), ...decide(stop), ...call(helper("approve", '--decision d1 --option o1 --message "Approve o1."'), okOut), ...edit("src/x.mjs")]);
-        assert.equal(a.threshold.approvals_unbound, 1, said);
-        assert.equal(a.coverage.covered, 0, said);
+      for (const said of ["Approve o1. I changed my mind.", "Approve o1. Skip that.", "Approve o1. Nope.", "Approve o1. Actually no, do not approve o1.", "Approve o1. Keep o1 out.", "Approve o1. Please refrain from doing that, it is too expensive for us.", "Approve o1. On reflection I would prefer that you leave things as they are.", "Approve o1. Then fix the parser and run the whole suite afterwards."]) {
+        const quoted = said.split(/(?<=\.)\s+/)[0];
+        // The model quotes the first sentence, the whole message, or (when there is a closing sentence) a part holding approval and retraction.
+        for (const q of [quoted, said, `${said} Thanks!`]) {
+          const src = q === `${said} Thanks!` ? q : said;
+          const quotedWords = q === `${said} Thanks!` ? said : q;
+          const a = audit([prompt(src), ...decide(stop), ...call(helper("approve", `--decision d1 --option o1 --message "${quotedWords}"`), okOut), ...edit("src/x.mjs")]);
+          assert.equal(a.threshold.approvals_unbound, 1, `${src} (quoted ${quotedWords})`);
+          assert.equal(a.coverage.covered, 0, `${src} (quoted ${quotedWords})`);
+        }
       }
       const fine = audit([prompt("Approve o1. Thanks!"), ...decide(stop), ...call(helper("approve", '--decision d1 --option o1 --message "Approve o1."'), okOut), ...edit("src/x.mjs")]);
       assert.equal(fine.threshold.approvals_unbound, 0);

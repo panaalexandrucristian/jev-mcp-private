@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { affirmative, BUDGET_SCOPE, findAuthorizations, incrementFor, optionScope, quantityOf, readMessage, sameAuthorization, sentencesOf } from "../authorization.mjs";
 
 const grants = (text, scope, question) => readMessage(text, scope, question).authorization;
+const readsOk = (text, scope) => readMessage(text, scope).authorization;
 const q = (text) => quantityOf(sentencesOf(text));
 
 describe("the user's words as an authorization", () => {
@@ -45,8 +46,8 @@ describe("the user's words as an authorization", () => {
       assert.equal(grants(words, optionScope("o2")), o2, `${words} for o2`);
     }
     assert.equal(grants("Approve o1 and approve o2", optionScope("o2")), false, "a list in one sentence is not interpreted");
-    assert.equal(grants("Approve o1. Approve o2.", optionScope("o2")), true, "each option with its own sentence");
-    assert.equal(grants("Approve o1. Approve o2.", optionScope("o1")), true);
+    assert.equal(grants("Approve o1. Approve o2.", optionScope("o2")), true, "the last substantial sentence stands");
+    assert.equal(grants("Approve o1. Approve o2.", optionScope("o1")), false, "a later sentence that is not politeness or the same approval voids it: ask for one option per message");
     assert.equal(grants("yes", optionScope("o2"), "Approve o1 instead of o2?"), false, "the question puts o2 aside");
     assert.equal(grants("yes", optionScope("o1"), "Approve o1 instead of o2?"), true);
     // A question completes only a bare answer, and only when it has ONE demonstrable target; an answer that selects an option stays with it.
@@ -130,7 +131,7 @@ describe("the user's words as an authorization", () => {
     assert.equal(n("Increase the budget by 25 calls. Actually no, keep the limit.", "Increase the budget by 25 calls."), 0);
     assert.equal(n("Increase the budget by 25 calls. Actually, keep the limit.", "Increase the budget by 25 calls."), 0);
     assert.equal(n("Increase the budget by 25 calls. But only 10.", "Increase the budget by 25 calls."), 0);
-    assert.equal(n("Increase the budget by 25 calls. Then fix the parser.", "Increase the budget by 25 calls."), 1, "an unrelated later sentence is fine");
+    assert.equal(n("Increase the budget by 25 calls. Then fix the parser.", "Increase the budget by 25 calls."), 0, "a later sentence that is not politeness voids it (closed world)");
     assert.equal(n("Approve o1. Actually no, do not approve o1.", "Approve o1.", optionScope("o1")), 0);
     assert.equal(n("Approve o1. Keep o1 out.", "Approve o1.", optionScope("o1")), 0);
     assert.equal(n("Approve o1. Approve o2.", "Approve o1.", optionScope("o1")), 0, "a short later sentence about something else may be a change of choice: asked again");
@@ -142,10 +143,27 @@ describe("the user's words as an authorization", () => {
       assert.equal(n(`Approve o1. ${later}`, "Approve o1.", optionScope("o1")), 0, later);
     }
     assert.equal(n("Mărește bugetul cu 25. M-am răzgândit.", "Mărește bugetul cu 25."), 0);
-    for (const later of ["Thanks!", "Thank you.", "Mersi!", "Then fix the parser and run the whole suite afterwards."]) {
+    // Closed world: after the approval only politeness (from a closed set) or the same approval again may follow. A long unrelated or paraphrased sentence voids it.
+    for (const later of ["Then fix the parser and run the whole suite afterwards.", "Please refrain from doing that, it is too expensive for us.", "On reflection I would prefer that you leave things as they are.", "Let's hold off on that for now though.", "On reflection that seems like too many.", "Keep it under the ceiling we agreed yesterday."]) {
+      assert.equal(n(`Increase the budget by 25 calls. ${later}`, "Increase the budget by 25 calls."), 0, later);
+      assert.equal(n(`Approve o1. ${later}`, "Approve o1.", optionScope("o1")), 0, later);
+      assert.equal(readsOk(`Increase the budget by 25 calls. ${later}`), false, `${later}: the helper reads the same message the same way`);
+    }
+    for (const later of ["Thanks!", "Thank you.", "Mersi!", "Please.", "Ok, great, cheers!", "Mulțumesc, te rog."]) {
       assert.equal(n(`Increase the budget by 25 calls. ${later}`, "Increase the budget by 25 calls."), 1, later);
       assert.equal(n(`Approve o1. ${later}`, "Approve o1.", optionScope("o1")), 1, later);
+      assert.equal(readsOk(`Increase the budget by 25 calls. ${later}`), true, later);
     }
+    // A retraction does not become harmless by being inside the quotation: the whole message, a part of it that holds both, and the helper's own message all refuse.
+    for (const [said, scope, first] of [["Increase the budget by 25 calls. Skip that.", BUDGET_SCOPE], ["Increase the budget by 25 calls. I changed my mind.", BUDGET_SCOPE], ["Approve o1. I changed my mind.", optionScope("o1")], ["Approve o1. Skip that.", optionScope("o1")], ["Mărește bugetul cu 25. M-am răzgândit.", BUDGET_SCOPE]]) {
+      assert.equal(n(said, said, scope), 0, `${said}: quoted whole`);
+      assert.equal(n(`${said} Thanks!`, said, scope), 0, `${said}: quoted with the retraction, not the whole message`);
+      assert.equal(n(`Thanks. ${said}`, said, scope), 0, `${said}: quoted with the retraction, a sentence before it`);
+      assert.equal(readMessage(said, scope).authorization, false, `${said}: the helper reads its own message the same way`);
+    }
+    assert.equal(n("Increase the budget by 25 calls. Increase the budget by 25 calls.", "Increase the budget by 25 calls. Increase the budget by 25 calls."), 1, "the same approval repeated and quoted whole stays one");
+    assert.equal(n("Increase the budget by 25 calls. Increase the budget by 25 calls. Thanks!", "Increase the budget by 25 calls."), 2);
+    assert.equal(n("Increase the budget by 25 calls. Thanks!", "Increase the budget by 25 calls. Thanks!"), 1);
     // The whole message is read, before and after: a ceiling or a contradicting approval is not silently overridden.
     assert.equal(n("The maximum total budget is 30 calls. Increase the budget.", "Increase the budget."), 0, "a ceiling before the approval");
     assert.equal(n("Increase the budget to 30 calls. Increase the budget to 27 calls.", "Increase the budget to 30 calls."), 0, "a contradicting approval after");

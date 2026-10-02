@@ -196,7 +196,7 @@ export function affirmative(sentences) {
 }
 
 /**
- * Do these sentences authorize `scope`? {ok: true, quantity} or {ok: false, reason: not_affirmative | no_grant | object_missing}.
+ * Do these sentences authorize `scope`? {ok: true, quantity} or {ok: false, reason: not_affirmative | no_grant | object_missing | context_conflict}.
  * The sentence(s) must be affirmative AND be a complete approval of the scope (the budget raise, or running the option
  * named: see budgetApproval / optionApproval). A short answer is linked to the `question` it answers, but the question only
  * completes an answer that names nothing: a bare «yes» is an approval of the question's operation when the question has ONE
@@ -224,6 +224,10 @@ export function judge(sentences, scope, question = null) {
     quantity = quantityOf(sentences);
     if (quantity.kind === "none" && bare) quantity = quantityOf(qSentences);
   }
+  // The sentences that ARE the approval; every other sentence of the message, quoted or not, is context (a retraction does not
+  // become harmless by being included in the quotation).
+  const approval = sentences.map((_, i) => i).filter((i) => (own ? approvesScope(sentences[i], scope) : asLabel ? optionApproval(sentences[i], scope.id, true) : true));
+  if (!contextAllows(sentences, approval, scope, quantity)) return { ok: false, reason: "context_conflict" };
   return { ok: true, quantity };
 }
 
@@ -249,37 +253,38 @@ const RETRACT = new RegExp(
   `(?:^|[;:]\\s*)(?:and |ok |okay |well |so )?${wordsSrc("actually|wait|however|but|sorry|correction|oops|hold on|hold off|on second thought|de fapt|stai|totuși|totusi|dar|ps")}|${wordsSrc("only|doar|exclusiv|cancel|cancelled|canceled|retract|retracted|revoke|revoked|undo|revert|rollback|scratch|scratch that|never mind|nevermind|forget|forget it|skip|ignore|disregard|changed my mind|change my mind|changing my mind|second thoughts|ignoră|ignora|anulez|anulează|anuleaza|retrag|uită|uita|lasă|lasa|răzgândit|razgandit|răzgândesc|razgandesc|nope|nah|nicidecum|deloc")}`,
   "u",
 );
-// Pure politeness or a closing: the only short sentences that leave an approval standing.
+// Pure politeness or a closing: the only sentences that may follow an approval and leave it standing (an empty sentence too).
 const POLITE = new Set(["thanks", "thank", "thx", "you", "a", "lot", "mersi", "mulțumesc", "multumesc", "please", "pls", "ok", "okay", "great", "perfect", "cheers", "yes", "yeah", "sure", "da", "te", "rog", "awesome", "good", "nice"]);
-const isShortNonPolite = (s) => {
-  const t = tokensOf(s);
-  return t.length <= 3 && !t.every((w) => POLITE.has(w));
-};
+const isPolite = (s) => tokensOf(s).every((w) => POLITE.has(w));
 const mentions = (s, scope) => (scope.kind === "option" ? idPositions(tokensOf(s), scope.id).length > 0 : tokensOf(s).some((w) => BUDGET_NOUN.has(w) || numberOf(w) !== undefined));
 /** The quantity as it would be spent: no number at all is the default step. */
 const effectiveQuantity = (q) => (q.kind === "none" ? { kind: "increment", n: BUDGET_LIMIT } : q);
 const sameQuantity = (a, b) => (a.kind === "increment" || a.kind === "total") && a.kind === b.kind && a.n === b.n;
 /**
- * May the approval found in `idx` stand in the context of the WHOLE source message? Every other sentence is read:
+ * May the approval found in the sentences `approval` (indexes) stand in the context of the WHOLE message? Every other
+ * sentence is read, whether the quotation included it or not:
  *  - one that talks about the scope (the budget, a number, the option) must itself be a complete approval of it, with the same
  *    quantity («Increase the budget to 30 calls. Increase the budget to 27 calls.» contradict each other; «The maximum total
  *    budget is 30 calls.» before an approval is a ceiling nobody read: neither stands). Order is no revocation: a restriction
  *    before the approval is not overridden by it, nor is an approval after a restriction;
- *  - a LATER one that is refused (negation, question, condition, quotation), retracts or narrows, or is a short sentence
- *    (three words at most) that is not plain politeness voids it («Nope.», «Skip that.», «I changed my mind.»);
- *  - any other sentence (a longer, unrelated one) leaves it standing.
+ *  - a LATER one (after the last approval sentence) that is not one of those must be plain politeness or a closing from a
+ *    closed set (thanks, please, ok, great, mersi, …) or empty, and must not be refused or retract: anything else, short or
+ *    long, voids the approval («Skip that.», «I changed my mind.», «Please refrain from doing that, it is too expensive.»,
+ *    «Then fix the parser afterwards.»). The approval is the last substantial sentence, or the user is asked again.
  * What cannot be read safely voids: the user is asked again.
  */
-function contextAllows(sentences, idx, scope, quantity) {
-  const last = Math.max(...idx);
+function contextAllows(sentences, approval, scope, quantity) {
+  const last = Math.max(...approval);
   const mine = effectiveQuantity(quantity);
   for (let i = 0; i < sentences.length; i++) {
-    if (idx.includes(i)) continue;
     const s = sentences[i];
-    if (mentions(s, scope)) {
+    if (approval.includes(i)) {
+      // Two approval sentences must state the same quantity; an ambiguous or invalid one is refused later, with its own reason.
+      if (scope.kind === "budget" && approvesScope(s, scope) && (mine.kind === "increment" || mine.kind === "total") && !sameQuantity(mine, effectiveQuantity(quantityOf([s])))) return false;
+    } else if (mentions(s, scope)) {
       if (refuses(s) || !approvesScope(s, scope)) return false;
       if (scope.kind === "budget" && !sameQuantity(mine, effectiveQuantity(quantityOf([s])))) return false;
-    } else if (i > last && (refuses(s) || RETRACT.test(s) || isShortNonPolite(s))) return false;
+    } else if (i > last && (refuses(s) || RETRACT.test(s) || !isPolite(s))) return false;
   }
   return true;
 }
@@ -309,8 +314,13 @@ export function findAuthorizations(text, message, scope = BUDGET_SCOPE, question
     const to = from + m.length;
     const idx = sentences.map((_, i) => i).filter((i) => spans[i][0] < to && spans[i][1] > from);
     const r = judge(idx.map((i) => sentences[i]), scope, question);
-    // The fragment is judged in the context of the whole source message: a restriction or a contradiction in it, before or after, and a later retraction void the grant.
-    if (r.ok && contextAllows(sentences, idx, scope, r.quantity)) out.occurrences.push({ sentences: idx, quantity: r.quantity });
+    if (!r.ok) continue;
+    // Which sentences of the quotation are the approval: the others (a retraction quoted along with it) are context like the rest of the source message.
+    const own = idx.filter((i) => approvesScope(sentences[i], scope));
+    const label = scope.kind === "option" && own.length === 0 ? idx.filter((i) => optionApproval(sentences[i], scope.id, true)) : [];
+    const approval = own.length ? own : label.length ? label : idx;
+    // The fragment is judged in the context of the WHOLE source message, as readMessage judges what the model wrote: a restriction or a contradiction, before or after, and anything but politeness after the approval void the grant.
+    if (contextAllows(sentences, approval, scope, r.quantity)) out.occurrences.push({ sentences: idx, quantity: r.quantity });
   }
   return out;
 }

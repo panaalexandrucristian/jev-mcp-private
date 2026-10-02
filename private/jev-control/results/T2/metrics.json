@@ -103,6 +103,13 @@
     "finalization_mutations": "Bash, Agent, Task and unclassified tools after an accepted done invalidate it (changed_after_accepted); Incomplete stays a legitimate stop",
     "live": "unmeasured"
   },
+  "fix_round_9": {
+    "later_sentences": "closed world: every later sentence must be the same approval again (same scope and quantity), plain politeness from a closed set (thanks, thank you, please, ok, okay, great, cheers, mersi, mulțumesc, te rog, ...) or empty; anything else, short or long, voids the approval; refusals and RETRACT remain additional reasons",
+    "quoted_retraction": "judge (helper) and findAuthorizations (audit) share contextAllows: the approval sentences are identified inside the quotation and every other sentence of the message is context, so a retraction quoted with the approval voids it; two approval sentences with different quantities contradict",
+    "approval_position": "the approval must be the last substantial sentence of the message, otherwise the user is asked again",
+    "tests": {"control": "418 tests, 77 suites (new cases are assertions in existing tests)"},
+    "live": "unmeasured"
+  },
   "fix_round_8": {
     "whole_message_context": "findAuthorizations reads every other sentence of the source message: one that talks about the scope (budget noun, number, option id) must itself be a complete approval with the same quantity, before or after the quoted sentence; a ceiling, restriction or contradicting approval voids it; order is no revocation",
     "later_sentences": "a later refused, explicitly retracting, or short (<=3 words, not plain thanks) sentence voids the approval; a long unrelated sentence or plain thanks does not",
