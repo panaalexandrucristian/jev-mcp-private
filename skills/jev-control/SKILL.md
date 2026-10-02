@@ -35,9 +35,9 @@ Not Jev's: an explicit instruction of the user (it outranks Jev), permission pro
    - `expand`: gather genuinely **new** options or evidence (a rephrasing is refused), then call again with the same `--decision-id` and a `new_material` note. At most **2** expansion rounds. The `scores` are raw `id:probability` strings; if `scores_next` is present, page them in the same way.
    - `ask_user`: ask, showing the options and the scores. `incomplete`: nobody can answer; finish with a report that starts `Incomplete:` and lists the scores.
    - `unavailable`: stop with **"Jev unavailable"** and let the user choose between waiting or retrying and `off`. Never go on with your own judgment.
-   - `budget_exhausted`: stop and ask whether to continue; only if the user agrees, `cli.mjs budget approve --message "<their words>"` (refused without their words, when they are not an approval such as a quoted «do not …», a question or a condition, when `--n` is more than the quantity they state, or when the same words were already spent).
+   - `budget_exhausted`: stop and ask whether to continue; only if the user agrees, `cli.mjs budget approve --message "<their words>" [--question "<the question a short answer answers>"]` (refused without their words; when they are not an approval of the **budget** — a quoted «do not …», a question, a condition, a quotation, an unrelated instruction such as «Use Node 22.», or a bare «yes» without the question it answers; when they say a number without saying whether it is an increase («by 30») or a total («to 30 calls»); when `--n` is more than they authorize — a total counts as the difference to the limit now in force; or when the same sentence was already spent, even quoted in part).
    - `invalid` / `refused`: fix what `problems` or `message` names; nothing was sent.
-4. **Nothing below the threshold is executed** unless the user explicitly approves that exact option; record it with `cli.mjs approve --decision <id> --option <id> --message "<the user's words>"`. It is not a general exception.
+4. **Nothing below the threshold is executed** unless the user explicitly approves that exact option; record it with `cli.mjs approve --decision <id> --option <id> --message "<the user's words>" [--question "<the question a short answer answers>"]`. The words must name that option (its id, or «option a» for a one-letter id): approving `a` is not approving `b`, and a bare «yes» counts only with the concrete question it answers, so when you ask, put the option id in the question. It is not a general exception.
 
 Near-equal top scores (gap < 0.02), or mutually exclusive top options, are separated by the helper with successive `jev_decide` selections (at most 6 per group, each accepted only with confidence `> T`); you never order them yourself.
 
@@ -51,7 +51,7 @@ Prefer the helper. When you must call a Jev tool yourself (any `mcp__jev__jev_*`
 
 ## Finishing
 
-Declaring the work done is a choice like any other. Use `/jev:jev-done`: the gate runner runs the real checks and `jev_gate` itself, now at the session threshold (strictly above T, no 0.8 floor). If the report is not accepted, end with `Incomplete:` or ask the user.
+Declaring the work done is a choice like any other. Use `/jev:jev-done`: the gate runner runs the real checks and `jev_gate` itself, now at the session threshold (strictly above T, no 0.8 floor). If the report is not accepted, end with `Incomplete:` or ask the user. An accepted report covers the tree as it was: after it, any edit, Bash command, delegated agent or other tool that may change something invalidates it, so run `/jev:jev-done` again before declaring completion (or end with `Incomplete:`).
 
 ## Data and safety
 

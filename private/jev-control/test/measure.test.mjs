@@ -269,12 +269,20 @@ describe("threshold, stops and approvals", () => {
     assert.equal(unbound.approvals.bound, 0);
     assert.equal(unbound.threshold.actions_while_blocked, 1, "an unbound approval does not unblock");
     assert.equal(unbound.coverage.covered, 0);
-    const bound = audit([prompt("Use   option one, Fix the parser"), ...decide(stop), ...call(approve("fix the  parser"), ok), ...edit("src/x.mjs"), ...edit("src/y.mjs"), ...edit("src/x.mjs")]);
+    const bound = audit([prompt("Use   o1, Fix the parser"), ...decide(stop), ...call(approve("o1, fix the  parser"), ok), ...edit("src/x.mjs"), ...edit("src/y.mjs"), ...edit("src/x.mjs")]);
     assert.equal(bound.approvals.bound, 1);
     assert.equal(bound.threshold.approvals_unbound, 0);
     assert.equal(bound.threshold.actions_while_blocked, 0);
     assert.equal(bound.coverage.covered, 1);
     assert.equal(bound.coverage.uncovered, 2);
+    const otherOption = audit([prompt("Yes, use o2 and fix the parser"), ...decide(stop), ...call(approve("use o2 and fix the parser"), ok)]);
+    assert.equal(otherOption.threshold.approvals_unbound, 1, "approving o2 is not approving o1");
+    assert.deepEqual(otherOption.approvals.unbound.map((u) => u.reason), ["not_an_authorization"]);
+    const unrelated = audit([prompt("Use Node 22."), ...decide(stop), ...call(approve("Use Node 22."), ok), ...edit("src/x.mjs")]);
+    assert.equal(unrelated.threshold.approvals_unbound, 1, "an unrelated instruction approves no option");
+    assert.equal(unrelated.coverage.covered, 0);
+    const quotation = audit([prompt('The documentation says "use o1 and fix the parser".'), ...decide(stop), ...call(approve("use o1 and fix the parser"), ok)]);
+    assert.equal(quotation.threshold.approvals_unbound, 1, "a quotation is not the user approving");
     const later = audit([prompt("go"), ...decide(stop), ...call(approve("fix the parser"), ok), prompt("fix the parser")]);
     assert.equal(later.threshold.approvals_unbound, 1, "a message after the approve call does not bind it");
     const tooShort = audit([prompt("ok go"), ...decide(stop), ...call(approve("ok"), ok)]);
@@ -283,9 +291,17 @@ describe("threshold, stops and approvals", () => {
   it("the answer to a question binds an approval of the same request", () => {
     const stop = decideOut({ status: "ask_user", scores: ["o1:0.7"] });
     const ok = json({ status: "ok", override: "user", decision_id: "d1", option: "o1", ah: ah("Edit", "src/x.mjs") });
-    const a = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), "User answered: take option one"), ...call(helper("approve", '--decision d1 --option o1 --message "take option one"'), ok), ...edit("src/x.mjs")]);
-    assert.equal(a.approvals.bound, 1);
+    const answer = (q, a) => `User has answered your questions: "${q}"="${a}". You can now continue with the user's answers in mind.`;
+    const approveYes = helper("approve", '--decision d1 --option o1 --message "yes" --question "Approve o1 below the threshold?"');
+    const a = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Approve o1 below the threshold?", "yes")), ...call(approveYes, ok), ...edit("src/x.mjs")]);
+    assert.equal(a.approvals.bound, 1, "a short answer is bound through the question it answered");
     assert.equal(a.coverage.covered, 2);
+    const aboutOther = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Use Node 22?", "yes")), ...call(approveYes, ok)]);
+    assert.equal(aboutOther.approvals.bound, 0, "the real question was about something else, whatever --question said");
+    const forB = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), answer("Approve o2 below the threshold?", "yes")), ...call(approveYes, ok)]);
+    assert.equal(forB.approvals.bound, 0, "the answer was for o2");
+    const noPair = audit([prompt("go"), ...decide(stop), ...call(use("AskUserQuestion", { questions: [] }), "User answered: yes, use o1"), ...call(helper("approve", '--decision d1 --option o1 --message "use o1"'), ok)]);
+    assert.equal(noPair.approvals.bound, 1, "an answer whose pairs cannot be read is the raw text, judged on its own words");
   });
 });
 
@@ -409,13 +425,15 @@ describe("Jev calls and budget", () => {
     const short = audit([prompt("ok go"), ...call(helper("budget", 'approve --message "ok"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "ok" } }))]);
     assert.equal(short.budget.approvals_unbound, 1);
     // The answer to a question counts as the user's words.
-    const asked = audit([prompt("go"), ...call(use("AskUserQuestion", { questions: [] }), "User answered: yes, continue please"), ...call(helper("budget", 'approve --message "continue please"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "continue please" } }))]);
-    assert.equal(asked.budget.approvals_bound, 1);
+    const asked = audit([prompt("go"), ...call(use("AskUserQuestion", { questions: [] }), 'User has answered your questions: "Continue past the limit of 25 calls?"="yes".'), ...call(helper("budget", 'approve --message "yes" --question "Continue past the limit of 25 calls?"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "yes" } }))]);
+    assert.equal(asked.budget.approvals_bound, 1, "a short answer is bound through the question it answered");
+    const askedElse = audit([prompt("go"), ...call(use("AskUserQuestion", { questions: [] }), 'User has answered your questions: "Use Node 22?"="yes".'), ...call(helper("budget", 'approve --message "yes" --question "Continue past the limit of 25 calls?"'), json({ status: "ok", limit: 50, approval: { n: 25, msg: "yes" } }))]);
+    assert.deepEqual(askedElse.budget.unbound.map((u) => u.reason), ["not_an_authorization"], "the real question was about something else, whatever --question said");
   });
   it("a bound approval raises the limit by approval.n (or the reported limit difference) and sums per request", () => {
     const a = audit([
-      prompt("Yes, continue. Yes, again: 25 more calls please."),
-      ...call(helper("budget", 'approve --n 10 --message "yes, continue"'), json({ status: "ok", used: 25, limit: 35, approval: { n: 10, msg: "yes, continue" } })),
+      prompt("Yes, continue past the limit. Yes, again: 25 more calls please."),
+      ...call(helper("budget", 'approve --n 10 --message "yes, continue past the limit"'), json({ status: "ok", used: 25, limit: 35, approval: { n: 10, msg: "yes, continue past the limit" } })),
       ...call(helper("budget", 'approve --message "yes, again: 25 more calls please"'), json({ status: "ok", used: 25, limit: 60 })),
       ...decide(decideOut({ calls: 30, status: "expand", scores: [] })),
     ]);
@@ -443,7 +461,7 @@ describe("Jev calls and budget", () => {
       assert.deepEqual(a.jev_calls.per_request, [{ request: 1, helper_attempts: 36, direct: 0, approved_extra: 10, limit: 35 }]);
       assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 36, limit: 35 }]);
       // Without a stated quantity the user's yes authorizes the default step of 25, never more.
-      const yes = audit([prompt("Yes, go ahead."), ...approve(100, "yes, go ahead")]);
+      const yes = audit([prompt("Yes, go ahead with the budget."), ...approve(100, "yes, go ahead with the budget")]);
       assert.equal(yes.jev_calls.per_request[0].approved_extra, 25);
     });
     it("one authorization raises the limit once; the same words quoted again are unbound, a new user message is a new authorization", () => {
@@ -460,13 +478,50 @@ describe("Jev calls and budget", () => {
       const stop = decideOut({ status: "ask_user", scores: ["o1:0.7"] });
       const okOut = json({ status: "ok", override: "user", decision_id: "d1", option: "o1", ah: ah("Edit", "src/x.mjs") });
       const approveO = (msg) => call(helper("approve", `--decision d1 --option o1 --message "${msg}"`), okOut);
-      const quoted = audit([prompt("Do not use option one."), ...decide(stop), ...approveO("use option one"), ...edit("src/x.mjs")]);
+      const quoted = audit([prompt("Do not use o1."), ...decide(stop), ...approveO("use o1"), ...edit("src/x.mjs")]);
       assert.equal(quoted.threshold.approvals_unbound, 1);
       assert.equal(quoted.approvals.unbound[0].reason, "not_an_authorization");
       assert.equal(quoted.coverage.covered, 0);
-      const said = audit([prompt("Yes, use option one."), ...decide(stop), ...approveO("use option one"), ...edit("src/x.mjs")]);
+      const said = audit([prompt("Yes, use o1."), ...decide(stop), ...approveO("use o1"), ...edit("src/x.mjs")]);
       assert.equal(said.threshold.approvals_unbound, 0);
       assert.equal(said.coverage.covered, 1);
+    });
+  });
+  describe("a budget raise needs words ABOUT the budget, once per user sentence, and a total is not an increment", () => {
+    const approve = (n, msg) => call(helper("budget", `approve --n ${n} --message "${msg}"`), json({ status: "ok", used: 20, limit: 25 + n, approval: { n, msg } }));
+    it("an unrelated instruction or a quotation raises nothing", () => {
+      const a = audit([prompt("Use Node 22."), ...approve(25, "Use Node 22.")]);
+      assert.deepEqual(a.budget.unbound.map((u) => u.reason), ["not_an_authorization"]);
+      assert.equal(a.jev_calls.per_request[0].approved_extra, 0);
+      const doc = audit([prompt('The documentation says "increase the budget by 100 calls".'), ...approve(100, "increase the budget by 100 calls")]);
+      assert.equal(doc.budget.approvals_bound, 0, "a quotation is not the user authorizing");
+      assert.equal(doc.jev_calls.per_request[0].approved_extra, 0);
+      const bare = audit([prompt("yes"), ...approve(25, "yes")]);
+      assert.equal(bare.budget.approvals_bound, 0, "a bare yes without its question names nothing");
+    });
+    it("the whole sentence and then a fragment of it are ONE authorization: at most 5 more calls, limit 30", () => {
+      const rec = [prompt("Yes, increase the budget by 5 calls."), ...call(helper("budget", 'approve --n 5 --message "Yes, increase the budget by 5 calls."'), json({ status: "ok", used: 20, limit: 30, approval: { n: 5, msg: "Yes, increase the budget by 5 calls." } })), ...call(helper("budget", 'approve --n 5 --message "increase the budget by 5 calls."'), json({ status: "ok", used: 20, limit: 35, approval: { n: 5, msg: "increase the budget by 5 calls." } }))];
+      const a = audit(rec);
+      assert.equal(a.budget.approvals_bound, 1);
+      assert.deepEqual(a.budget.unbound.map((u) => u.reason), ["approval_reused"]);
+      assert.equal(a.jev_calls.per_request[0].approved_extra, 5);
+      assert.equal(a.jev_calls.per_request[0].limit, 30);
+    });
+    it("a total limit is an increase of the difference: to 30 from 25 is +5, by 30 is +30, a total already reached raises nothing", () => {
+      const total = audit([prompt("Increase the budget to 30 calls."), ...approve(30, "Increase the budget to 30 calls.")]);
+      assert.equal(total.budget.approvals_over_quantum, 1, "+30 asked, +5 authorized");
+      assert.deepEqual(total.jev_calls.per_request[0], { request: 1, helper_attempts: 0, direct: 0, approved_extra: 5, limit: 30 });
+      const exact = audit([prompt("Increase the budget to 30 calls."), ...approve(5, "Increase the budget to 30 calls.")]);
+      assert.equal(exact.budget.approvals_over_quantum, 0);
+      assert.equal(exact.jev_calls.per_request[0].limit, 30);
+      const by = audit([prompt("Increase the budget by 30 calls."), ...approve(30, "Increase the budget by 30 calls.")]);
+      assert.equal(by.jev_calls.per_request[0].limit, 55);
+      const reached = audit([prompt("Increase the budget to 30 calls. Also: raise the limit to 30 calls."), ...approve(5, "Increase the budget to 30 calls."), ...approve(5, "raise the limit to 30 calls.")]);
+      assert.equal(reached.budget.approvals_bound, 2);
+      assert.equal(reached.budget.approvals_over_quantum, 1, "the second total was already reached: no further calls");
+      assert.equal(reached.jev_calls.per_request[0].limit, 30);
+      const ambiguous = audit([prompt("Yes, 30 calls."), ...approve(30, "Yes, 30 calls.")]);
+      assert.equal(ambiguous.jev_calls.per_request[0].approved_extra, 0, "an ambiguous quantity authorizes nothing");
     });
   });
   describe("reservations belong to the context that made them", () => {
@@ -523,7 +578,7 @@ describe("finalization", () => {
     assert.equal(good.finalization.edits, 1);
     assert.equal(good.jev_calls.helper_reported_attempts, 5);
     const none = audit([prompt("go"), ...editing, ...done("needs_evidence"), say("All done, the change is complete.")]);
-    assert.deepEqual(none.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "needs_evidence", edits_after_accepted: false }]);
+    assert.deepEqual(none.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "needs_evidence", edits_after_accepted: false, changed_after_accepted: false }]);
     assert.equal(none.finalization.accepted, false);
     assert.equal(none.finalization.last_outcome, "needs_evidence");
     assert.equal(audit([prompt("just a question"), say("42")]).finalization.violations.length, 0);
@@ -569,7 +624,7 @@ describe("finalization", () => {
   });
   it("an edit after the accepted done invalidates it, whoever made it (a subagent too)", () => {
     const a = audit([prompt("go"), ...editing, ...done("accepted"), ...write("src/late.mjs"), say("Done.")]);
-    assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "accepted", edits_after_accepted: true }]);
+    assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "accepted", edits_after_accepted: true, changed_after_accepted: false }]);
     assert.equal(a.finalization.accepted, false);
     assert.equal(a.finalization.last_accepted_at, null);
     const sub = audit([prompt("go"), ...editing, ...done("accepted"), ...write("src/late.mjs", { agent: "agent-1" }), say("Done.")]);
@@ -585,9 +640,51 @@ describe("finalization", () => {
     assert.equal(parallel.finalization.accepted, false);
     assert.equal(parallel.finalization.violations[0].edits_after_accepted, true);
   });
+  it("a Bash command, a delegated agent or an unclassified tool after the accepted done invalidates it: unknown effects count as changes", () => {
+    const base = [prompt("go"), ...editing, ...done("accepted")];
+    const cases = {
+      "Bash printf": call(bash("printf changed > a.js"), "ok"),
+      "Agent": call(use("Agent", { subagent_type: "general-purpose", prompt: "fix it" }), "done"),
+      "Task": call(use("Task", { subagent_type: "general-purpose", prompt: "fix it" }), "done"),
+      "unclassified tool": call(use("SomethingNew", { x: 1 }), "ok"),
+    };
+    for (const [name, mutation] of Object.entries(cases)) {
+      const a = audit([...base, ...mutation, say("Done.")]);
+      assert.equal(a.finalization.accepted, false, name);
+      assert.equal(a.finalization.last_accepted_at, null, name);
+      assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: "accepted", edits_after_accepted: false, changed_after_accepted: true }], name);
+      assert.deepEqual(a.finalization.per_request.map((r) => [r.accepted, r.changed_after_accepted]), [[false, true]], name);
+    }
+    // A subagent's Bash counts too (the request's tree is shared); a new accepted done after the change restores it.
+    const sub = audit([...base, ...call(bash("printf x > b.js"), "ok", { agent: "agent-1" }), say("Done.")]);
+    assert.equal(sub.finalization.violations[0].changed_after_accepted, true);
+    const again = audit([...base, ...call(bash("printf changed > a.js"), "ok"), ...done("accepted"), say("Done.")]);
+    assert.deepEqual(again.finalization.violations, []);
+    assert.equal(again.finalization.accepted, true);
+    // Incomplete is still a legitimate stop, not a success claim.
+    const stop = audit([...base, ...call(bash("printf changed > a.js"), "ok"), say("Incomplete: I changed a.js after the check; it needs a new done.")]);
+    assert.deepEqual(stop.finalization.violations, []);
+    assert.equal(stop.finalization.incomplete_stops, 1);
+    // Running the helper (a protocol call) or asking the user changes nothing.
+    const quiet = audit([...base, ...call(helper("status"), json({ status: "ok" })), ...call(use("AskUserQuestion", { questions: [] }), "ok"), say("Done.")]);
+    assert.deepEqual(quiet.finalization.violations, []);
+    assert.equal(quiet.finalization.accepted, true);
+    // A mutation issued after the done in the same message, whose result comes first, is not covered either.
+    const d = helper("done", "--claims c.json");
+    const b = bash("printf changed > a.js");
+    const parallel = audit([prompt("go"), ...editing, asst([d, b]), res(b, "ok"), res(d, doneOut("accepted")), say("Done.")]);
+    assert.equal(parallel.finalization.accepted, false);
+    assert.equal(parallel.finalization.violations[0].changed_after_accepted, true);
+    // Before the done it is fine: the done saw it.
+    const before = audit([prompt("go"), ...editing, ...call(bash("printf changed > a.js"), "ok"), ...done("accepted"), say("Done.")]);
+    assert.equal(before.finalization.accepted, true);
+    // A request whose only change is a Bash command after an accepted done is still a declared completion without an accepted done.
+    const bashOnly = audit([prompt("go"), ...done("accepted"), ...call(bash("printf changed > a.js"), "ok"), say("Done.")]);
+    assert.equal(bashOnly.finalization.violations.length, 1);
+  });
   it("finalization is per request: a done accepted in an earlier request does not cover the next request's edits", () => {
     const a = audit([prompt("one"), ...editing, ...done("accepted"), say("Done."), prompt("two"), ...write("src/b.mjs"), say("Done again.")]);
-    assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 2, last_outcome: null, edits_after_accepted: false }]);
+    assert.deepEqual(a.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 2, last_outcome: null, edits_after_accepted: false, changed_after_accepted: false }]);
     assert.deepEqual(a.finalization.per_request.map((r) => [r.request, r.accepted]), [[1, true], [2, false]]);
     assert.equal(a.finalization.accepted, false, "the headline state is the last request's");
   });

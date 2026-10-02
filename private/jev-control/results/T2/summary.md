@@ -5,7 +5,7 @@
 | Check | Result |
 | --- | --- |
 | `node --test private/jev-flow/test/` | 324 tests, 61 suites, 324 pass, exit 0 |
-| `node --test private/jev-control/test/` | 395 tests, 76 suites, 395 pass, exit 0 |
+| `node --test private/jev-control/test/` | 409 tests, 77 suites, 409 pass, exit 0 |
 | `claude plugin validate .` (Claude Code 2.1.288) | passed, exit 0 (it does not check hook event names) |
 | `node private/jev-control/fixtures/seal.mjs verify` | ok (dev oracle hashes and sealed final hashes recorded) |
 | `git diff --check` | clean |
@@ -38,6 +38,15 @@ The third review found that a budget raise was accepted from any quotation of th
 - **Verification validity** (`measure.mjs`): `receipt_verified` only while no edit, Bash command, delegated agent or unclassified tool happened between the verification and the action; otherwise `unverified_binding`.
 - **Done attempts** (`measure.mjs`): a result updates the finalization only if it belongs to the latest started attempt of its request; late results are counted as `stale_results` and ignored.
 - **What Jev reads** (`actions.mjs`, `options.mjs`, `protocol.mjs`): the whole sanitized concrete action (target and every argument in full) is its own context item (noul), its own evidence block (tie-break) or candidate text (rerank); a batch that does not fit one `jev_noul` call is split over several; a tie-break whose material does not fit stops as `tie_unresolved` (`action_material_too_large`); an action sanitizing could not show whole is `action_material_omitted` and never scored; an action over 100000 characters is refused at validation. Receipts, state and plan keep hashes and compact labels only.
+
+## Fix round 4 (after the fourth review)
+
+The fourth review found that an unrelated or quoted sentence («Use Node 22.», «The documentation says "increase the budget by 100 calls"») could still approve a budget raise or an option, that quoting a fragment of one sentence spent it again, that a total limit («to 30 calls») was taken as an increment, and that a Bash command, a delegated agent or an unclassified tool after an accepted `done` did not invalidate it. Fixed and tested offline:
+
+- **Object and context** (`authorization.mjs`, `cli.mjs`, `budget.mjs`, `measure.mjs`): an authorization has a scope. A budget raise needs a granting sentence that is about the budget (limit, calls); `approve` needs one that names the option (its id, `option a` for a one-letter id), so approving `a` is not approving `b`. A quotation or report of what a text says is not an authorization. A short answer («yes») counts only with the concrete question it answers: `--question` for the helper, and the question the user really saw (the `AskUserQuestion` result) for the audit. If the link cannot be shown nothing is granted.
+- **Identity** (`authorization.mjs`, `budget.mjs`, `measure.mjs`): an authorization is spent by its source message and sentence indexes, not by where the quoted fragment starts; the helper treats words contained in an earlier approval's words (same question) as the same authorization. «Yes, increase the budget by 5 calls.» then its fragment «increase the budget by 5 calls.» raises by 5 in total, limit 30.
+- **Total or increment** (`authorization.mjs`, `budget.mjs`, `measure.mjs`): «to 30 calls» / «30 in total» is a total, measured against the limit in force (+5 from 25, nothing when already reached); «by 30» / «30 more» is an increment; a number that is neither («30 calls», «up to 30») is ambiguous and raises nothing.
+- **Finalization** (`measure.mjs`): after an accepted `done`, any Bash command, Agent/Task or unclassified tool (unknown effects count, as for `receipt_verified`) in the same request invalidates it (`changed_after_accepted`); `Incomplete:` stays a legitimate stop. A new accepted `done` restores it.
 
 ## Not measured, not verified
 

@@ -76,8 +76,43 @@ describe("the shared budget (D15, D26)", () => {
     assert.equal(ten.n, 10, "without --n the quantity the words state is used");
     assert.equal(limit(), 35);
     assert.deepEqual(approveMore(dir, 10, "Yes, approve 10 MORE   calls"), { ok: false, reason: "approval_already_used" }, "the same words do not authorize twice in one request");
-    assert.equal(approveMore(dir, 10, "yes, approve 10 more calls again").ok, true, "other words are another authorization (the audit still needs the user to have said them)");
+    assert.deepEqual(approveMore(dir, 10, "yes, approve 10 more calls again"), { ok: false, reason: "approval_already_used" }, "words that contain an earlier approval's words are the same authorization");
+    assert.equal(approveMore(dir, 10, "yes, approve another 10 more calls").ok, true, "other words are another authorization (the audit still needs the user to have said them)");
     assert.equal(limit(), 45);
+  });
+  it("a raise needs words ABOUT the budget: an unrelated instruction, a quotation or a bare yes raises nothing", () => {
+    const dir = stateDir();
+    const limit = () => budgetView(loadControlState(dir)).limit;
+    assert.deepEqual(approveMore(dir, 25, "Use Node 22."), { ok: false, reason: "message_not_about_budget" });
+    assert.deepEqual(approveMore(dir, 25, "yes"), { ok: false, reason: "message_not_about_budget" }, "a bare yes names nothing");
+    assert.deepEqual(approveMore(dir, 100, 'The documentation says "increase the budget by 100 calls".'), { ok: false, reason: "message_not_authorization" });
+    assert.equal(limit(), 25);
+    assert.deepEqual(approveMore(dir, 25, "yes", Date.now(), "Use Node 22?"), { ok: false, reason: "message_not_about_budget" }, "the question is about something else");
+    assert.deepEqual(approveMore(dir, 25, "no thanks", Date.now(), "Raise the budget by 25 calls?"), { ok: false, reason: "message_not_authorization" });
+    const answered = approveMore(dir, undefined, "yes", Date.now(), "Raise the budget by 5 calls?");
+    assert.equal(answered.ok, true, "a short answer counts with the concrete question it answers");
+    assert.equal(answered.n, 5, "and the question supplies the quantity");
+    assert.deepEqual(loadControlState(dir).budget.approvals.map((a) => [a.n, a.msg, a.q]), [[5, "yes", "Raise the budget by 5 calls?"]]);
+    assert.deepEqual(approveMore(dir, 5, "yes", Date.now(), "Raise the budget by 5 calls?"), { ok: false, reason: "approval_already_used" });
+    assert.equal(limit(), 30);
+  });
+  it("a total limit is not an increment: «to 30 calls» is measured against the limit in force; an ambiguous quantity raises nothing", () => {
+    const dir = stateDir();
+    const limit = () => budgetView(loadControlState(dir)).limit;
+    assert.deepEqual(approveMore(dir, 30, "Increase the budget to 30 calls."), { ok: false, reason: "over_quantum", allowed: 5 }, "from 25 the total 30 is +5");
+    assert.deepEqual(approveMore(dir, 5, "Increase the budget to 30 calls.").n, 5);
+    assert.equal(limit(), 30);
+    assert.deepEqual(approveMore(dir, 5, "Raise the limit to 30 calls, please."), { ok: false, reason: "limit_not_raised" }, "a total already reached grants no further calls");
+    assert.deepEqual(approveMore(dir, 25, "Yes, 30 calls."), { ok: false, reason: "quantum_ambiguous" }, "is it an increase or a total? not guessed");
+    assert.deepEqual(approveMore(dir, 5, "Yes, up to 50 calls."), { ok: false, reason: "quantum_ambiguous" });
+    assert.equal(approveMore(dir, 30, "Increase the budget by 30 calls.").n, 30);
+    assert.equal(limit(), 60);
+  });
+  it("one user sentence authorizes once: quoting the whole sentence and then a fragment of it raises 5, not 10", () => {
+    const dir = stateDir();
+    assert.equal(approveMore(dir, 5, "Yes, increase the budget by 5 calls.").ok, true);
+    assert.deepEqual(approveMore(dir, 5, "increase the budget by 5 calls."), { ok: false, reason: "approval_already_used" });
+    assert.equal(budgetView(loadControlState(dir)).limit, 30);
   });
   it("a new request restarts the counters and keeps a short history", () => {
     const dir = stateDir();

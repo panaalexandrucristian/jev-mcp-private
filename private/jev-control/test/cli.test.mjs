@@ -350,8 +350,18 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(quoted.code, 4);
     assert.equal(quoted.json.reason, "message_not_authorization");
     assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.length, 1, "a quoted refusal records no approval");
-    assert.equal(cli(["approve", ...SID, "--decision", "nope", "--option", "o1", "--message", "yes"], { env, cwd: repo }).code, 4);
-    assert.equal(cli(["approve", ...SID, "--decision", "dec9", "--option", "zz", "--message", "yes"], { env, cwd: repo }).code, 4);
+    const other = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes, use o1 although it scored 0.9"], { env, cwd: repo });
+    assert.equal(other.code, 4);
+    assert.equal(other.json.reason, "message_not_about_option", "approving o1 is not approving o2");
+    const unrelated = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "Use Node 22."], { env, cwd: repo });
+    assert.equal(unrelated.json.reason, "message_not_about_option");
+    const bare = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes"], { env, cwd: repo });
+    assert.equal(bare.json.reason, "message_not_about_option", "a bare yes names no option");
+    const answered = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes", "--question", "Approve o2 below the threshold?"], { env, cwd: repo });
+    assert.equal(answered.json.override, "user", "a short answer counts with the question it answers");
+    assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.map((a) => a.option).join(), "o1,o2");
+    assert.equal(cli(["approve", ...SID, "--decision", "nope", "--option", "o1", "--message", "yes, use o1"], { env, cwd: repo }).code, 4);
+    assert.equal(cli(["approve", ...SID, "--decision", "dec9", "--option", "zz", "--message", "yes, use zz"], { env, cwd: repo }).code, 4);
   });
   it("direct calls: reserve before, confirm after; at 25 the reservation is refused until the user approves more", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
@@ -372,6 +382,15 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(quoted.code, 4);
     assert.equal(quoted.json.reason, "message_not_authorization");
     assert.match(quoted.json.message, /not an authorization/);
+    const unrelated = cli(["budget", "approve", ...SID, "--n", "100", "--message", "Use Node 22."], { env, cwd: repo });
+    assert.equal(unrelated.json.reason, "message_not_about_budget");
+    assert.match(unrelated.json.message, /do not concern the budget/);
+    const quotation = cli(["budget", "approve", ...SID, "--n", "100", "--message", "The documentation says \"increase the budget by 100 calls\"."], { env, cwd: repo });
+    assert.equal(quotation.json.reason, "message_not_authorization");
+    const total = cli(["budget", "approve", ...SID, "--n", "30", "--message", "Increase the budget to 30 calls."], { env, cwd: repo });
+    assert.equal(total.json.reason, "over_quantum", "a total of 30 from 25 is +5");
+    assert.match(total.json.message, /at most 5/);
+    assert.equal(cli(["budget", "approve", ...SID, "--message", "Yes, 30 calls."], { env, cwd: repo }).json.reason, "quantum_ambiguous");
     const smaller = cli(["budget", "approve", ...SID, "--n", "100", "--message", "yes, approve 10 more calls"], { env, cwd: repo });
     assert.equal(smaller.json.reason, "over_quantum");
     assert.match(smaller.json.message, /at most 10/);

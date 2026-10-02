@@ -7,7 +7,7 @@
 // The server's own HTTP/provider calls are not observable from here: they stay
 // "unknown" (0 only when the server explicitly reports no call).
 import { randomBytes } from "node:crypto";
-import { authorizedExtra, MAX_QUANTUM, readMessage } from "./authorization.mjs";
+import { incrementFor, MAX_QUANTUM, readMessage, sameAuthorization } from "./authorization.mjs";
 import { emptyBudget, SOURCES, withControlState } from "./state.mjs";
 
 export function normalizeSource(source) {
@@ -71,26 +71,31 @@ export function release(dir, id, now = Date.now()) {
 
 /**
  * The user approved continuing beyond the limit: raise it by `n` (the quantity their words state, or the default budget
- * step when they state none; never more). The approval keeps the user's own words (`message`, one line) so the transcript
- * audit can check that the user really said it. Nothing is raised without words that are an authorization (a quoted
- * negation, a question or a condition is not one: authorization.mjs), beyond what they state, or twice from the same
- * words within one request. {ok: true, n, ...view} or {ok: false, reason, allowed?}.
+ * step when they state none; never more). The approval keeps the user's own words (`message`, one line) and the concrete
+ * `question` they answered, so the transcript audit can check that the user really said it. Nothing is raised without words
+ * that are an authorization OF THE BUDGET (a quoted negation, a question, a condition, an unrelated instruction such as
+ * «Use Node 22.» or a bare «yes» without the question it answers is not one: authorization.mjs), beyond what they state
+ * (a total such as «to 30 calls» is measured against the limit now in force), when the quantity is ambiguous, or twice from
+ * the same words within one request (words contained in an earlier approval's words count as the same authorization).
+ * {ok: true, n, ...view} or {ok: false, reason, allowed?}.
  */
-export function approveMore(dir, n, message = "", now = Date.now()) {
+export function approveMore(dir, n, message = "", now = Date.now(), question = null) {
   const full = String(message ?? "").replace(/\s+/g, " ").trim();
   if (full.length < 3) return { ok: false, reason: "message_required" };
-  const read = readMessage(full);
-  if (!read.authorization) return { ok: false, reason: "message_not_authorization" };
-  const allowed = authorizedExtra(read.quantum);
-  const extra = n === undefined ? allowed : n;
-  if (!Number.isInteger(extra) || extra < 1 || extra > MAX_QUANTUM) return { ok: false, reason: "n_invalid" };
-  if (extra > allowed) return { ok: false, reason: "over_quantum", allowed };
+  const asked = question === null || question === undefined ? null : String(question).replace(/\s+/g, " ").trim().slice(0, 300) || null;
+  const read = readMessage(full, undefined, asked);
+  if (!read.authorization) return { ok: false, reason: read.reason === "object_missing" ? "message_not_about_budget" : "message_not_authorization" };
   const text = full.slice(0, 200);
   return withControlState(dir, (state) => {
-    const again = (state.budget.approvals ?? []).some((a) => a.req === state.request.seq && String(a.msg).toLowerCase() === text.toLowerCase());
+    const step = incrementFor(read.quantity, state.budget.limit + state.budget.extra);
+    if (!step.ok) return { ok: false, reason: step.reason };
+    const extra = n === undefined ? step.allowed : n;
+    if (!Number.isInteger(extra) || extra < 1 || extra > MAX_QUANTUM) return { ok: false, reason: "n_invalid" };
+    if (extra > step.allowed) return { ok: false, reason: "over_quantum", allowed: step.allowed };
+    const again = (state.budget.approvals ?? []).some((a) => a.req === state.request.seq && sameAuthorization(text, asked, String(a.msg), a.q ?? null));
     if (again) return { ok: false, reason: "approval_already_used" };
     state.budget.extra += extra;
-    (state.budget.approvals ??= []).push({ n: extra, msg: text, req: state.request.seq, ts: now });
+    (state.budget.approvals ??= []).push({ n: extra, msg: text, ...(asked ? { q: asked } : {}), req: state.request.seq, ts: now });
     return { ok: true, n: extra, ...budgetView(state) };
   }, now);
 }

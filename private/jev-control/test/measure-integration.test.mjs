@@ -170,6 +170,23 @@ describe("the audit follows the real receipt, budget and search shapes", () => {
     assert.deepEqual(invented.budget.unbound.map((u) => u.reason), ["not_said"]);
     assert.deepEqual(invented.jev_calls.per_request, [{ request: 1, helper_attempts: 0, direct: 0, approved_extra: 0, limit: 25 }]);
   });
+  it("the real helper and the audit agree: one sentence raises once, a total is measured against the limit, an unrelated or quoted sentence raises nothing", () => {
+    const { repo, env } = prepare();
+    const approveCmd = (n, message) => use("Bash", { command: `node "${CLI_PATH}" budget approve --n ${n} --message "${message}"` });
+    for (const [n, message] of [[25, "Use Node 22."], [100, 'The documentation says \\"increase the budget by 100 calls\\".']]) {
+      const r = cli(["budget", "approve", ...SID, "--n", String(n), "--message", message.replace(/\\"/g, '"')], { env, cwd: repo });
+      assert.equal(r.json.status, "refused", r.stdout);
+    }
+    const whole = cli(["budget", "approve", ...SID, "--n", "5", "--message", "Yes, increase the budget by 5 calls."], { env, cwd: repo });
+    assert.equal(whole.json.status, "ok", whole.stdout);
+    const part = cli(["budget", "approve", ...SID, "--n", "5", "--message", "increase the budget by 5 calls."], { env, cwd: repo });
+    assert.equal(part.json.reason, "approval_already_used", "the helper does not count the fragment as a new authorization");
+    const total = cli(["budget", "approve", ...SID, "--n", "5", "--message", "Increase the budget to 30 calls."], { env, cwd: repo });
+    assert.equal(total.json.reason, "limit_not_raised", "30 is already the limit in force");
+    const a = audit([prompt(repo, "Yes, increase the budget by 5 calls."), ...step(repo, approveCmd(5, "Yes, increase the budget by 5 calls."), lastLine(whole)), ...step(repo, approveCmd(5, "increase the budget by 5 calls."), JSON.stringify({ status: "ok", limit: 35, approval: { n: 5, msg: "increase the budget by 5 calls." } }))]);
+    assert.equal(a.jev_calls.per_request[0].limit, 30, "even if a helper output claimed another raise, the audit counts one authorization once");
+    assert.deepEqual(a.budget.unbound.map((u) => u.reason), ["approval_reused"]);
+  });
   it("a reservation's source flag is read from the real command and the real result", () => {
     const { repo, env } = prepare();
     const r = cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "subagent"], { env, cwd: repo });

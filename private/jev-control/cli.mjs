@@ -7,8 +7,8 @@
 //   cli.mjs decide --file <batch.json|-> [--decision-id id] [--headless] [--source subagent]
 //   cli.mjs search --query <text> [--single] [--exact-path p] [--search-id id --widen] [--source subagent]
 //   cli.mjs page --decision id [--part plan|scores] [--from n]
-//   cli.mjs approve --decision id --option id --message "<the user's words>"
-//   cli.mjs budget status|reserve --tool noul [--source main|subagent]|confirm --id x [--ok 0|1] [--ms n]|release --id x|approve --message "<the user's words>" [--n 25]
+//   cli.mjs approve --decision id --option id --message "<the user's words naming the option>" [--question "<the question a short answer answers>"]
+//   cli.mjs budget status|reserve --tool noul [--source main|subagent]|confirm --id x [--ok 0|1] [--ms n]|release --id x|approve --message "<the user's words about the budget>" [--question "<the question a short answer answers>"] [--n 25]
 //   cli.mjs receipt verify --id x --option id (--action-file <file|-> | --tool T --target t) [--dry-run]
 //   cli.mjs done --claims <file|-> [--check '["cmd","arg"]']... [--check-timeout s]
 // Common: [--root <repo>] [--session-id <id>] [--session-cap <capability>]. The
@@ -26,7 +26,7 @@ import { loadDenylist } from "../jev-flow/paths.mjs";
 import { sanitizeText } from "../jev-flow/sanitize.mjs";
 import { computeSnapshot, gitTopLevel } from "../jev-flow/state.mjs";
 import { normalizeDescriptor, planItem } from "./actions.mjs";
-import { readMessage } from "./authorization.mjs";
+import { optionScope, readMessage } from "./authorization.mjs";
 import { approveMore, budgetView, confirm, release, reserve, startRequest } from "./budget.mjs";
 import { BudgetedCaller } from "./client.mjs";
 import { checkTools } from "./contracts.mjs";
@@ -355,14 +355,16 @@ async function cmdSearch(flags, ctx) {
 function cmdApprove(flags, ctx) {
   if (!modeOn(ctx.dir)) return OFF;
   if (!flags.decision || !flags.option || !flags.message) throw new UsageError("--decision, --option and --message are required");
-  // Quoting is not approving: the words must be an authorization (not a negation, a question or a condition).
-  if (!readMessage(flags.message).authorization) return { status: "refused", reason: "message_not_authorization", message: "those words are not an authorization of the option (a negation, a question, a condition or no granting word): ask the user and pass what they answered" };
   return withControlState(ctx.dir, (state) => {
     const decision = [...state.decisions].reverse().find((d) => d.id === flags.decision);
     if (!decision) return { status: "refused", message: "unknown decision id; an approval is bound to a logged decision" };
     const opt = decision.opts.find((o) => o[0] === flags.option);
     if (!opt) return { status: "refused", message: "the option is not in that decision" };
-    state.approvals.push({ decision: decision.id, option: flags.option, hash: opt[2], ah: opt[3] ?? "-", req: state.request.seq, ts: Date.now(), msg: oneLine(sanitizeText(flags.message).text, 200) });
+    // Quoting is not approving, and approving something else is not approving this: the words must be an authorization
+    // (not a negation, a question, a condition or a quotation) that names THIS option; a short answer needs the question it answers.
+    const read = readMessage(flags.message, optionScope(opt[0]), flags.question ?? null);
+    if (!read.authorization) return { status: "refused", reason: read.reason === "object_missing" ? "message_not_about_option" : "message_not_authorization", message: read.reason === "object_missing" ? `those words do not name option ${opt[0]}: an approval is for the option the user named; ask which option they approve (pass --question "<the question they answered>" for a short answer)` : "those words are not an authorization of the option (a negation, a question, a condition, a quotation or no granting word): ask the user and pass what they answered" };
+    state.approvals.push({ decision: decision.id, option: flags.option, hash: opt[2], ah: opt[3] ?? "-", req: state.request.seq, ts: Date.now(), msg: oneLine(sanitizeText(flags.message).text, 200), ...(flags.question ? { q: oneLine(sanitizeText(flags.question).text, 300) } : {}) });
     return { status: "ok", override: "user", decision_id: decision.id, option: flags.option, ah: opt[3] ?? "-", note: "recorded as a user override of exactly this option; it is not a general exception" };
   });
 }
@@ -384,6 +386,9 @@ function cmdPage(flags, ctx) {
 const BUDGET_REFUSALS = {
   message_required: () => "an approval beyond the budget needs the user's own words: pass --message \"<what the user said>\"; nothing was raised",
   message_not_authorization: () => "those words are not an authorization (a negation, a question, a condition or no granting word): ask the user and pass what they answered; nothing was raised",
+  message_not_about_budget: () => "those words do not concern the budget, the limit or calls (a bare «yes» counts only with the question it answers: pass --question \"<the question they answered>\"); nothing was raised",
+  quantum_ambiguous: () => "the words state a number without saying whether it is an increase («by 30», «30 more») or a total («to 30 calls»): ask the user which; nothing was raised",
+  limit_not_raised: () => "the words authorize no calls beyond the limit already in force (a total that is already reached): ask the user for more; nothing was raised",
   over_quantum: (r) => `the user's words authorize at most ${r.allowed} more calls: pass --n ${r.allowed} or less, or ask for more; nothing was raised`,
   n_invalid: () => "--n must be a whole number from 1 to 100; nothing was raised",
   approval_already_used: () => "that approval was already used in this request: ask the user again and pass their new words; nothing was raised",
@@ -403,7 +408,8 @@ function cmdBudget(flags, ctx) {
     // Going past the limit is the user's decision: their own words are recorded, and the audit checks that they said it
     // and that it was an authorization for this quantity (not a quoted refusal, a question or a smaller step).
     const message = sanitizeText(flags.message ?? "").text;
-    const r = approveMore(ctx.dir, flags.n === undefined ? undefined : Number(flags.n), message);
+    const question = flags.question === undefined ? null : sanitizeText(flags.question).text;
+    const r = approveMore(ctx.dir, flags.n === undefined ? undefined : Number(flags.n), message, Date.now(), question);
     if (!r.ok) return { status: "refused", reason: r.reason, message: BUDGET_REFUSALS[r.reason]?.(r) ?? "nothing was raised" };
     const { ok, n, ...view } = r;
     return { status: "ok", ...view, approval: { n, msg: oneLine(message, 120) } };
@@ -458,7 +464,7 @@ export async function main(argv, env = process.env) {
     return EXIT.ok;
   }
   const flags = parseFlags(argv.slice(), {
-    values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "action-file", "source", "id", "ok", "ms", "n", "claims", "check-timeout"],
+    values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "action-file", "source", "id", "ok", "ms", "n", "question", "claims", "check-timeout"],
     bools: ["headless", "single", "widen", "dry-run"],
     multi: ["check"],
   });

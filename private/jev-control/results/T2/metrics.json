@@ -1,6 +1,6 @@
 {
   "round": "T2",
-  "kind": "build + offline tests (ratification fix rounds 1, 2 and 3 applied)",
+  "kind": "build + offline tests (ratification fix rounds 1, 2, 3 and 4 applied)",
   "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
   "branch": "jev-control-skill",
   "plugin_version": "0.7.0",
@@ -34,9 +34,9 @@
       "exit": 0
     },
     "node --test private/jev-control/test/": {
-      "tests": 395,
-      "suites": 76,
-      "pass": 395,
+      "tests": 409,
+      "suites": 77,
+      "pass": 409,
       "fail": 0,
       "exit": 0
     },
@@ -94,6 +94,13 @@
     "verification_validity": "receipt_verified only when nothing that may change the tree (edit, Bash, agent, unclassified tool) happened between the verification and the action; otherwise unverified_binding",
     "done_attempts": "a done result updates the finalization only for the latest started attempt of its request; late results are stale_results",
     "what_jev_reads": "the whole sanitized concrete action is sent (noul context item, tie-break evidence, rerank candidate text); a batch is split over several noul calls when it does not fit; a tie-break that does not fit stops (action_material_too_large); an action sanitizing cannot show whole is action_material_omitted and not scored; hashes only in receipts, state and plan",
+    "live": "unmeasured"
+  },
+  "fix_round_4": {
+    "authorization_object": "a budget raise needs a granting sentence about the budget, an option approval one that names the option; quotations and unrelated instructions are not authorizations; a short answer counts only with the question it answers (--question for the helper, the real AskUserQuestion question for the audit)",
+    "authorization_identity": "an authorization is spent by source message and sentence indexes; the helper treats words contained in an earlier approval's words as the same authorization",
+    "total_vs_increment": "a total (to N, N in total) is measured against the limit in force; an increment (by N, N more) is added; an ambiguous number raises nothing",
+    "finalization_mutations": "Bash, Agent, Task and unclassified tools after an accepted done invalidate it (changed_after_accepted); Incomplete stays a legitimate stop",
     "live": "unmeasured"
   }
 }
