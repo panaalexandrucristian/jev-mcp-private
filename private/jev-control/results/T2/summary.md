@@ -5,7 +5,7 @@
 | Check | Result |
 | --- | --- |
 | `node --test private/jev-flow/test/` | 324 tests, 61 suites, 324 pass, exit 0 |
-| `node --test private/jev-control/test/` | 409 tests, 77 suites, 409 pass, exit 0 |
+| `node --test private/jev-control/test/` | 414 tests, 77 suites, 414 pass, exit 0 |
 | `claude plugin validate .` (Claude Code 2.1.288) | passed, exit 0 (it does not check hook event names) |
 | `node private/jev-control/fixtures/seal.mjs verify` | ok (dev oracle hashes and sealed final hashes recorded) |
 | `git diff --check` | clean |
@@ -47,6 +47,14 @@ The fourth review found that an unrelated or quoted sentence («Use Node 22.», 
 - **Identity** (`authorization.mjs`, `budget.mjs`, `measure.mjs`): an authorization is spent by its source message and sentence indexes, not by where the quoted fragment starts; the helper treats words contained in an earlier approval's words (same question) as the same authorization. «Yes, increase the budget by 5 calls.» then its fragment «increase the budget by 5 calls.» raises by 5 in total, limit 30.
 - **Total or increment** (`authorization.mjs`, `budget.mjs`, `measure.mjs`): «to 30 calls» / «30 in total» is a total, measured against the limit in force (+5 from 25, nothing when already reached); «by 30» / «30 more» is an increment; a number that is neither («30 calls», «up to 30») is ambiguous and raises nothing.
 - **Finalization** (`measure.mjs`): after an accepted `done`, any Bash command, Agent/Task or unclassified tool (unknown effects count, as for `receipt_verified`) in the same request invalidates it (`changed_after_accepted`); `Incomplete:` stays a legitimate stop. A new accepted `done` restores it.
+
+## Fix round 5 (after the fifth review)
+
+The fifth review found that «Use Jev.» still authorized a budget raise (a noun and a granting verb merely co-occurring), that a stated zero or fraction fell back to the default step of 25, that «Approve o1 instead of o2.» approved `o2`, and that a change made only through Bash (or a delegate) without any gate escaped the finalization check. Fixed and tested offline:
+
+- **A grant aimed at its target** (`authorization.mjs`): a budget authorization is a budget verb (increase, raise, approve, continue, spend, …) at most four words before the limit or the calls, or «N more calls»; the word «Jev» is no longer an object. An option authorization is a granting word at most four words before the option's id with no exclusion («instead of», «rather than», «over», «except», …) in between or right before it and no other identifier in between (a list approves only its first option; each other option needs its own words). The question a short answer answers is judged the same way. Formulations the parser cannot read this way are refused as not demonstrated.
+- **Quantity** (`authorization.mjs`): `quantityOf` separates *no number* (default step) from *zero* (zero calls, `quantum_zero`), *fractional, negative or grouped* (`quantum_invalid`) and *ambiguous*; a stated quantity can no longer disappear into the default. Helper, CLI and audit agree: «Increase the budget by 0 calls.» and «… by 0.5 calls.» keep the limit at 25 and call 26 is refused / a violation.
+- **Finalization without a prior done** (`measure.mjs`): every request now tracks the changes it made. An evident change (an edit tool, or a Bash command that visibly writes: redirection, `rm`/`mv`/`cp`/`touch`/`tee`, `sed -i`, state-changing git, package installs) without a current accepted `done` is `completion_declared_without_accepted_done` when the final message declares completion, whether or not an edit tool was used and whether or not a `done` was ever accepted (also after a failed `done`); `Incomplete:` stays a legitimate stop and a missing message stays `unknown` (`no_final_message`). A merely possible change (any other Bash command, Agent/Task, an unclassified tool) is reported as `unknown` (`possible_changes_unvalidated`), never as a violation. The per-request rows carry `bash_changes` and `possible_changes`.
 
 ## Not measured, not verified
 

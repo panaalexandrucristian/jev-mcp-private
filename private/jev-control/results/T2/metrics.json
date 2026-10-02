@@ -1,6 +1,6 @@
 {
   "round": "T2",
-  "kind": "build + offline tests (ratification fix rounds 1, 2, 3 and 4 applied)",
+  "kind": "build + offline tests (ratification fix rounds 1, 2, 3, 4 and 5 applied)",
   "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
   "branch": "jev-control-skill",
   "plugin_version": "0.7.0",
@@ -34,9 +34,9 @@
       "exit": 0
     },
     "node --test private/jev-control/test/": {
-      "tests": 409,
+      "tests": 414,
       "suites": 77,
-      "pass": 409,
+      "pass": 414,
       "fail": 0,
       "exit": 0
     },
@@ -101,6 +101,12 @@
     "authorization_identity": "an authorization is spent by source message and sentence indexes; the helper treats words contained in an earlier approval's words as the same authorization",
     "total_vs_increment": "a total (to N, N in total) is measured against the limit in force; an increment (by N, N more) is added; an ambiguous number raises nothing",
     "finalization_mutations": "Bash, Agent, Task and unclassified tools after an accepted done invalidate it (changed_after_accepted); Incomplete stays a legitimate stop",
+    "live": "unmeasured"
+  },
+  "fix_round_5": {
+    "grant_aimed_at_target": "a budget grant is a budget verb within four words of the limit/calls (or 'N more calls'); 'Jev' is not an object; an option grant is a granting word within four words before the id with no exclusion (instead of, rather than, over, except) and no other identifier in between; the question of a short answer is judged the same way; unreadable formulations are refused",
+    "quantity": "no number = default step; zero = quantum_zero; fraction/negative/grouped = quantum_invalid; ambiguous = quantum_ambiguous; a stated quantity never becomes the default",
+    "finalization_without_done": "evident changes (edit tool, Bash that visibly writes) without a current accepted done are completion_declared_without_accepted_done when completion is declared, also with no prior done and no edit tool; possible changes (other Bash, Agent/Task, unclassified tools) are unknown possible_changes_unvalidated",
     "live": "unmeasured"
   }
 }

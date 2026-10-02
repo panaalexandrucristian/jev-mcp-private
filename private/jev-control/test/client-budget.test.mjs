@@ -103,10 +103,25 @@ describe("the shared budget (D15, D26)", () => {
     assert.deepEqual(approveMore(dir, 5, "Increase the budget to 30 calls.").n, 5);
     assert.equal(limit(), 30);
     assert.deepEqual(approveMore(dir, 5, "Raise the limit to 30 calls, please."), { ok: false, reason: "limit_not_raised" }, "a total already reached grants no further calls");
-    assert.deepEqual(approveMore(dir, 25, "Yes, 30 calls."), { ok: false, reason: "quantum_ambiguous" }, "is it an increase or a total? not guessed");
-    assert.deepEqual(approveMore(dir, 5, "Yes, up to 50 calls."), { ok: false, reason: "quantum_ambiguous" });
+    assert.deepEqual(approveMore(dir, 25, "Yes, approve 30 calls."), { ok: false, reason: "quantum_ambiguous" }, "is it an increase or a total? not guessed");
+    assert.deepEqual(approveMore(dir, 5, "Yes, approve up to 50 calls."), { ok: false, reason: "quantum_ambiguous" });
     assert.equal(approveMore(dir, 30, "Increase the budget by 30 calls.").n, 30);
     assert.equal(limit(), 60);
+  });
+  it("mentioning Jev or the calls is not authorizing a raise; a stated zero, fraction or negative raises nothing and never falls back to the default step", () => {
+    const dir = stateDir();
+    const limit = () => budgetView(loadControlState(dir)).limit;
+    assert.deepEqual(approveMore(dir, 25, "Use Jev."), { ok: false, reason: "message_not_about_budget" });
+    assert.deepEqual(approveMore(dir, 25, "Use Node 22 for the calls."), { ok: false, reason: "message_not_about_budget" });
+    assert.deepEqual(approveMore(dir, 25, "yes", Date.now(), "Use Jev?"), { ok: false, reason: "message_not_about_budget" });
+    assert.deepEqual(approveMore(dir, 1, "Increase the budget by 0 calls."), { ok: false, reason: "quantum_zero" });
+    assert.deepEqual(approveMore(dir, undefined, "Increase the budget by 0 calls."), { ok: false, reason: "quantum_zero" }, "zero is a quantity: no +25 without --n either");
+    assert.deepEqual(approveMore(dir, undefined, "Increase the budget by 0.5 calls."), { ok: false, reason: "quantum_invalid" });
+    assert.deepEqual(approveMore(dir, 1, "Increase the budget by -5 calls."), { ok: false, reason: "quantum_invalid" });
+    assert.deepEqual(approveMore(dir, undefined, "Increase the budget by zero calls."), { ok: false, reason: "quantum_zero" });
+    assert.equal(limit(), 25, "nothing was raised by any of them");
+    assert.equal(reserve(dir, { tool: "noul", source: "main" }).ok, true);
+    assert.equal(approveMore(dir, undefined, "Increase the budget.").n, 25, "words that state no quantity at all get the default step");
   });
   it("one user sentence authorizes once: quoting the whole sentence and then a fragment of it raises 5, not 10", () => {
     const dir = stateDir();

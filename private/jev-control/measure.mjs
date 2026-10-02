@@ -72,6 +72,14 @@ const ACTIONS = new Set(["Bash", "Read", "Edit", "Write", "MultiEdit", "Notebook
 const GRANTING = new Set(["decide", "search", "page", "approve"]);
 /** Tools whose calls may change the tree (an unclassified tool counts too): a verification does not survive them. */
 const MUTATING = new Set(["Bash", "Agent", "Task", ...EDIT_TOOLS]);
+/**
+ * A Bash command that evidently changes the tree or the environment: an output redirection, a file-changing command, a
+ * state-changing git command or a package install. A conservative recognizer for reporting only: a command it does not
+ * recognize is still counted as possibly changing things (unknown effects), just not as an evident change.
+ */
+const REDIRECTION = /(?:^|[^<>&\d|=-])(?:\d?>>?|&>)\s*(?!&|=|\/dev\/null(?![\w/]))\S/;
+const CHANGING_COMMAND = /(?:^|[;&|(]\s*|\s)(?:sudo\s+)?(?:rm|mv|cp|touch|mkdir|rmdir|tee|truncate|chmod|chown|ln|patch|dd|install)(?=\s)|(?:^|[;&|]\s*)(?:sed|perl)(?=\s)[^;&|]*\s-[a-z]*i(?![\w-])|\bgit\s+(?:apply|checkout|restore|reset|clean|commit|add|stash|merge|rebase|cherry-pick|am|rm|mv|pull|revert)\b|\b(?:npm|yarn|pnpm|pip3?|bun)\s+(?:install|add|remove|uninstall|i|ci|update|upgrade)\b/;
+const bashChanges = (command) => typeof command === "string" && (REDIRECTION.test(command) || CHANGING_COMMAND.test(command));
 const BASE_LIMIT = 25;
 const SAMPLES = 10;
 
@@ -600,7 +608,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
     return perRequest.get(req);
   };
   const finOf = (req) => {
-    if (!finState.has(req)) finState.set(req, { request: req, edits: 0, edit_seqs: [], mutation_seqs: [], done_calls: 0, done_seq: -1, outcome: null, accepted: false, accepted_at: null, edits_after_accepted: false, changed_after_accepted: false });
+    if (!finState.has(req)) finState.set(req, { request: req, edits: 0, edit_seqs: [], mutation_seqs: [], bash_changes: 0, done_calls: 0, done_seq: -1, outcome: null, accepted: false, accepted_at: null, edits_after_accepted: false, changed_after_accepted: false });
     return finState.get(req);
   };
   // A Bash command, a delegated agent or an unclassified tool may have changed the tree (unknown effects count, as for
@@ -609,6 +617,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
     mutations.push({ req: e.req, i: e.i });
     const f = finOf(e.req);
     f.mutation_seqs.push(e.seq);
+    if (e.name === "Bash" && bashChanges(e.input?.command)) f.bash_changes += 1;
     if (f.accepted) Object.assign(f, { accepted: false, accepted_at: null, changed_after_accepted: true });
   };
   const ctxStats = (ctx) => (out.coverage.by_context[ctx] ??= { covered: 0, uncovered: 0, unknown: 0, exceptions: 0 });
@@ -1133,11 +1142,22 @@ export function audit(records, { threshold = 0.95 } = {}) {
   fin.edits = edits.length;
   const finals = [...finState.values()].sort((a, b) => a.request - b.request);
   for (const f of finals) {
-    const row = { request: f.request, edits: f.edits, done_calls: f.done_calls, outcome: f.outcome, accepted: f.accepted, edits_after_accepted: f.edits_after_accepted, changed_after_accepted: f.changed_after_accepted };
+    const row = { request: f.request, edits: f.edits, done_calls: f.done_calls, outcome: f.outcome, accepted: f.accepted, edits_after_accepted: f.edits_after_accepted, changed_after_accepted: f.changed_after_accepted, bash_changes: f.bash_changes, possible_changes: f.mutation_seqs.length };
     fin.per_request.push(row);
-    if ((f.edits === 0 && !f.changed_after_accepted) || f.accepted) continue;
+    if (f.accepted) continue;
+    // A change is evident (an edit tool, a Bash command that visibly writes, a change after an accepted done) or merely possible
+    // (any other Bash command, a delegated agent, an unclassified tool: effects unknown). Either way the request needs a current
+    // accepted done before it may declare completion; with no done at all that is still the case.
+    const evident = f.edits > 0 || f.bash_changes > 0 || f.changed_after_accepted;
+    const possible = f.mutation_seqs.length > 0;
+    if (!evident && !possible) continue;
     const last = requests[f.request]?.last ?? null;
     const text = last && !last.toolUse ? last.text : "";
+    if (!evident) {
+      // Nothing demonstrates a change: report the uncertainty, never a violation (a read-only exploration ends like this too).
+      if (!/^Incomplete:/.test(text)) fin.unknown.push({ request: f.request, reason: "possible_changes_unvalidated" });
+      continue;
+    }
     if (/^Incomplete:/.test(text)) fin.incomplete_stops += 1;
     else if (text) fin.violations.push({ kind: "completion_declared_without_accepted_done", request: f.request, last_outcome: f.outcome, edits_after_accepted: f.edits_after_accepted, changed_after_accepted: f.changed_after_accepted });
     else fin.unknown.push({ request: f.request, reason: "no_final_message" });

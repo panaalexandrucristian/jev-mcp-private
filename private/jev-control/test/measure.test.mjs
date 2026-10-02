@@ -482,6 +482,12 @@ describe("Jev calls and budget", () => {
       assert.equal(quoted.threshold.approvals_unbound, 1);
       assert.equal(quoted.approvals.unbound[0].reason, "not_an_authorization");
       assert.equal(quoted.coverage.covered, 0);
+      const instead = audit([prompt("Approve o1 instead of o2."), ...decide(stop), ...call(helper("approve", '--decision d1 --option o2 --message "Approve o1 instead of o2."'), json({ status: "ok", override: "user", decision_id: "d1", option: "o2", ah: ah("Edit", "src/y.mjs") })), ...edit("src/y.mjs")]);
+      assert.equal(instead.threshold.approvals_unbound, 1, "approving o1 instead of o2 grants nothing for o2");
+      assert.equal(instead.coverage.covered, 0);
+      const forO1 = audit([prompt("Approve o1 instead of o2."), ...decide(stop), ...approveO("Approve o1 instead of o2."), ...edit("src/x.mjs")]);
+      assert.equal(forO1.threshold.approvals_unbound, 0, "but it does approve o1");
+      assert.equal(forO1.coverage.covered, 1);
       const said = audit([prompt("Yes, use o1."), ...decide(stop), ...approveO("use o1"), ...edit("src/x.mjs")]);
       assert.equal(said.threshold.approvals_unbound, 0);
       assert.equal(said.coverage.covered, 1);
@@ -498,6 +504,18 @@ describe("Jev calls and budget", () => {
       assert.equal(doc.jev_calls.per_request[0].approved_extra, 0);
       const bare = audit([prompt("yes"), ...approve(25, "yes")]);
       assert.equal(bare.budget.approvals_bound, 0, "a bare yes without its question names nothing");
+    });
+    it("mentioning Jev raises nothing; a stated zero or fraction keeps the limit at 25 and call 26 is a violation", () => {
+      const spend = (calls) => [...decide(decideOut({ calls: 20, status: "expand", scores: [] })), ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: calls }))];
+      for (const said of ["Use Jev.", "Use Node 22 for the calls.", "Increase the budget by 0 calls.", "Increase the budget by 0.5 calls.", "Increase the budget by -5 calls."]) {
+        const a = audit([prompt(said), ...approve(25, said), ...spend(6)]);
+        assert.equal(a.jev_calls.per_request[0].approved_extra, 0, said);
+        assert.equal(a.jev_calls.per_request[0].limit, 25, said);
+        assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }], `${said}: call 26`);
+      }
+      // A stated zero is a bound authorization of zero calls: it raises nothing and asking for more is over its quantum.
+      const zero = audit([prompt("Increase the budget by 0 calls."), ...approve(25, "Increase the budget by 0 calls.")]);
+      assert.equal(zero.budget.approvals_over_quantum, 1);
     });
     it("the whole sentence and then a fragment of it are ONE authorization: at most 5 more calls, limit 30", () => {
       const rec = [prompt("Yes, increase the budget by 5 calls."), ...call(helper("budget", 'approve --n 5 --message "Yes, increase the budget by 5 calls."'), json({ status: "ok", used: 20, limit: 30, approval: { n: 5, msg: "Yes, increase the budget by 5 calls." } })), ...call(helper("budget", 'approve --n 5 --message "increase the budget by 5 calls."'), json({ status: "ok", used: 20, limit: 35, approval: { n: 5, msg: "increase the budget by 5 calls." } }))];
@@ -520,7 +538,7 @@ describe("Jev calls and budget", () => {
       assert.equal(reached.budget.approvals_bound, 2);
       assert.equal(reached.budget.approvals_over_quantum, 1, "the second total was already reached: no further calls");
       assert.equal(reached.jev_calls.per_request[0].limit, 30);
-      const ambiguous = audit([prompt("Yes, 30 calls."), ...approve(30, "Yes, 30 calls.")]);
+      const ambiguous = audit([prompt("Yes, approve 30 calls."), ...approve(30, "Yes, approve 30 calls.")]);
       assert.equal(ambiguous.jev_calls.per_request[0].approved_extra, 0, "an ambiguous quantity authorizes nothing");
     });
   });
@@ -582,6 +600,48 @@ describe("finalization", () => {
     assert.equal(none.finalization.accepted, false);
     assert.equal(none.finalization.last_outcome, "needs_evidence");
     assert.equal(audit([prompt("just a question"), say("42")]).finalization.violations.length, 0);
+  });
+  it("a change by Bash, a delegate or an unclassified tool needs a gate even when no done was ever accepted and no edit tool was used", () => {
+    const row = (a) => a.finalization.per_request[0];
+    // Bash alone: «printf changed > a.js» then «Done.» with no gate at all is an unvalidated completion.
+    const bashOnly = audit([prompt("go"), ...call(bash("printf changed > a.js"), "ok"), say("Done.")]);
+    assert.equal(bashOnly.finalization.edits, 0);
+    assert.deepEqual(bashOnly.finalization.violations, [{ kind: "completion_declared_without_accepted_done", request: 1, last_outcome: null, edits_after_accepted: false, changed_after_accepted: false }]);
+    assert.equal(row(bashOnly).bash_changes, 1);
+    for (const cmd of ["sed -i '' s/a/b/ a.js", "rm -rf build", "git checkout -- a.js", "npm install left-pad", "echo x >> log.txt", "cp a.js b.js", "touch x"]) {
+      assert.equal(audit([prompt("go"), ...call(bash(cmd), "ok"), say("Done.")]).finalization.violations.length, 1, cmd);
+    }
+    // Incomplete stays a legitimate stop; a missing message is unknown, not a success claim.
+    const stop = audit([prompt("go"), ...call(bash("printf changed > a.js"), "ok"), say("Incomplete: I changed a.js and did not run the gate.")]);
+    assert.deepEqual(stop.finalization.violations, []);
+    assert.equal(stop.finalization.incomplete_stops, 1);
+    assert.deepEqual(audit([prompt("go"), ...call(bash("printf changed > a.js"), "ok")]).finalization.unknown, [{ request: 1, reason: "no_final_message" }]);
+    // A failed done followed by a Bash change is not accepted either.
+    const failed = audit([prompt("go"), ...editing, ...done("checks_failed"), ...call(bash("printf fixed > a.js"), "ok"), say("Done.")]);
+    assert.deepEqual(kinds(failed), ["completion_declared_without_accepted_done"]);
+    const failedBashOnly = audit([prompt("go"), ...call(bash("printf fixed > a.js"), "ok"), ...done("checks_failed"), ...call(bash("printf again > a.js"), "ok"), say("Done.")]);
+    assert.deepEqual(kinds(failedBashOnly), ["completion_declared_without_accepted_done"]);
+    assert.equal(failedBashOnly.finalization.accepted, false);
+    // Delegated change: the subagent's own edit is an evident change of the request; the delegation alone is only a possible one.
+    const delegatedEdit = audit([prompt("go"), ...call(use("Agent", { subagent_type: "general-purpose", prompt: "fix a.js" }), "done"), ...write("src/a.mjs", { agent: "agent-1" }), say("Done.")]);
+    assert.deepEqual(kinds(delegatedEdit), ["completion_declared_without_accepted_done"]);
+    const delegated = audit([prompt("go"), ...call(use("Agent", { subagent_type: "general-purpose", prompt: "fix a.js" }), "done"), say("Done.")]);
+    assert.deepEqual(delegated.finalization.violations, []);
+    assert.deepEqual(delegated.finalization.unknown, [{ request: 1, reason: "possible_changes_unvalidated" }], "effects that cannot be shown are reported as uncertain");
+    assert.equal(row(delegated).possible_changes, 1);
+    // Other Bash commands and unclassified tools are possible changes too: uncertainty, never a violation.
+    for (const other of [call(bash("ls -la"), "ok"), call(use("SomethingNew", {}), "ok"), call(use("Task", { subagent_type: "general-purpose", prompt: "look" }), "ok")]) {
+      const a = audit([prompt("go"), ...other, say("Here is what I found.")]);
+      assert.deepEqual(a.finalization.violations, []);
+      assert.deepEqual(a.finalization.unknown, [{ request: 1, reason: "possible_changes_unvalidated" }]);
+    }
+    // No change at all: nothing to validate; a protocol call changes nothing.
+    assert.deepEqual(audit([prompt("go"), ...call(helper("status"), json({ status: "ok" })), say("42")]).finalization.unknown, []);
+    assert.deepEqual(audit([prompt("go"), ...call(bash("ls"), "ok"), say("Incomplete: nothing to do.")]).finalization.unknown, []);
+    // An accepted done after the change covers it.
+    const covered = audit([prompt("go"), ...call(bash("printf changed > a.js"), "ok"), ...done("accepted"), say("Done.")]);
+    assert.deepEqual(covered.finalization.violations, []);
+    assert.equal(covered.finalization.accepted, true);
   });
   it("an accepted done followed by an unavailable or checks_failed attempt is no longer accepted", () => {
     for (const outcome of ["unavailable", "checks_failed", "refused"]) {

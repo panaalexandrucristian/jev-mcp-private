@@ -187,6 +187,19 @@ describe("the audit follows the real receipt, budget and search shapes", () => {
     assert.equal(a.jev_calls.per_request[0].limit, 30, "even if a helper output claimed another raise, the audit counts one authorization once");
     assert.deepEqual(a.budget.unbound.map((u) => u.reason), ["approval_reused"]);
   });
+  it("the real helper and the audit agree on «Use Jev.» and on a stated zero or fraction: the limit stays 25 and call 26 is refused", () => {
+    const { repo, env } = prepare();
+    for (const [words, reason] of [["Use Jev.", "message_not_about_budget"], ["Increase the budget by 0 calls.", "quantum_zero"], ["Increase the budget by 0.5 calls.", "quantum_invalid"]]) {
+      const r = cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo });
+      assert.equal(r.json.reason, reason, r.stdout);
+      // A helper output that claimed a raise anyway is not believed by the audit.
+      const claimed = JSON.stringify({ status: "ok", limit: 50, approval: { n: 25, msg: words } });
+      const a = audit([prompt(repo, words), ...step(repo, use("Bash", { command: `node "${CLI_PATH}" budget approve --message "${words}"` }), claimed)]);
+      assert.equal(a.jev_calls.per_request[0].approved_extra, 0, words);
+    }
+    for (let i = 0; i < 25; i++) assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo }).json.status, "ok");
+    assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo }).json.status, "budget_exhausted", "call 26");
+  });
   it("a reservation's source flag is read from the real command and the real result", () => {
     const { repo, env } = prepare();
     const r = cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "subagent"], { env, cwd: repo });

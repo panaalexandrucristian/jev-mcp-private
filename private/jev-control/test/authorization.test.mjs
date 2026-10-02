@@ -33,6 +33,20 @@ describe("the user's words as an authorization", () => {
     assert.equal(grants("Yes, go with o1", optionScope("o1")), true);
     assert.equal(grants("Yes, go with o10", optionScope("o1")), false);
   });
+  it("mentioning the object is not authorizing the operation: the grant must be aimed at the budget or the option", () => {
+    for (const no of ["Use Jev.", "Use Node 22 for the calls.", "Approve the pull request for calls.", "Yes, the budget.", "Jev is fine.", "Yes, calls are cheap."]) assert.equal(grants(no), false, no);
+    for (const yes of ["Increase the budget.", "Yes, 25 more calls.", "yes spend five more calls", "Ok, continue past the limit", "Da, mărește bugetul cu 30."]) assert.equal(grants(yes), true, yes);
+    assert.equal(grants("yes", BUDGET_SCOPE, "Use Jev?"), false, "nor does a question that only mentions Jev");
+    // An option set aside is not approved: «approve o1 instead of o2» approves o1 only.
+    for (const [words, o1, o2] of [["Approve o1 instead of o2.", true, false], ["Use o1 over o2", true, false], ["Instead of o2, approve o1.", true, false], ["Approve o1 rather than o2", true, false], ["Choose o1 in place of o2", true, false], ["Approve o1 and o2", true, false], ["Approve o1, o2 stays out", true, false]]) {
+      assert.equal(grants(words, optionScope("o1")), o1, `${words} for o1`);
+      assert.equal(grants(words, optionScope("o2")), o2, `${words} for o2`);
+    }
+    assert.equal(grants("Approve o1 and approve o2", optionScope("o2")), true, "each option with its own grant");
+    assert.equal(grants("yes", optionScope("o2"), "Approve o1 instead of o2?"), false, "the question puts o2 aside");
+    assert.equal(grants("yes", optionScope("o1"), "Approve o1 instead of o2?"), true);
+    assert.equal(grants("I will use o1 later, after reading the long report, o2", optionScope("o2")), false, "a verb far from the id is not the grant of that id");
+  });
   it("a short answer counts only with the concrete question it answers", () => {
     assert.equal(grants("yes", BUDGET_SCOPE, null), false);
     assert.equal(grants("yes", BUDGET_SCOPE, "Raise the budget by 25 calls?"), true);
@@ -54,8 +68,10 @@ describe("the user's words as an authorization", () => {
     assert.deepEqual(q("yes, five more calls"), { kind: "increment", n: 5 });
     assert.deepEqual(q("mărește bugetul cu 30"), { kind: "increment", n: 30 });
     assert.deepEqual(q("yes, go ahead"), { kind: "none" });
-    assert.deepEqual(q("yes, 0.95 stays"), { kind: "none" }, "a decimal is not a quantity");
     assert.deepEqual(q("yes, 30 calls"), { kind: "ambiguous" });
+    assert.deepEqual(q("by 0 calls"), { kind: "increment", n: 0 }, "zero is a stated quantity, not an absent one");
+    assert.deepEqual(q("by zero calls"), { kind: "increment", n: 0 });
+    for (const bad of ["by 0.5 calls", "by -5 calls", "yes, 0.95 stays", "by 1,000 calls", "by 1.5 more calls"]) assert.deepEqual(q(bad), { kind: "invalid" }, `${bad}: an explicit but unrecognized quantity never becomes "none"`);
     assert.deepEqual(q("up to 50 calls"), { kind: "ambiguous" });
     assert.deepEqual(q("for request 3"), { kind: "ambiguous" });
     assert.deepEqual(q("by 5 calls, to 30 in total"), { kind: "ambiguous" }, "an increment and a total that may disagree");
@@ -68,6 +84,8 @@ describe("the user's words as an authorization", () => {
     assert.deepEqual(incrementFor({ kind: "total", n: 20 }, 25), { ok: false, reason: "limit_not_raised" });
     assert.deepEqual(incrementFor({ kind: "ambiguous" }, 25), { ok: false, reason: "quantum_ambiguous" });
     assert.deepEqual(incrementFor({ kind: "none" }, 25), { ok: true, allowed: 25 }, "no number: the default step");
+    assert.deepEqual(incrementFor({ kind: "increment", n: 0 }, 25), { ok: false, reason: "quantum_zero" }, "a stated zero grants zero calls");
+    assert.deepEqual(incrementFor({ kind: "invalid" }, 25), { ok: false, reason: "quantum_invalid" });
     assert.deepEqual(incrementFor({ kind: "increment", n: 500 }, 25), { ok: true, allowed: 100 }, "never above the cap of one approval");
   });
   it("judges a quoted fragment by the WHOLE sentence it lies in", () => {

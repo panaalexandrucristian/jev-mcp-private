@@ -355,6 +355,8 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(other.json.reason, "message_not_about_option", "approving o1 is not approving o2");
     const unrelated = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "Use Node 22."], { env, cwd: repo });
     assert.equal(unrelated.json.reason, "message_not_about_option");
+    const instead = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "Approve o1 instead of o2."], { env, cwd: repo });
+    assert.equal(instead.json.reason, "message_not_about_option", "o2 was put aside in those words");
     const bare = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes"], { env, cwd: repo });
     assert.equal(bare.json.reason, "message_not_about_option", "a bare yes names no option");
     const answered = cli(["approve", ...SID, "--decision", "dec9", "--option", "o2", "--message", "yes", "--question", "Approve o2 below the threshold?"], { env, cwd: repo });
@@ -390,7 +392,15 @@ describe("approvals, budget and direct calls", () => {
     const total = cli(["budget", "approve", ...SID, "--n", "30", "--message", "Increase the budget to 30 calls."], { env, cwd: repo });
     assert.equal(total.json.reason, "over_quantum", "a total of 30 from 25 is +5");
     assert.match(total.json.message, /at most 5/);
-    assert.equal(cli(["budget", "approve", ...SID, "--message", "Yes, 30 calls."], { env, cwd: repo }).json.reason, "quantum_ambiguous");
+    assert.equal(cli(["budget", "approve", ...SID, "--message", "Yes, approve 30 calls."], { env, cwd: repo }).json.reason, "quantum_ambiguous");
+    assert.equal(cli(["budget", "approve", ...SID, "--message", "Use Jev."], { env, cwd: repo }).json.reason, "message_not_about_budget");
+    for (const [words, reason] of [["Increase the budget by 0 calls.", "quantum_zero"], ["Increase the budget by 0.5 calls.", "quantum_invalid"]]) {
+      const r = cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo });
+      assert.equal(r.code, 4);
+      assert.equal(r.json.reason, reason, words);
+    }
+    assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.limit, 25, "still 25");
+    assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo }).code, 2, "and call 26 is still refused");
     const smaller = cli(["budget", "approve", ...SID, "--n", "100", "--message", "yes, approve 10 more calls"], { env, cwd: repo });
     assert.equal(smaller.json.reason, "over_quantum");
     assert.match(smaller.json.message, /at most 10/);
