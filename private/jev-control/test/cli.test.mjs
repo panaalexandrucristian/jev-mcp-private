@@ -406,6 +406,8 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(cli(["budget", "approve", ...SID, "--message", "Yes, approve 30 calls."], { env, cwd: repo }).json.reason, "quantum_ambiguous");
     assert.equal(cli(["budget", "approve", ...SID, "--message", "Use Jev."], { env, cwd: repo }).json.reason, "message_not_about_budget");
     for (const words of ["Approve tests for calls.", "Approve testing the budget.", "Approve discussing the budget.", "Approve the budget for testing."]) assert.equal(cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo }).json.reason, "message_not_about_budget", words);
+    for (const words of ["Continue with the current budget.", "Spend the current budget."]) assert.equal(cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo }).json.reason, "message_not_about_budget", `${words}: using the budget already granted raises nothing`);
+    assert.equal(cli(["budget", "approve", ...SID, "--message", "yes", "--question", "Should we continue with the current budget?"], { env, cwd: repo }).json.reason, "message_not_about_budget");
     assert.equal(cli(["budget", "approve", ...SID, "--message", "yes", "--question", "Should we increase the budget or wait?"], { env, cwd: repo }).json.reason, "message_not_about_budget");
     for (const [words, reason] of [["Increase the budget by 0 calls.", "quantum_zero"], ["Increase the budget by 0.5 calls.", "quantum_invalid"]]) {
       const r = cli(["budget", "approve", ...SID, "--message", words], { env, cwd: repo });

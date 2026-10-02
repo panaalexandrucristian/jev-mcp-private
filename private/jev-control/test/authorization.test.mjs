@@ -7,7 +7,9 @@ const q = (text) => quantityOf(sentencesOf(text));
 
 describe("the user's words as an authorization", () => {
   it("a granting sentence about the budget is one; a negation, a refusal, a question, a condition or a quotation never is", () => {
-    for (const yes of ["Yes, increase the budget.", "approve 10 more calls", "Ok, continue past the limit", "da, continuă cu 20 de apeluri", "Aprob bugetul."]) assert.equal(grants(yes), true, yes);
+    for (const yes of ["Yes, increase the budget.", "approve 10 more calls", "Ok, continue past the limit", "da, continuă cu 20 de apeluri", "Mărește bugetul."]) assert.equal(grants(yes), true, yes);
+    // Using the budget already granted raises nothing: only an approval of a raise (or of going beyond the limit) counts.
+    for (const no of ["Continue with the current budget.", "Spend the current budget.", "Approve the budget.", "Continue.", "Continue with the remaining calls", "Aprob bugetul curent."]) assert.equal(grants(no), false, no);
     for (const no of ["Do not increase the budget.", "don't continue the calls", "Never raise the limit", "I refuse to approve this budget", "Should I increase the budget?", "Increase the budget if the tests fail", "Nu aproba bugetul", "fără aprobare pentru buget", "the budget", "stop, no more calls", "whether to continue the limit is open", "The documentation says \"increase the budget by 100 calls\".", "As the docs say: increase the budget by 100 calls."]) assert.equal(grants(no), false, no);
   });
   it("splits sentences at line breaks and after . ! ? and normalizes case and spacing", () => {
@@ -122,6 +124,17 @@ describe("the user's words as an authorization", () => {
     assert.equal(findAuthorizations("Yes, go ahead and\nincrease the budget", "go ahead and increase the budget").occurrences.length, 1, "a line break inside the words is whitespace");
     assert.equal(findAuthorizations("Use Node 22.", "use node 22").occurrences.length, 0, "an unrelated instruction is found but is no authorization");
     assert.equal(findAuthorizations("Use Node 22.", "use node 22").found, true);
+  });
+  it("a later retraction or narrowing in the source message voids the quoted sentence", () => {
+    const n = (text, msg, scope) => findAuthorizations(text, msg, scope).occurrences.length;
+    assert.equal(n("Increase the budget by 25 calls. Actually no, keep the limit.", "Increase the budget by 25 calls."), 0);
+    assert.equal(n("Increase the budget by 25 calls. Actually, keep the limit.", "Increase the budget by 25 calls."), 0);
+    assert.equal(n("Increase the budget by 25 calls. But only 10.", "Increase the budget by 25 calls."), 0);
+    assert.equal(n("Increase the budget by 25 calls. Then fix the parser.", "Increase the budget by 25 calls."), 1, "an unrelated later sentence is fine");
+    assert.equal(n("Approve o1. Actually no, do not approve o1.", "Approve o1.", optionScope("o1")), 0);
+    assert.equal(n("Approve o1. Keep o1 out.", "Approve o1.", optionScope("o1")), 0);
+    assert.equal(n("Approve o1. Approve o2.", "Approve o1.", optionScope("o1")), 1, "a later approval of another option is no retraction");
+    assert.equal(n("Do not increase the budget. Yes, increase the budget by 5.", "increase the budget"), 1, "a retraction BEFORE the approval is overridden by it");
   });
   it("the identity of an authorization is the sentence, not where the quoted fragment starts", () => {
     const whole = findAuthorizations("Yes, increase the budget by 5 calls.", "Yes, increase the budget by 5 calls.");

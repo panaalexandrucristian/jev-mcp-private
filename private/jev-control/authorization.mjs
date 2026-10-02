@@ -53,7 +53,7 @@ const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // approval is FOR («tests», «testing», «discussing», «Node», «o2») makes the sentence unrecognized, and an unrecognized
 // sentence authorizes nothing. «Approve testing o2.» approves testing, not running o2; «Approve tests for calls.» raises nothing.
 const LEAD = new Set(["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "fine", "please", "pls", "i", "we", "you", "can", "may", "could", "should", "shall", "would", "like", "to", "want", "let", "lets", "us", "me", "and", "then", "also", "just", "now", "go", "ahead", "on", "da", "bine", "desigur", "te", "rog", "hai", "vrei", "să", "sa", "putem", "pot", "poți", "poti", "ar", "trebui", "și", "si", "apoi", "acum"]);
-const BUDGET_FILLER = new Set(["the", "a", "an", "this", "that", "your", "my", "our", "its", "it", "current", "new", "more", "extra", "additional", "another", "further", "higher", "bigger", "larger", "total", "in", "by", "to", "of", "with", "for", "up", "past", "beyond", "above", "over", "increase", "extension", "number", "amount", "please", "now", "then", "too", "de", "cu", "la", "pe", "încă", "inca", "suplimentare", "suplimentar", "un", "o", "mai", "multe", "câteva", "cateva", "te", "rog", "și", "si", "and"]);
+const BUDGET_FILLER = new Set(["current", "existing", "remaining", "present", "curent", "actual", "actualul", "rămas", "ramas", "rămase", "ramase", "the", "a", "an", "this", "that", "your", "my", "our", "its", "it", "current", "new", "more", "extra", "additional", "another", "further", "higher", "bigger", "larger", "total", "in", "by", "to", "of", "with", "for", "up", "past", "beyond", "above", "over", "increase", "extension", "number", "amount", "please", "now", "then", "too", "de", "cu", "la", "pe", "peste", "încă", "inca", "suplimentare", "suplimentar", "un", "o", "mai", "multe", "câteva", "cateva", "te", "rog", "și", "si", "and"]);
 const OPTION_VERB = OPTION_GRANT;
 const OPTION_FILLER = new Set(["the", "a", "an", "option", "variant", "choice", "alternative", "opțiunea", "optiunea", "opțiune", "optiune", "varianta", "alternativa", "with", "on", "ahead", "it", "to", "for", "now", "please"]);
 const OPTION_TAG = new Set(["option", "variant", "choice", "alternative", "opțiunea", "optiunea", "opțiune", "optiune", "varianta", "alternativa"]);
@@ -65,14 +65,21 @@ const isBareAffirmation = (s) => {
   return t.length > 0 && t.every((w) => BARE_AFFIRMATION.has(w)) && t.some((w) => CUE.test(w));
 };
 
-/** Is this sentence a complete approval of raising or spending the call budget: lead words, a budget verb, then only the budget, a quantity and fillers? */
+// What makes an approval one of RAISING (or going beyond) the budget, as opposed to using the budget already granted: a verb
+// that raises it, a word that adds to or goes beyond it, or a stated number. «Continue with the current budget.» and «Spend the
+// current budget.» approve what is already allowed and raise nothing (the default step applies only to a real raise).
+const RAISE_WORD = new Set(["increase", "raise", "extend", "bump", "expand", "grow", "add", "give", "more", "extra", "additional", "another", "further", "higher", "bigger", "larger", "beyond", "past", "above", "over", "extension", "mărește", "mareste", "ridică", "ridica", "extinde", "adaugă", "adauga", "peste", "încă", "inca", "suplimentare", "suplimentar", "mai", "multe"]);
+const EXISTING_WORD = new Set(["current", "existing", "remaining", "present", "curent", "actual", "actualul", "rămas", "ramas", "rămase", "ramase"]);
+
+/** Is this sentence a complete approval of RAISING the call budget: lead words, a budget verb, then only the budget, a quantity and fillers, and a raise? */
 function budgetApproval(text) {
   const t = tokensOf(text);
   let v = t.findIndex((w) => BUDGET_VERB.has(w));
   if (v === -1) v = t.findIndex((w, i) => t[i - 1] === "go" && (w === "ahead" || w === "on")); // «go on beyond the limit»
   if (v === -1 || !t.slice(0, v).every((w) => LEAD.has(w))) return false;
   const rest = t.slice(v + 1);
-  return rest.some((w) => BUDGET_NOUN.has(w)) && rest.every((w) => BUDGET_NOUN.has(w) || BUDGET_VERB.has(w) || BUDGET_FILLER.has(w) || numberOf(w) !== undefined);
+  if (!(rest.some((w) => BUDGET_NOUN.has(w)) && rest.every((w) => BUDGET_NOUN.has(w) || BUDGET_VERB.has(w) || BUDGET_FILLER.has(w) || numberOf(w) !== undefined))) return false;
+  return t.some((w) => RAISE_WORD.has(w)) || (!t.some((w) => EXISTING_WORD.has(w)) && t.some((w) => numberOf(w) !== undefined));
 }
 
 const idTokens = (id) => tokensOf(String(id).replace(/[_-]+/g, " "));
@@ -208,7 +215,8 @@ export function judge(sentences, scope, question = null) {
   const asLabel = !own && scope.kind === "option" && qSentences.some((s) => CUE.test(s)) && sentences.some((s) => optionApproval(s, scope.id, true));
   const bare = !own && !asLabel && qSentences.length === 1 && sentences.every(isBareAffirmation) && approvesScope(qSentences[0], scope);
   if (!own && !asLabel && !bare) {
-    const cue = sentences.some((s) => CUE.test(s)) || qSentences.some((s) => CUE.test(s));
+    const cues = (s) => CUE.test(s) || tokensOf(s).some((w) => BUDGET_VERB.has(w));
+    const cue = sentences.some(cues) || qSentences.some(cues);
     return { ok: false, reason: cue ? "object_missing" : "no_grant" };
   }
   let quantity = { kind: "none" };
@@ -235,6 +243,20 @@ export function sameAuthorization(msg, question, prev, prevQuestion) {
   return a.includes(b) || b.includes(a);
 }
 
+// A later sentence of the same message that takes an approval back or narrows it: «Actually no, keep the limit.», «But only 10.»
+const RETRACT = new RegExp(
+  `(?:^|[;:]\\s*)(?:and |ok |okay |well |so )?${wordsSrc("actually|wait|however|but|sorry|correction|oops|hold on|on second thought|de fapt|stai|totuși|totusi|dar|ps")}|${wordsSrc("only|doar|exclusiv|cancel|cancelled|canceled|retract|retracted|revoke|revoked|undo|scratch that|never mind|nevermind|forget it|ignore|disregard|ignoră|ignora|anulez|anulează|anuleaza|retrag|uită|uita")}`,
+  "u",
+);
+const mentions = (s, scope) => (scope.kind === "option" ? idPositions(tokensOf(s), scope.id).length > 0 : tokensOf(s).some((w) => BUDGET_NOUN.has(w) || numberOf(w) !== undefined));
+/**
+ * Does this LATER sentence of the source message void an approval before it? One that is itself refused (a negation, a
+ * question, a condition, a quotation), one that retracts or narrows («actually», «but only», «cancel»), or one that talks about
+ * the scope (the budget, a number, the option) without being a complete approval of it («keep the limit», «10 only»). A later
+ * approval of the same scope does not void it. What cannot be read safely voids: the user is asked again.
+ */
+const voidsEarlier = (sentence, scope) => refuses(sentence) || RETRACT.test(sentence) || (mentions(sentence, scope) && !approvesScope(sentence, scope));
+
 /**
  * Where `message` occurs in the user's `text` as an authorization of `scope`. Each occurrence is judged with the WHOLE
  * sentence(s) it lies in (a fragment of «Do not increase the budget.» is judged as that sentence), with the `question` it
@@ -260,7 +282,8 @@ export function findAuthorizations(text, message, scope = BUDGET_SCOPE, question
     const to = from + m.length;
     const idx = sentences.map((_, i) => i).filter((i) => spans[i][0] < to && spans[i][1] > from);
     const r = judge(idx.map((i) => sentences[i]), scope, question);
-    if (r.ok) out.occurrences.push({ sentences: idx, quantity: r.quantity });
+    // The fragment is judged in the context of the whole source message: a later retraction or narrowing in it voids the grant.
+    if (r.ok && !sentences.slice(Math.max(...idx) + 1).some((later) => voidsEarlier(later, scope))) out.occurrences.push({ sentences: idx, quantity: r.quantity });
   }
   return out;
 }

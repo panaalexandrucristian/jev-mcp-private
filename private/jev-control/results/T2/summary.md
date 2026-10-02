@@ -5,7 +5,7 @@
 | Check | Result |
 | --- | --- |
 | `node --test private/jev-flow/test/` | 324 tests, 61 suites, 324 pass, exit 0 |
-| `node --test private/jev-control/test/` | 414 tests, 77 suites, 414 pass, exit 0 |
+| `node --test private/jev-control/test/` | 416 tests, 77 suites, 416 pass, exit 0 |
 | `claude plugin validate .` (Claude Code 2.1.288) | passed, exit 0 (it does not check hook event names) |
 | `node private/jev-control/fixtures/seal.mjs verify` | ok (dev oracle hashes and sealed final hashes recorded) |
 | `git diff --check` | clean |
@@ -63,6 +63,13 @@ The sixth review found that a question with alternatives completed an answer tha
 - **Whole-sentence recognition instead of word windows** (`authorization.mjs`; `cli.mjs`, `budget.mjs` and `measure.mjs` call the same `readMessage`/`findAuthorizations`/`judge`): a sentence is an approval of the budget raise only when it is lead words, a budget verb and then nothing but the budget, a quantity and fillers; an approval of an option only when it is lead words, a granting verb, the id and at most politeness (after an exclusion clause such as «instead of o2» is cut off). Any word that says what the approval is for («tests», «testing», «discussing», «evaluating», «Node», another id) makes the sentence unrecognized, so it authorizes nothing: «Approve tests for calls.» and «Approve testing the budget.» keep the limit at 25 and «Approve testing o2.» is no grant for running `o2`. A list in one sentence («o1 and o2») is no longer read at all (approve each option in its own sentence).
 - **The question completes only a bare answer with one demonstrable target** (`judge`): a bare «yes» counts when the question is a single sentence that is itself a complete approval of that scope; an answer that selects an option («Use o1», the bare label `o1`) concerns that option alone, whatever alternatives the question lists; a «yes» to «Should we approve o1 or approve o2?» authorizes neither. The audit still uses the real `AskUserQuestion` question from the transcript, never `--question`.
 - Consequences for users, documented in SKILL.md and protocol.md: ask «Approve o1?» (one sentence, one option) and expect plain approvals («Approve o1.», «Use o1», «Increase the budget by 10 calls.», «Continue past the limit.») to work; extra reasons inside the approval sentence («yes, use o1 although it scored 0.9») are unrecognized and are asked again.
+
+## Fix round 7 (after the seventh review)
+
+The seventh review found that «Continue with the current budget.» and «Spend the current budget.» authorized +25 calls (any approval about the budget got the default step), and that quoting only the first sentence of a message hid a retraction in the same message («Increase the budget by 25 calls. Actually no, keep the limit.»). Fixed and tested offline (416 tests, 77 suites):
+
+- **Using the budget is not raising it** (`authorization.mjs`; `cli.mjs`, `budget.mjs`, `measure.mjs` share it): a budget approval must also be an approval of a raise or of going beyond the limit (a raise verb, «more/extra/another», «past/beyond/over the limit», a stated number); «Continue with the current budget.», «Spend the current budget.», «Approve the budget.» and «Continue.» raise nothing, so the limit stays 25 and call 26 is a violation. The default step of 25 applies only to an approval that demonstrably raises or exceeds the limit («Increase the budget.», «Continue past the limit.»). The phrase «Yes, go ahead with the budget.» in the older tests became «Yes, go ahead and raise the budget.».
+- **The quoted fragment is judged in the context of the whole source message** (`findAuthorizations`, used by the audit): a LATER sentence of the same message that is refused (negation, question, condition, quotation), retracts or narrows («actually», «but», «only», «cancel», «ignore», …), or talks about the scope (the budget, a number, the option) without being a complete approval of it («keep the limit», «10 only», «Keep o1 out») voids the earlier approval; a later approval of the same scope, or an unrelated sentence, does not. A retraction before the approval is overridden by it. What cannot be read safely is not granted; the user is asked again. Audit tests cover the full source message and the selective quotation for the budget and for an option.
 
 ## Not measured, not verified
 

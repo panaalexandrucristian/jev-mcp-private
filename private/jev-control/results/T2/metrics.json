@@ -34,9 +34,9 @@
       "exit": 0
     },
     "node --test private/jev-control/test/": {
-      "tests": 414,
+      "tests": 416,
       "suites": 77,
-      "pass": 414,
+      "pass": 416,
       "fail": 0,
       "exit": 0
     },
@@ -101,6 +101,12 @@
     "authorization_identity": "an authorization is spent by source message and sentence indexes; the helper treats words contained in an earlier approval's words as the same authorization",
     "total_vs_increment": "a total (to N, N in total) is measured against the limit in force; an increment (by N, N more) is added; an ambiguous number raises nothing",
     "finalization_mutations": "Bash, Agent, Task and unclassified tools after an accepted done invalidate it (changed_after_accepted); Incomplete stays a legitimate stop",
+    "live": "unmeasured"
+  },
+  "fix_round_7": {
+    "existing_budget_is_not_a_raise": "a budget approval must also approve a raise or going beyond the limit (raise verb, more/extra/another, past/beyond/over, a number); 'Continue with the current budget.' and 'Spend the current budget.' raise nothing; the default step applies only to a demonstrable raise",
+    "source_message_context": "findAuthorizations judges a quoted fragment in the context of the whole source message: a later refused, retracting, narrowing or scope-mentioning non-approval sentence voids it; a later approval or an unrelated sentence does not",
+    "tests": {"control": "416 tests, 77 suites"},
     "live": "unmeasured"
   },
   "fix_round_6": {
