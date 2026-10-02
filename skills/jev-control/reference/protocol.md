@@ -19,14 +19,17 @@ The contract of the mode. Everything here is implemented by `private/jev-control
   "space_small": false,
   "new_material": "only on an expansion round: what is new",
   "options": [
-    {"id": "opt_a", "text": "Fix the bound in clamp.mjs", "evidence": ["clamp.mjs:3 uses < instead of <="]}
+    {"id": "opt_a", "text": "Fix the bound in clamp.mjs", "evidence": ["clamp.mjs:3 uses < instead of <="],
+     "action": {"tool": "Edit", "target": "src/clamp.mjs"},
+     "preconditions": [{"kind": "path_exists", "path": "src/clamp.mjs"}]}
   ]
 }
 ```
 
 - `kind` is one of `order | approach | command | edit | delegate | ask | done`. **`order` runs every eligible option in order; every other kind is exclusive: only the first runs and the rest are ordered reserves.**
 - At least 5 distinct real options when that many alternatives exist, at most 20 including the control options; `evidence` has 1–3 concrete lines per option; ids are lowercase slugs. `ask_user`, `investigate` and `none` are `jev_decide`'s escape hatches and are **refused as option ids**; the control options are `action_gather_evidence` and `action_ask_user`. They are always added and take part in the selection like any other option, but are never triggered just because they score above `T`.
-- Duplicates (the same text) are merged, keeping the first id and up to three evidence lines.
+- Duplicates (the same text, the same action and preconditions) are merged, keeping the first id and up to three evidence lines.
+- **Action and preconditions.** An option that stands for a concrete tool call names it: `action = {tool, target}` with `tool` one of `Bash, Read, Edit, Write, MultiEdit, NotebookEdit, Grep, Glob, LS, Agent, AskUserQuestion` (`Task` is `Agent`) and `target` the command (whitespace collapsed), the path (relative to the repository), the pattern or the subagent type. It is required for the kinds `order` (any tool but a question), `command` (`Bash`), `edit` (an edit tool) and `delegate` (`Agent`), optional for `approach`, `ask` and `done` (a strategy names no single call). `action_ask_user` stands for `AskUserQuestion`; `action_gather_evidence` names none. `preconditions` (at most 5) are `path_exists`, `path_absent` or `path_sha256` (with the file's SHA-256) on repository paths. The helper keeps them, includes the action in what Jev judges, evaluates the preconditions **before scoring** (an option whose precondition is false, or cannot be evaluated, is reported in `unavailable` and is not scored; if every real option is unavailable nothing is sent and the expansion rule applies) and binds both to the plan, the receipt and the audit.
 
 ## Scoring, eligibility, ordering
 
@@ -37,7 +40,11 @@ The contract of the mode. Everything here is implemented by `private/jev-control
 5. A single eligible option needs no `jev_decide` (it requires at least two candidates).
 6. A control option placed first means nothing is executed: gathering evidence is an expansion round, asking the user stops. Placed later in an `order` plan it becomes a `suspend` point: items after it wait.
 
-Result (one line, ≤ 1.5 KB): `status`, `decision_id`, `kind`, `threshold`, `round`, `calls`, `tiebreaks`, `scores`, `plan` (`execute | reserve | suspend | after_suspend`), `receipt`.
+Result (one line, ≤ 1.5 KB): `status`, `decision_id`, `kind`, `threshold`, `round`, `calls` (real attempts, retries included), `tiebreaks`, `unavailable?`, `receipt` and the decision lists, which are never cut silently:
+
+- `plan`: items `id:step:score:action-hash`; step `e` execute, `r` ordered reserve, `s` suspend, `x` after a suspend; `score` the **raw** probability (`0.95001` is printed and logged as `0.95001`, never rounded); the hash is the first 12 hex characters of the SHA-256 of the option's action (`-` for none).
+- `scores` (only for a stop such as `expand`, `ask_user`, `incomplete`): `id:raw` strings, descending.
+- When a list does not fit the cap the line carries `plan_total` / `scores_total` and `plan_next` / `scores_next` (the index to continue from); `cli.mjs page --decision <id> [--part plan|scores] --from <n>` returns the next page. Only listed plan items are authorized; fetching the rest is mandatory before acting on it.
 
 ## Nothing eligible, escape hatches, unavailability
 
@@ -56,8 +63,8 @@ Result (one line, ≤ 1.5 KB): `status`, `decision_id`, `kind`, `threshold`, `ro
 
 ## Search
 
-`rg`/`glob`/the candidate generator produce candidates (at most 48 fragments of at most 1,000 characters); `top_k = 5`; a compact answer (≤ 4 KB). `jev_rerank` decides eligibility over several files (relevance `> T`). `jev_find` is allowed only for one location, and accepted only when the winner **and** `exists` are both `> T`; otherwise `jev_rerank` runs as the second logical evaluation. At most two logical evaluations per search, each with its own single transport retry. A near-tie among the eligible hits goes through one `jev_decide` in the shared budget; if it does not fit the rest is reported as unresolved. Control options are never injected as files. `none_candidates` allows one widening.
+`rg`/`glob`/the candidate generator produce candidates (at most 48 fragments of at most 1,000 characters); `top_k = 5`; a compact answer (≤ 4 KB; hits that do not fit are counted in `hits_omitted` and are not authorized). `jev_rerank` decides eligibility over several files (relevance `> T`). `jev_find` is allowed only for one location, and accepted only when the winner **and** `exists` are both `> T`; otherwise `jev_rerank` runs as the second logical evaluation. **Every** selection or ordering judgment of a search (`jev_find`, `jev_rerank`, and the tie-break `jev_decide`) consumes one of the **two** logical evaluations of that search id, reserved atomically before the call (each with its own single transport retry; `jev_calls` counts the real attempts). Scores are raw. A near-tie among the eligible hits is separated by successive tie-breaks only as far as the two evaluations allow; what stays tied is not ordered: the result is then `tie_unresolved` with only the `resolved_hits` and an `unresolved_count`, never a `found` with a full list, and a failed tie-break (`unavailable`, `budget_exhausted`) is reported as that failure, not as a usable result. Control options are never injected as files. `none_candidates` allows one widening.
 
 ## Provenance and state
 
-State is metadata only (ids, hashes, scores, counters, never code or text) under `~/.cache/jev-control/<repo-hash>/<session-hash>/`, kept 30 days. A decision receipt (HMAC under a per-session key) binds session, request, options, threshold, the Jev calls (argument and result hashes) and the snapshot; replays, receipts of another session or request, stale snapshots and options that were not planned to execute are rejected. A receipt proves where the helper's metadata came from, **not** that an action was carried out: execution is checked in the transcript.
+State is metadata only (ids, hashes, scores, counters, never code or text) under `~/.cache/jev-control/<repo-hash>/<session-hash>/`, kept 30 days. A decision receipt (HMAC under a per-session key) binds session, request, options, threshold, the Jev calls (argument and result hashes) and the snapshot; replays, receipts of another session or request, stale snapshots and options that were not planned to execute are rejected. A receipt (version 2) is written only with its complete provenance: for every option the full hash of its text and evidence, the action descriptor and hash, the preconditions and the raw score; the plan items; and the Jev calls (tool, budget source, argument and result hashes, attempts). `cli.mjs receipt verify --id <id> --option <id> --tool <Tool> --target <target>` authorizes **exactly that action**: the same tool and target as the planned option (a changed command under the same id is refused), preconditions that still hold, a work tree that is the one the decision saw (an unknown snapshot never authorizes; once an earlier step of the same plan has been used the tree is expected to move and the preconditions guard each step), the planned order for `order`, and once only (replay is refused; `--dry-run` checks without consuming). A valid signature over incomplete metadata authorizes nothing. A receipt proves where the helper's metadata came from and what was authorized, **not** that an action was carried out: execution is audited in the transcript.

@@ -9,12 +9,14 @@ A mode, not a workflow: while it is **on**, Jev makes the choices and this sessi
 
 Run the helper as `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" <command>`. It calls Jev outside your context and prints one compact JSON line: read that line, never the payloads.
 
+**Identity.** The helper needs a verifiable session. When the user asks for the mode, the hook puts a line in your context: `Session capability: pass --session-cap <cap> to every cli.mjs call, also in subagent prompts.` Add `--session-cap <cap>` to every helper call and copy it into the prompt of every subagent you start (the `jev-locator` too). Use only a capability that appeared in your own context; never invent one or pass `--session-id`. Without any identity the helper refuses and nothing is activated or recorded; it never adopts the most recent session.
+
 ## Switching it on and off (explicit only)
 
 - `/jev:jev-control on [threshold]` · `off` · `status` · `threshold <x>`; or an explicit natural-language request (see the description). Never switch it on because a task is large or Jev is mentioned.
 - `on` checks the repository policy, Node 22, the real session identity and the tool contracts, then shows the **priorities** you derived from the user's request (one line; the user may correct them). If it refuses, say why and stay off.
 - The threshold `T` (strictly `>`, default **0.95**, valid in (0.5, 1)): session argument > `JEV_CONTROL_THRESHOLD` > default; an invalid value gives 0.95 and one notice. A change affects later decisions only.
-- While it is on, jev-flow directives are suppressed (jev-control reuses `jev-locator` and `/jev:jev-done`). A one-line reminder reappears at each prompt and after compaction.
+- While it is on, jev-flow directives are suppressed (jev-control reuses `jev-locator` and `/jev:jev-done`). A one-line reminder (with the capability) reappears at each prompt and after compaction. A new session, a resume, a clear and the end of a session switch the mode **off**: ask again explicitly.
 
 ## What Jev decides, and what it does not
 
@@ -25,11 +27,12 @@ Not Jev's: an explicit instruction of the user (it outranks Jev), permission pro
 ## The decision loop
 
 1. **Build a batch** of options: at least **5** distinct real options when that many exist (say `"space_small": true` only when the space really is smaller), at most 20 including the two control options, each with **1–3 lines of concrete evidence** (a file excerpt, a command output, a requirement). Duplicates are merged. `action_gather_evidence` and `action_ask_user` are always present. Never reword the same option to pad the batch; never drop plausible options to favor one.
+   **Name the action.** Options of the kinds `order`, `command`, `edit` and `delegate` must carry `"action": {"tool": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Agent", "target": "<the command | the path | the pattern | the subagent type>"}`, the ONE concrete tool call the option stands for (kind `command` allows only `Bash`, `edit` only the edit tools, `delegate` only `Agent`); `approach`, `ask` and `done` options may omit it. The helper keeps it, judges it with the option, and binds the plan, the receipt and the audit to its hash: carrying out anything else is not covered. Optional `"preconditions": [{"kind": "path_exists|path_absent|path_sha256", "path": "...", "sha256": "..."}]` (at most 5) are checked before scoring (an option whose precondition is false is reported `unavailable` and not scored) and again by `receipt verify`.
 2. **Write the batch** to a temporary file outside the repository and run `cli.mjs decide --file <batch.json> [--decision-id <id>]` (`--headless` when nobody can answer). The helper scores every option independently with `jev_noul`; an option is **eligible only if its raw probability is strictly above T** (the tool's labels such as `likely` or `auto` mean `>=` and are never the test).
 3. **Act on `status`**:
-   - `selected` (kinds other than `order`): run the first `execute` item; the `reserve` items are ordered reserves, not a fallback to use without a new decision.
-   - `ordered` (`order` kind): run every `execute` item in that order; a `suspend` item pauses everything after it.
-   - `expand`: gather genuinely **new** options or evidence (a rephrasing is refused), then call again with the same `--decision-id` and a `new_material` note. At most **2** expansion rounds.
+   - `selected` (kinds other than `order`): run the first `e` item; the `r` items are ordered reserves, not a fallback to use without a new decision. `plan` items read `id:step:score:action-hash` (steps `e` execute, `r` reserve, `s` suspend, `x` after a suspend; the score is the raw probability). If `plan_next` is present the list was cut to the 1.5 KB cap: fetch the rest with `cli.mjs page --decision <id> --from <plan_next>` BEFORE acting; only listed items are authorized. Each executed action must be exactly the option's action; before a consequential or ambiguous step run `cli.mjs receipt verify --id <receipt> --option <id> --tool <Tool> --target <target>` (it refuses a changed action, a false precondition, a moved work tree, a replay and, for `order`, a step out of order).
+   - `ordered` (`order` kind): run every `e` item in that order; an `s` item pauses everything after it.
+   - `expand`: gather genuinely **new** options or evidence (a rephrasing is refused), then call again with the same `--decision-id` and a `new_material` note. At most **2** expansion rounds. The `scores` are raw `id:probability` strings; if `scores_next` is present, page them in the same way.
    - `ask_user`: ask, showing the options and the scores. `incomplete`: nobody can answer; finish with a report that starts `Incomplete:` and lists the scores.
    - `unavailable`: stop with **"Jev unavailable"** and let the user choose between waiting or retrying and `off`. Never go on with your own judgment.
    - `budget_exhausted`: stop and ask whether to continue (`cli.mjs budget approve`).

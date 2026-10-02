@@ -1,26 +1,40 @@
 // Signed, metadata-only provenance of the control's own decisions, on the
 // jev-flow receipt primitives (a per-session HMAC key, receipts/<id>.json). A
-// receipt binds a decision to the session, the request, the options (hashes), the
-// threshold in force, the Jev calls that produced it (argument and result
-// hashes) and the work-tree snapshot. It proves where the helper's metadata came
-// from, not that an action was carried out: execution is verified separately in
+// receipt binds a decision to the session, the request, the threshold in force,
+// every option (full text and action hashes, the concrete action descriptor, the
+// preconditions and the RAW score), the plan (id, step, raw score, short action
+// hash), the Jev calls that produced it (tool, budget source, argument and result
+// hashes, attempts) and the work-tree snapshot. Authorizing an action means
+// matching it against the receipt: the same tool and target as the planned
+// option, preconditions that still hold, a snapshot that has not moved, in the
+// planned order, once. It proves where the helper's metadata came from and what
+// was authorized, not that an action was carried out: execution is audited from
 // the transcript (measure.mjs). A process of the same user that can read the key
 // or edit the helper is out of scope, as for the gate runner's receipts.
 import { createHash } from "node:crypto";
 import { ensureReceiptKey, newReceiptId, readSignedReceipt, writeReceipt } from "../jev-flow/runner-receipt.mjs";
+import { actionHash, evaluatePreconditions, parsePlanItem } from "./actions.mjs";
 
 export const RECEIPT_TYPE = "control_decision";
+export const RECEIPT_VERSION = 2;
 
 export function hashJson(value) {
   return createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex").slice(0, 16);
 }
 
-/** Write a decision receipt; returns its id. Throws when the receipt cannot be stored. */
+/**
+ * Write a decision receipt; returns its id. Throws when the receipt cannot be
+ * stored or when the body is incomplete: a receipt without the provenance and the
+ * concrete options would authorize nothing and is never written.
+ */
 export function writeDecisionReceipt(dir, body) {
+  if (!Array.isArray(body.options) || body.options.length === 0 || body.options.some((o) => typeof o?.id !== "string" || typeof o.oh !== "string" || !("score" in o))) throw new Error("receipt needs the full option records");
+  if (!Array.isArray(body.calls)) throw new Error("receipt needs the Jev call provenance");
+  if (!Array.isArray(body.plan) || body.plan.some((p) => typeof p !== "string" || !parsePlanItem(p))) throw new Error("receipt needs plan items in the compact format");
   ensureReceiptKey(dir);
   const id = newReceiptId();
   writeReceipt(dir, {
-    v: 1,
+    v: RECEIPT_VERSION,
     type: RECEIPT_TYPE,
     id,
     ts: Date.now(),
@@ -30,27 +44,58 @@ export function writeDecisionReceipt(dir, body) {
     decision: body.decision,
     kind: body.kind,
     threshold: body.threshold,
+    round: body.round ?? 0,
     status: body.status,
-    plan: body.plan.map((p) => `${p.id}:${p.action}`),
+    plan: body.plan,
     options: body.options,
     calls: body.calls,
+    tiebreaks: body.tiebreaks ?? 0,
     snap: body.snap ?? "unknown",
   });
   return id;
 }
 
 /**
- * Verify that `id` authorizes `option` now: authentic (HMAC), a decision receipt
- * for this session and request, not stale (snapshot unchanged when both are
- * known), a status that allows action, and the option planned to execute.
+ * Verify that receipt `id` authorizes `action` ({tool, target}, already normalized
+ * like the option's descriptor) for `option` now. `ctx`: {session, req, snap (the
+ * current snapshot, short form, or null when unknown), root (the repository),
+ * consumed ([{receipt, option}] already used)}. Returns {ok: true, receipt, option}
+ * or {ok: false, reason}. Nothing unknown authorizes: an unknown snapshot, an
+ * option without a concrete action, a missing action argument and a stale or
+ * replayed authorization are all refusals.
  */
-export function verifyDecisionReceipt(dir, id, { session, req, snap = null, option = null }) {
+export function verifyDecisionReceipt(dir, id, { session, req, snap = null, root = null, option = null, action = null, consumed = [] }) {
   const body = readSignedReceipt(dir, id);
-  if (!body || body.type !== RECEIPT_TYPE) return { ok: false, reason: "receipt_missing_or_forged" };
+  if (!body || body.type !== RECEIPT_TYPE || body.v !== RECEIPT_VERSION) return { ok: false, reason: "receipt_missing_or_forged" };
   if (body.session !== session) return { ok: false, reason: "receipt_other_session" };
   if (body.req !== req) return { ok: false, reason: "receipt_other_request" };
-  if (snap && body.snap !== "unknown" && body.snap !== snap) return { ok: false, reason: "receipt_stale_snapshot" };
-  if (!["selected", "ordered", "found"].includes(body.status)) return { ok: false, reason: `receipt_status_${body.status}` };
-  if (option !== null && !body.plan.includes(`${option}:execute`)) return { ok: false, reason: "option_not_authorized" };
-  return { ok: true, receipt: body };
+  if (!["selected", "ordered"].includes(body.status)) return { ok: false, reason: `receipt_status_${body.status}` };
+  if (option === null) return { ok: false, reason: "option_required" };
+  const items = body.plan.map(parsePlanItem);
+  const index = items.findIndex((p) => p?.id === option && p.action === "execute");
+  if (index < 0) return { ok: false, reason: "option_not_authorized" };
+  const planned = body.options.find((o) => o.id === option);
+  if (!planned || !planned.action || !planned.ah) return { ok: false, reason: "option_names_no_action" };
+  if (planned.unavailable) return { ok: false, reason: "option_was_unavailable" };
+  if (!(planned.score > body.threshold)) return { ok: false, reason: "option_not_above_threshold" };
+  if (items[index].ah !== planned.ah.slice(0, 12)) return { ok: false, reason: "receipt_inconsistent" };
+  if (!action) return { ok: false, reason: "action_required" };
+  if (actionHash(action) !== planned.ah) return { ok: false, reason: "action_mismatch", expected: `${planned.action.tool} ${planned.action.target}`.slice(0, 120) };
+  const used = consumed.filter((c) => c.receipt === id);
+  if (used.some((c) => c.option === option)) return { ok: false, reason: "receipt_replayed" };
+  if (body.snap === "unknown") return { ok: false, reason: "receipt_snapshot_unknown" };
+  if (!snap) return { ok: false, reason: "current_snapshot_unknown" };
+  // Before the first use the tree must be exactly the one the decision saw; once an earlier step of
+  // the same plan has run, the tree is expected to move and the preconditions guard each step.
+  if (used.length === 0 && body.snap !== snap) return { ok: false, reason: "receipt_stale_snapshot" };
+  if (body.kind === "order") {
+    const earlier = items.slice(0, index).filter((p) => p?.action === "execute");
+    if (earlier.some((p) => !used.some((c) => c.option === p.id))) return { ok: false, reason: "receipt_out_of_order" };
+  }
+  if (planned.pre?.length) {
+    if (!root) return { ok: false, reason: "preconditions_not_evaluable" };
+    const check = evaluatePreconditions(planned.pre, root);
+    if (!check.ok) return { ok: false, reason: `precondition_failed:${check.failed[0].kind}:${check.failed[0].reason}` };
+  }
+  return { ok: true, receipt: body, option: planned };
 }

@@ -10,9 +10,10 @@
 // stop with a report that starts "Incomplete:"). Nothing below the threshold is
 // executed without a recorded user approval. Jev unavailable (after the single
 // identical retry) stops the step; there is no silent continuation.
+import { evaluatePreconditions, planItem, shortHash } from "./actions.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult } from "./contracts.mjs";
 import { isUnavailable, UNAVAILABLE } from "./client.mjs";
-import { ASK_ID, CONTROL_IDS, EXCLUSIVE_KINDS, evidenceHash, GATHER_ID, optionHash } from "./options.mjs";
+import { ASK_ID, CONTROL_IDS, EXCLUSIVE_KINDS, GATHER_ID, optionActionHash, optionHash } from "./options.mjs";
 import { hashJson } from "./receipts.mjs";
 import { loadControlState, withControlState } from "./state.mjs";
 import { exceeds, isNearTie } from "./threshold.mjs";
@@ -20,7 +21,9 @@ import { exceeds, isNearTie } from "./threshold.mjs";
 export const MAX_EXPANSIONS = 2;
 export const SHORTLIST = 6;
 const SAME = 1e-9;
-const round4 = (x) => Number(x.toFixed(4));
+const clip = (text, n) => String(text).slice(0, n);
+/** The concrete action an option stands for, as a short phrase Jev can judge (empty when it names none). */
+const actionPhrase = (o) => (o.action ? ` Concrete action: ${o.action.tool}${o.action.target ? ` ${clip(o.action.target, 300)}` : ""}.` : "");
 
 export class StopDecision extends Error {
   constructor(result) {
@@ -39,14 +42,14 @@ function failure(reply, extra = {}) {
 }
 
 function propositionFor(batch, option) {
-  return `Taking option ${option.id} is the right next step for this decision: ${batch.decision} — Option: ${option.text}`.slice(0, 2000);
+  return `Taking option ${option.id} is the right next step for this decision: ${batch.decision} — Option: ${option.text}${actionPhrase(option)}`.slice(0, 2000);
 }
 
 function evidenceBlock(options, maxChars) {
   const lines = [];
   let used = 0;
   for (const o of options) {
-    const text = `Option ${o.id}: ${o.evidence.join(" | ")}`;
+    const text = `Option ${o.id}: ${o.evidence.join(" | ")}${actionPhrase(o)}`;
     if (used + text.length + 1 > maxChars) break;
     lines.push(text);
     used += text.length + 1;
@@ -70,7 +73,7 @@ async function shortlistOf(group, batch, ctx) {
   const above = group.filter((g) => g.score > boundary + SAME);
   const tied = group.filter((g) => Math.abs(g.score - boundary) <= SAME);
   const need = SHORTLIST - above.length;
-  const args = { query: `Which option should come first for this decision: ${batch.decision}`.slice(0, 2000), candidates: tied.map((t) => ({ id: t.id, text: t.text.slice(0, 2000) })), top_k: tied.length };
+  const args = { query: `Which option should come first for this decision: ${batch.decision}`.slice(0, 2000), candidates: tied.map((t) => ({ id: t.id, text: `${t.text}${actionPhrase(t)}`.slice(0, 2000) })), top_k: tied.length };
   const ids = tied.map((t) => t.id);
   const reply = await jev(ctx, "jev_rerank", args, { source: "tiebreak", invalid: (r) => !parseRankResult("rerank", r, ids, tied.length).ok });
   if (!reply.ok) throw new StopDecision(failure(reply));
@@ -88,7 +91,7 @@ async function selectFrom(group, batch, ctx) {
     decision: batch.decision,
     evidence: evidenceBlock(shortlist, 12_000) || "No further evidence.",
     priorities: ctx.priorities,
-    candidates: shortlist.map((o) => ({ id: o.id, description: o.text.slice(0, 2000) })),
+    candidates: shortlist.map((o) => ({ id: o.id, description: `${o.text}${actionPhrase(o)}`.slice(0, 2000) })),
   };
   const ids = shortlist.map((o) => o.id);
   const reply = await jev(ctx, "jev_decide", args, { source: "tiebreak", invalid: (r) => !parseDecideResult(r, ids).ok });
@@ -101,7 +104,7 @@ async function selectFrom(group, batch, ctx) {
     throw new StopDecision({ status: parsed.selected === "ask_user" ? "ask_user" : "expand", reason: `decide_escaped_${parsed.selected}` });
   }
   if (!exceeds(parsed.confidence, ctx.T) || parsed.warnings.length > 0) {
-    throw new StopDecision({ status: "below_threshold", reason: parsed.warnings.length ? "decide_warnings" : "decide_confidence_not_above_threshold", confidence: round4(parsed.confidence) });
+    throw new StopDecision({ status: "below_threshold", reason: parsed.warnings.length ? "decide_warnings" : "decide_confidence_not_above_threshold", confidence: parsed.confidence });
   }
   return shortlist.find((o) => o.id === parsed.selected);
 }
@@ -135,27 +138,34 @@ async function plan(eligible, batch, ctx) {
   return { status: "ordered", placed, exclusive: false };
 }
 
+/** A plan item: the option, what to do with it, its RAW score and the short hash of its action descriptor (null: no action). */
+function item(o, action) {
+  const full = optionActionHash(o);
+  return { id: o.id, action, score: o.score, ah: full ? shortHash(full) : null };
+}
+
 function toPlan(placedResult) {
   const { placed, exclusive } = placedResult;
   const items = [];
   if (exclusive) {
     // Only the first option runs; the rest are ordered reserves, never an automatic fallback.
-    placed.forEach((o, index) => items.push({ id: o.id, action: index === 0 ? (CONTROL_IDS.includes(o.id) ? "suspend" : "execute") : "reserve" }));
+    placed.forEach((o, index) => items.push(item(o, index === 0 ? (CONTROL_IDS.includes(o.id) ? "suspend" : "execute") : "reserve")));
     return items;
   }
   let suspended = false;
   for (const o of placed) {
-    if (suspended) items.push({ id: o.id, action: "after_suspend" });
+    if (suspended) items.push(item(o, "after_suspend"));
     else if (CONTROL_IDS.includes(o.id)) {
       suspended = true;
-      items.push({ id: o.id, action: "suspend" });
-    } else items.push({ id: o.id, action: "execute" });
+      items.push(item(o, "suspend"));
+    } else items.push(item(o, "execute"));
   }
   return items;
 }
 
+/** Raw probabilities by option id (never rounded: the strict comparison and the audit use these numbers). */
 function scoresOf(options, scores) {
-  return Object.fromEntries(options.map((o, i) => [o.id, round4(scores[i])]));
+  return Object.fromEntries(options.map((o, i) => [o.id, scores[i]]));
 }
 
 /** Build the final report line for a stop that needs the user (headless: it starts with "Incomplete:"). */
@@ -179,6 +189,7 @@ export async function runDecision(batch, rawCtx) {
   if (!ctx.priorities) return { status: "invalid", message: "priorities are required: pass them in the batch or set them at activation", decision_id: ctx.decisionId ?? null };
   const key = ctx.decisionId ?? hashJson([batch.decision, ctx.now()]);
   const evidenceHashes = batch.options.map((o) => optionHash(o));
+  const fullHashes = batch.options.map((o) => optionHash(o, 64));
   // Expansion bookkeeping: a repeated decision id is an expansion round and needs genuinely new material.
   let round = 0;
   const known = loadControlState(ctx.dir).expansions[key] ?? null;
@@ -190,14 +201,27 @@ export async function runDecision(batch, rawCtx) {
     }
     round = known.n + 1;
   }
-  const result = await decideOnce(batch, { ...ctx, key, round, evidenceHashes });
+  const result = await decideOnce(batch, { ...ctx, key, round, evidenceHashes, fullHashes });
   return result;
 }
 
 async function decideOnce(batch, ctx) {
   const { T, key, round } = ctx;
+  const unavailable = [];
   const finish = (status, extra = {}, scores = {}, planItems = []) => {
-    const result = { status, decision_id: key, kind: batch.kind, threshold: T, round, calls: ctx.attempts, tiebreaks: ctx.tiebreaks, scores, plan: planItems, ...extra };
+    const result = {
+      status, decision_id: key, kind: batch.kind, threshold: T, round, calls: ctx.attempts, tiebreaks: ctx.tiebreaks, scores, plan: planItems,
+      ...(unavailable.length ? { unavailable: unavailable.map((u) => `${u.id}:${u.reason}`) } : {}),
+      ...extra,
+      // Not printed (the CLI strips it): what the receipt binds, in full.
+      provenance: {
+        t: T,
+        round,
+        options: batch.options.map((o, i) => ({ id: o.id, oh: ctx.fullHashes[i], ah: optionActionHash(o), action: o.action ? { tool: o.action.tool, target: clip(o.action.target, 120) } : null, pre: o.preconditions ?? [], score: scores[o.id] ?? null, unavailable: unavailable.find((u) => u.id === o.id)?.reason ?? null })),
+        calls: ctx.calls,
+        tiebreaks: ctx.tiebreaks,
+      },
+    };
     withControlState(ctx.dir, (state) => {
       const exp = state.expansions[key] ?? { n: 0, hashes: [] };
       exp.n = round;
@@ -211,8 +235,8 @@ async function decideOnce(batch, ctx) {
         t: T,
         status,
         round,
-        opts: batch.options.map((o, i) => [o.id, scores[o.id] ?? null, ctx.evidenceHashes[i].slice(0, 8)]).slice(0, 20),
-        order: planItems.map((p) => `${p.id}:${p.action}`).slice(0, 20),
+        opts: batch.options.map((o, i) => [o.id, scores[o.id] ?? null, ctx.evidenceHashes[i].slice(0, 8), o.action ? shortHash(optionActionHash(o)) : "-"]).slice(0, 20),
+        order: planItems.map((p) => planItem(p)).slice(0, 20),
         calls: ctx.attempts,
         tb: ctx.tiebreaks,
         snap: ctx.snapshot ? String(ctx.snapshot).slice(0, 16) : null,
@@ -220,30 +244,40 @@ async function decideOnce(batch, ctx) {
     }, ctx.now());
     return result;
   };
-  // 1. Independent probabilities.
-  const n = batch.options.length;
-  const args = {
-    propositions: batch.options.map((o) => propositionFor(batch, o)),
-    context: [
-      ...batch.options.map((o, i) => ({ id: `evidence_${i}`, text: `Option ${o.id}: ${o.evidence.join(" | ")}`.slice(0, 2000) })),
-      { id: "priorities", text: ctx.priorities.slice(0, 2000) },
-    ],
-    auto_accept: T,
-  };
-  const reply = await jev(ctx, "jev_noul", args, { source: ctx.source ?? "helper", invalid: (r) => !parseNoulResult(r, n).ok });
-  if (!reply.ok) return { ...failure(reply), decision_id: key, calls: ctx.attempts };
-  const parsed = parseNoulResult(reply.result, n);
-  if (!parsed.ok) return { ...failure({ ok: false, kind: "invalid_response", message: parsed.reason }), decision_id: key, calls: ctx.attempts };
-  const scoreOf = scoresOf(batch.options, parsed.probabilities);
-  const scored = batch.options.map((o, i) => ({ ...o, score: parsed.probabilities[i], index: i }));
-  // 2. Eligibility: strictly above the threshold, on the raw probability (the tool's label is ignored).
-  const eligible = scored.filter((o) => exceeds(o.score, T)).sort((a, b) => b.score - a.score || a.index - b.index);
+  // 0. Availability: an option whose preconditions do not hold now (or cannot be evaluated) is not scored.
+  const usable = batch.options.filter((o) => {
+    if (!o.preconditions?.length) return true;
+    if (!ctx.repoRoot) return (unavailable.push({ id: o.id, reason: "preconditions_not_evaluable" }), false);
+    const check = evaluatePreconditions(o.preconditions, ctx.repoRoot);
+    if (!check.ok) unavailable.push({ id: o.id, reason: `${check.failed[0].kind}_${check.failed[0].reason}` });
+    return check.ok;
+  });
   const expansionsLeft = MAX_EXPANSIONS - round;
   const stopForUser = (reason, extra = {}) => {
     const status = ctx.headless ? "incomplete" : "ask_user";
     return finish(status, { reason, report: reportFor(ctx.headless, T, round, scoreOf), ...extra }, scoreOf);
   };
   const expandOrAsk = (reason, extra = {}) => (expansionsLeft > 0 ? finish("expand", { reason, expansions_left: expansionsLeft, ...extra }, scoreOf) : stopForUser(reason, extra));
+  let scoreOf = {};
+  if (!usable.some((o) => !o.control)) return expandOrAsk("all_options_unavailable");
+  // 1. Independent probabilities.
+  const n = usable.length;
+  const args = {
+    propositions: usable.map((o) => propositionFor(batch, o)),
+    context: [
+      ...usable.map((o, i) => ({ id: `evidence_${i}`, text: `Option ${o.id}: ${o.evidence.join(" | ")}${actionPhrase(o)}`.slice(0, 2000) })),
+      { id: "priorities", text: ctx.priorities.slice(0, 2000) },
+    ],
+    auto_accept: T,
+  };
+  const reply = await jev(ctx, "jev_noul", args, { source: ctx.source ?? "helper", invalid: (r) => !parseNoulResult(r, n, args.propositions).ok });
+  if (!reply.ok) return { ...failure(reply), decision_id: key, calls: ctx.attempts };
+  const parsed = parseNoulResult(reply.result, n, args.propositions);
+  if (!parsed.ok) return { ...failure({ ok: false, kind: "invalid_response", message: parsed.reason }), decision_id: key, calls: ctx.attempts };
+  scoreOf = scoresOf(usable, parsed.probabilities);
+  const scored = usable.map((o, i) => ({ ...o, score: parsed.probabilities[i], index: i }));
+  // 2. Eligibility: strictly above the threshold, on the raw probability (the tool's label is ignored).
+  const eligible = scored.filter((o) => exceeds(o.score, T)).sort((a, b) => b.score - a.score || a.index - b.index);
   if (eligible.length === 0) return expandOrAsk("none_above_threshold");
   // 3. Ordering / selection.
   let placedResult;

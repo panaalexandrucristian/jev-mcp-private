@@ -75,3 +75,64 @@ describe("option batches (D6)", () => {
     assert.notEqual(optionHash(a), optionHash({ text: "fix it", evidence: ["other"] }));
   });
 });
+
+describe("concrete actions and preconditions are kept, not dropped", () => {
+  it("keeps the normalized action descriptor and the preconditions of every option", () => {
+    const b = batchOf(5, { kind: "command" });
+    b.options[0].action = { tool: "Bash", target: "  npm   test " };
+    b.options[0].preconditions = [{ kind: "path_exists", path: "./package.json" }, { kind: "path_sha256", path: "src/a.js", sha256: "a".repeat(64) }];
+    const r = normalizeBatch(b);
+    assert.equal(r.ok, true, JSON.stringify(r.problems));
+    const first = r.batch.options[0];
+    assert.deepEqual(first.action, { tool: "Bash", target: "npm test" });
+    assert.deepEqual(first.preconditions, [{ kind: "path_exists", path: "package.json" }, { kind: "path_sha256", path: "src/a.js", sha256: "a".repeat(64) }]);
+    assert.deepEqual(r.batch.options.find((o) => o.id === ASK_ID).action, { tool: "AskUserQuestion", target: "" });
+    assert.equal(r.batch.options.find((o) => o.id === GATHER_ID).action, null);
+  });
+  it("makes absolute paths relative to the repository root", () => {
+    const b = batchOf(5, { kind: "edit" });
+    b.options[0].action = { tool: "Edit", target: "/repo/src/a.js" };
+    const r = normalizeBatch(b, { root: "/repo" });
+    assert.equal(r.batch.options[0].action.target, "src/a.js");
+  });
+  it("kinds whose options are actions require the descriptor, with the right tool", () => {
+    for (const kind of ["order", "command", "edit", "delegate"]) {
+      const b = batchOf(5, { kind });
+      delete b.options[2].action;
+      assert.match(problemsOf(b).join(" "), /action is required/, kind);
+    }
+    const wrong = batchOf(5, { kind: "command" });
+    wrong.options[0].action = { tool: "Write", target: "a.js" };
+    assert.match(problemsOf(wrong).join(" "), /must be Bash/);
+    const edit = batchOf(5, { kind: "edit" });
+    edit.options[0].action = { tool: "Bash", target: "sed -i x a.js" };
+    assert.match(problemsOf(edit).join(" "), /must be Edit or Write/);
+    assert.equal(normalizeBatch(batchOf(5, { kind: "approach" })).ok, true, "a strategy names no single action");
+  });
+  it("refuses a malformed descriptor, an unknown tool, a control step and bad preconditions", () => {
+    const mk = (patch) => {
+      const b = batchOf(5, { kind: "order" });
+      Object.assign(b.options[0], patch);
+      return problemsOf(b).join(" ");
+    };
+    assert.match(mk({ action: "Bash npm test" }), /action must be an object/);
+    assert.match(mk({ action: { tool: "Teleport", target: "x" } }), /action.tool must be one of/);
+    assert.match(mk({ action: { tool: "Bash" } }), /action.target is required/);
+    assert.match(mk({ action: { tool: "AskUserQuestion" } }), /control option/);
+    assert.match(mk({ action: { tool: "Bash", target: 'node "/p/private/jev-control/cli.mjs" decide' } }), /must not be a control step/);
+    assert.match(mk({ preconditions: [{ kind: "path_exists" }] }), /preconditions\[0\] must be/);
+    assert.match(mk({ preconditions: [{ kind: "path_sha256", path: "a", sha256: "xyz" }] }), /sha256 must be 64/);
+    assert.match(mk({ preconditions: Array.from({ length: 6 }, () => ({ kind: "path_exists", path: "a" })) }), /at most 5/);
+  });
+  it("options with the same text but different actions are different options; the hash includes action and preconditions", () => {
+    const b = batchOf(5, { kind: "order" });
+    b.options[1].text = b.options[0].text;
+    const r = normalizeBatch(b);
+    assert.equal(r.ok, true);
+    assert.equal(r.batch.options.filter((o) => !o.control).length, 5);
+    const a = { text: "x", evidence: ["e"], action: { tool: "Bash", target: "a" }, preconditions: [] };
+    assert.notEqual(optionHash(a), optionHash({ ...a, action: { tool: "Bash", target: "b" } }));
+    assert.notEqual(optionHash(a), optionHash({ ...a, preconditions: [{ kind: "path_exists", path: "x" }] }));
+    assert.equal(optionHash(a, 64).length, 64);
+  });
+});

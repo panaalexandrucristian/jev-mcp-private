@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ControlBusyError, cleanupControlRetention, controlCacheRoot, controlSessionDir, controlSessionDirFromKey, emptyControlState, hasSessionId, isControlOn, loadControlState, readBinding, saveControlState, sessionKey, withControlState, writeBinding } from "../state.mjs";
+import { ControlBusyError, cleanupControlRetention, controlCacheRoot, controlSessionDir, controlSessionDirFromKey, emptyControlState, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, saveControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
 import { makeRepo, tempDir } from "./helpers.mjs";
 
 const STATE = fileURLToPath(new URL("../state.mjs", import.meta.url));
@@ -82,7 +82,6 @@ describe("identity, locations and retention (D18)", () => {
       assert.equal(hasSessionId(id), false);
       assert.equal(controlSessionDir(repo, id, {}), null);
     }
-    assert.equal(writeBinding(repo, "", { HOME: tempDir() }), false);
   });
   it("sessions are isolated: one session's mode is not another's", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
@@ -107,18 +106,52 @@ describe("identity, locations and retention (D18)", () => {
   });
 });
 
-describe("session binding from the prompt hook", () => {
-  it("one fresh binding identifies the session; two are ambiguous; a stale one is nothing", () => {
+describe("the per-session capability (hook -> CLI)", () => {
+  const setup = () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = { JEV_CONTROL_CACHE_DIR: tempDir() };
-    assert.equal(readBinding(repo, env).ok, false);
-    const t0 = 1_000_000;
-    writeBinding(repo, "sess-A", env, t0);
-    assert.deepEqual(readBinding(repo, env, t0 + 1000), { ok: true, key: sessionKey("sess-A") });
-    writeBinding(repo, "sess-B", env, t0 + 2000);
-    assert.equal(readBinding(repo, env, t0 + 3000).reason, "ambiguous_binding");
-    assert.equal(readBinding(repo, env, t0 + 10 * 60 * 1000).ok, false);
-    const repoDir = readdirSync(controlCacheRoot(env)).find((n) => /^[0-9a-f]{16}$/.test(n));
-    assert.equal(readFileSync(join(controlCacheRoot(env), repoDir, "bindings.json"), "utf8").includes("sess-A"), false, "only hashes are stored");
+    return { repo, env };
+  };
+  it("proves the session that owns it, and only that one", () => {
+    const { repo, env } = setup();
+    const dirA = controlSessionDir(repo, "sess-A", env);
+    const dirB = controlSessionDir(repo, "sess-B", env);
+    const capA = ensureSessionCap(dirA, sessionKey("sess-A"));
+    const capB = ensureSessionCap(dirB, sessionKey("sess-B"));
+    assert.notEqual(capA, capB);
+    assert.match(capA, /^[0-9a-f]{16}\.[0-9a-f]{32}$/);
+    assert.deepEqual(verifySessionCap(repo, capA, env), { ok: true, key: sessionKey("sess-A"), dir: dirA });
+    assert.deepEqual(verifySessionCap(repo, capB, env), { ok: true, key: sessionKey("sess-B"), dir: dirB });
+    assert.equal(ensureSessionCap(dirA, sessionKey("sess-A")), capA, "stable while the session lives");
+  });
+  it("another session cannot adopt it: wrong secret, swapped key, malformed and unknown values are refused", () => {
+    const { repo, env } = setup();
+    const capA = ensureSessionCap(controlSessionDir(repo, "sess-A", env), sessionKey("sess-A"));
+    ensureSessionCap(controlSessionDir(repo, "sess-B", env), sessionKey("sess-B"));
+    const secretA = capA.split(".")[1];
+    assert.equal(verifySessionCap(repo, `${sessionKey("sess-B")}.${secretA}`, env).reason, "capability_unknown_or_expired");
+    assert.equal(verifySessionCap(repo, `${sessionKey("sess-A")}.${"0".repeat(32)}`, env).reason, "capability_unknown_or_expired");
+    assert.equal(verifySessionCap(repo, `${sessionKey("sess-C")}.${secretA}`, env).reason, "capability_unknown_or_expired");
+    for (const bad of [undefined, "", "abc", `${sessionKey("sess-A")}.xyz`, `${sessionKey("sess-A")}.${secretA}.x`]) assert.equal(verifySessionCap(repo, bad, env).reason, "capability_malformed", String(bad));
+  });
+  it("is removed at session end (rotated at the next start): the old value stops working", () => {
+    const { repo, env } = setup();
+    const dir = controlSessionDir(repo, "sess-A", env);
+    const first = ensureSessionCap(dir, sessionKey("sess-A"));
+    removeSessionCap(dir);
+    assert.equal(verifySessionCap(repo, first, env).ok, false);
+    const second = ensureSessionCap(dir, sessionKey("sess-A"));
+    assert.notEqual(second, first);
+    assert.equal(verifySessionCap(repo, first, env).ok, false);
+    assert.equal(verifySessionCap(repo, second, env).ok, true);
+  });
+  it("concurrent creation yields one capability, the secret is mode 0600 and never in state.json", () => {
+    const { repo, env } = setup();
+    const dir = controlSessionDir(repo, "sess-A", env);
+    const caps = Array.from({ length: 8 }, () => ensureSessionCap(dir, sessionKey("sess-A")));
+    assert.equal(new Set(caps).size, 1);
+    assert.equal(statSync(join(dir, "cap.json")).mode & 0o777, 0o600);
+    withControlState(dir, (s) => { s.mode = "on"; });
+    assert.equal(readFileSync(join(dir, "state.json"), "utf8").includes(caps[0].split(".")[1]), false);
   });
 });

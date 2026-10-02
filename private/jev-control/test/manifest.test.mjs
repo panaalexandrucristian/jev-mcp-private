@@ -51,7 +51,8 @@ describe("skill and command", () => {
     assert.ok(cmd.description.length > 20);
     assert.match(cmd["argument-hint"], /on .*off.*status.*threshold/);
     assert.match(text, /private\/jev-control\/cli\.mjs/);
-    assert.match(text, /never pass a made-up `--session-id`/);
+    assert.match(text, /never pass a made-up `--session-id`/i);
+    assert.match(text, /--session-cap/);
   });
   it("jev-done, jev-locate and the locator have explicit control branches", () => {
     for (const f of [["commands", "jev-done.md"], ["commands", "jev-locate.md"], ["agents", "jev-locator.md"]]) assert.match(read(...f), /jev-control/, f.join("/"));
@@ -76,13 +77,15 @@ describe("scope and safety of the change", () => {
   it("new code lives only in private/jev-control/: nothing named jev-control in scripts/", () => {
     assert.deepEqual(readdirSync(join(REPO_ROOT, "scripts")).filter((f) => /control/.test(f)), []);
   });
-  it("hooks.json is unchanged in kind: every hook is the jev-flow adapter, none is a control or blocking hook", () => {
+  it("hooks.json: every hook is the jev-flow adapter (none a control or blocking hook); the only addition is SessionEnd", () => {
     const hooks = JSON.parse(read("hooks", "hooks.json")).hooks;
     const commands = Object.values(hooks).flat().flatMap((g) => g.hooks.map((h) => h.command));
-    assert.ok(commands.length >= 7);
+    assert.ok(commands.length >= 8);
     for (const c of commands) assert.match(c, /jev-flow-hook\.mjs" \w+$/);
     assert.doesNotMatch(JSON.stringify(hooks), /jev-control/);
     assert.match(hooks.PreToolUse[0].matcher, /mcp__\(plugin_jev_\)\?jev__jev_/);
+    assert.deepEqual(Object.keys(hooks), ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SubagentStop", "SessionEnd"]);
+    assert.match(hooks.SessionEnd[0].hooks[0].command, /jev-flow-hook\.mjs" SessionEnd$/);
   });
   it("is not registered in the OpenCode plugin", () => {
     assert.doesNotMatch(read("opencode-plugin.js"), /jev-control/);

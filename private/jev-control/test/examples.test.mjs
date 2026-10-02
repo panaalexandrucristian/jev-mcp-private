@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { S3 } from "../fixtures/scenarios.mjs";
 import { materialize } from "../fixtures/lib.mjs";
-import { compactOut } from "../cli.mjs";
+import { compactOut, printable } from "../cli.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult, toolBase, validateArgs } from "../contracts.mjs";
 import { normalizeBatch } from "../options.mjs";
 import { runDecision } from "../protocol.mjs";
@@ -101,7 +101,7 @@ describe("the decision examples are executable specifications", () => {
         };
         const result = await runDecision(n.batch, { caller, session: {}, dir, T: 0.95, priorities: "fix it with the smallest correct change", headless: false, decisionId: round.output.decision_id, now: Date.now });
         assert.equal(queue.length, 0, `${f} round ${i}: documented calls that were never made`);
-        assert.equal(compactOut(result), JSON.stringify(round.output), `${f} round ${i}: helper output`);
+        assert.equal(compactOut(printable(result)), JSON.stringify(round.output), `${f} round ${i}: helper output`);
       }
     });
   }

@@ -1,28 +1,63 @@
 {
   "round": "T2",
-  "kind": "build + offline tests",
+  "kind": "build + offline tests (ratification fix round 1 applied)",
   "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
   "branch": "jev-control-skill",
   "plugin_version": "0.7.0",
   "live": "unmeasured",
   "live_sessions_used": 0,
-  "ledger": { "path": "/Users/apana/Dev/council-runs/2026-10-02/jev-control-budget/ledger.tsv", "lines_before": 0, "lines_after": 0, "cap": 20 },
+  "ledger": {
+    "path": "/Users/apana/Dev/council-runs/2026-10-02/jev-control-budget/ledger.tsv",
+    "lines_before": 0,
+    "lines_after": 0,
+    "cap": 20
+  },
   "metrics_live": {
     "correctness": "unmeasured",
     "decision_coverage": "unmeasured",
     "threshold_and_ordering_compliance": "unmeasured",
-    "orchestrator_tokens": { "input_tokens": "unmeasured", "output_tokens": "unmeasured", "cache_read_input_tokens": "unmeasured", "cache_creation_input_tokens": "unmeasured" },
+    "orchestrator_tokens": {
+      "input_tokens": "unmeasured",
+      "output_tokens": "unmeasured",
+      "cache_read_input_tokens": "unmeasured",
+      "cache_creation_input_tokens": "unmeasured"
+    },
     "jev_latency_and_cost": "unmeasured",
     "provider_calls": "unknown"
   },
   "offline_checks": {
-    "node --test private/jev-flow/test/": { "tests": 324, "suites": 61, "pass": 324, "fail": 0, "exit": 0 },
-    "node --test private/jev-control/test/": { "tests": 209, "suites": 49, "pass": 209, "fail": 0, "exit": 0 },
-    "claude plugin validate .": { "result": "passed", "exit": 0 },
-    "node private/jev-control/fixtures/seal.mjs verify": { "result": "ok", "exit": 0 },
-    "git diff --check": { "exit": 0 }
+    "node --test private/jev-flow/test/": {
+      "tests": 324,
+      "suites": 61,
+      "pass": 324,
+      "fail": 0,
+      "exit": 0
+    },
+    "node --test private/jev-control/test/": {
+      "tests": 318,
+      "suites": 64,
+      "pass": 318,
+      "fail": 0,
+      "exit": 0
+    },
+    "claude plugin validate .": {
+      "result": "passed",
+      "exit": 0,
+      "note": "does not check hook event names"
+    },
+    "node private/jev-control/fixtures/seal.mjs verify": {
+      "result": "ok",
+      "exit": 0
+    },
+    "git diff --check": {
+      "exit": 0
+    }
   },
-  "versions": { "node": "v22.23.1", "claude_code": "2.1.288", "jev_server": "fake stdio server (private/jev-control/test/fixtures/fake-control-server.mjs); no real Jev server was used" },
+  "versions": {
+    "node": "v22.23.1",
+    "claude_code": "2.1.288",
+    "jev_server": "fake stdio server (private/jev-control/test/fixtures/fake-control-server.mjs); no real Jev server was used"
+  },
   "fixtures": {
     "dev_oracle_hashes": {
       "s1-bug-several-files": "d134fbb9d686b0cf0e2207d6b06f3fc1e68a801208ab5062ddef4c81ccae42ac",
@@ -34,5 +69,16 @@
       "f1-ambiguous-ttl": "8c22eb66a2d77d6f4eb92ab6cfb4ce2965b4b6b4e1a1f9689ff07d391062c464",
       "f2-inclusive-range": "86a9887b1b17149044a724b344b9b050fd7cd50dbcdfb78ea9ee0933381b7d56"
     }
+  },
+  "fix_round_1": {
+    "audit": "coverage is bound to concrete grants (plan item action hashes, search hits, bound approvals); no generic slots; order, request, agent context and reuse are checked; tokens are unknown when a field is missing in some messages",
+    "search": "find, rerank and the tie-break draw from one budget of 2 evaluations per search id, reserved atomically; tie_unresolved returns only resolved_hits; real attempts reported; raw scores",
+    "actions_and_receipts": "options carry an action descriptor and preconditions; plan items carry the raw score and the action hash; receipts carry full provenance and authorize exactly the planned action once",
+    "compaction": "plan and scores are paged with explicit markers (plan_next, scores_next) and `cli.mjs page`; scores stay raw",
+    "contracts": "tools/list schemas are validated field by field against the published schema (types, required, limits, auto_accept); results are checked for association and consistency; verified against the real server's tools/list",
+    "identity_and_lifecycle": "a per-session capability injected by the hook replaces the repository-wide binding; startup/resume/clear/fork and SessionEnd switch the mode off; SessionEnd is registered in hooks/hooks.json",
+    "runner": "one campaign-wide exclusive lock taken before spawn; the no-progress stop is removed",
+    "demonstrated_offline": "see skills/jev-control/reference/integration.md",
+    "left_for_R02": "CLAUDE_CODE_SESSION_ID in the Bash tool; raw slash text in the prompt hook and the capability line reaching the model; the model copying the capability into subagent prompts; agent_id in subagent payloads; SessionEnd firing; /jev:jev-control in claude -p; --plugin-dir with an installed jev plugin"
   }
 }

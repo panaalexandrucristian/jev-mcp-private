@@ -62,10 +62,19 @@ export function stateDir() {
 }
 
 /** noul/decide/rerank/find replies for the in-process caller. */
-export const noul = (probs) => (args) => ({ tool: "jev_noul", status: "ok", results: args.propositions.map((_, i) => ({ id: `proposition${i}`, probability: probs[i], label: "likely", auto: true })) });
+export const noul = (probs) => (args) => ({ tool: "jev_noul", status: "ok", results: args.propositions.map((p, i) => ({ id: `proposition${i}`, proposition: p, probability: probs[i], label: "likely", auto: true })) });
+/** The server's distribution: the candidates plus the three escape hatches, the selection on top, summing to 1. */
+export function decideProbabilities(candidateIds, selected, top) {
+  const keys = [...candidateIds, "ask_user", "investigate", "none"];
+  const others = keys.filter((k) => k !== selected);
+  const rest = Number(((1 - top) / others.length).toFixed(6));
+  const probs = Object.fromEntries(others.map((k) => [k, rest]));
+  probs[selected] = Number((1 - rest * others.length).toFixed(6));
+  return Object.fromEntries(keys.map((k) => [k, probs[k]]));
+}
 export const decide = (selected, confidence = 0.97, { escaped = false, warnings = [] } = {}) => (args) => ({
   tool: "jev_decide",
-  recommendation: { selected, escaped, confidence, probabilities: Object.fromEntries(args.candidates.map((c) => [c.id, c.id === selected ? confidence : 0.01])) },
+  recommendation: { selected, escaped, confidence, probabilities: decideProbabilities(args.candidates.map((c) => c.id), selected, confidence) },
   warnings,
 });
 export const rerank = (scores) => (args) => ({ tool: "jev_rerank", ranked: args.candidates.map((c, i) => ({ rank: i + 1, id: c.id, relevance: scores[c.id] ?? scores[i] ?? 0.01 })) });
@@ -95,9 +104,26 @@ export function scriptedCaller(steps) {
   };
 }
 
-/** A batch with `n` real options o1..on and the given extras. */
+/** The one concrete action option `i` (0-based) stands for in a batch of `kind` (none for the kinds whose options are strategies). */
+export function actionFor(kind, i) {
+  if (kind === "order") return { tool: "Bash", target: `node scripts/step-${i + 1}.mjs` };
+  if (kind === "command") return { tool: "Bash", target: `npm run check-${i + 1}` };
+  if (kind === "edit") return { tool: "Edit", target: `src/file-${i + 1}.js` };
+  if (kind === "delegate") return { tool: "Agent", target: `worker-${i + 1}` };
+  return null;
+}
+
+/** A batch with `n` real options o1..on (with their concrete actions when the kind needs them) and the given extras. */
 export function batchOf(n, { kind = "approach", decision = "Which option?", extra = {} } = {}) {
-  return { decision, kind, options: Array.from({ length: n }, (_, i) => ({ id: `o${i + 1}`, text: `Option number ${i + 1}`, evidence: [`evidence line for option ${i + 1}`] })), ...extra };
+  return {
+    decision,
+    kind,
+    options: Array.from({ length: n }, (_, i) => {
+      const action = actionFor(kind, i);
+      return { id: `o${i + 1}`, text: `Option number ${i + 1}`, evidence: [`evidence line for option ${i + 1}`], ...(action ? { action } : {}) };
+    }),
+    ...extra,
+  };
 }
 
 export function repoWithSession() {

@@ -8,17 +8,66 @@
 //   rerank/find entry: {"scores": {"<id>": x}, "exists": x}; gate entry: {"result": <jev_gate answer>} or {"conf": x} (an accepted
 //   answer for exactly the claims of the call, all confidences x, at the call's auto_accept); any entry may carry {"fail": "transport"|"hang"|"tool_error"}.
 // FAKE_CONTROL_TOOLS=<comma list of short names> restricts tools/list (default: all 11 core tools + audit);
-//   FAKE_CONTROL_NO_SCHEMA=1 lists them without an input schema.
+//   FAKE_CONTROL_NO_SCHEMA=1 lists them without an input schema; FAKE_CONTROL_SCHEMA_PATCH=<file>: JSON
+//   {"<short name>": <inputSchema to publish instead>} (null: no inputSchema), for incompatible-schema cases.
+// tools/list publishes the real input schemas as jev-mcp publishes them (zod -> JSON Schema, descriptions
+// left out); contracts-real.test.mjs compares them with the real server's tools/list.
+// noul replies echo each sent proposition; decide replies carry the Choice distribution over the
+// candidate ids plus the escape hatches (unless escape_hatches is false), summing to 1, argmax = selected.
 // FAKE_MCP_LOG=<file>: JSONL, one record per tools/call with the full arguments.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gateAnswer } from "../helpers.mjs";
 
 const CORE = ["screen", "verify", "noul", "find", "rerank", "classify", "decide", "compare", "extract", "review", "gate"];
-const REQUIRED = {
-  screen: ["text"], verify: ["claims", "evidence"], noul: ["propositions"], find: ["query", "candidates"], rerank: ["query", "candidates"],
-  classify: ["items", "classes"], decide: ["decision", "evidence", "priorities", "candidates"], compare: ["passage_a", "passage_b"],
-  extract: ["document", "fields"], review: ["request", "diff"], gate: ["request", "diff", "claims", "evidence"], audit: ["source", "records"],
+
+// The published input schemas (src/index.ts strictShape + evidenceSchema/candidatesSchema).
+const S = (extra = {}) => ({ type: "string", ...extra });
+const N01 = { type: "number", minimum: 0, maximum: 1 };
+const A = (items, extra = {}) => ({ type: "array", items, ...extra });
+const O = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
+const SLUG = "^[a-z][a-z0-9_-]*$";
+const ITEM = O({ id: S(), text: S() }, ["text"]);
+const EVIDENCE = { anyOf: [S(), ITEM, A(ITEM, { minItems: 1 })] };
+const CANDIDATES = A(O({ id: S(), text: S() }, ["text"]), { minItems: 1, maxItems: 250 });
+const PASSAGE = S({ minLength: 1, maxLength: 20000 });
+const SCHEMAS = {
+  verify: O({ claims: A(S(), { minItems: 1 }), evidence: EVIDENCE, auto_accept: N01 }, ["claims", "evidence"]),
+  screen: O({ text: S({ minLength: 1 }), purpose: S(), block_at: N01, review_at: N01 }, ["text"]),
+  noul: O({ propositions: A(S({ minLength: 1, maxLength: 2000 }), { minItems: 1, maxItems: 64 }), context: EVIDENCE, auto_accept: { type: "number", exclusiveMinimum: 0.5, maximum: 1 } }, ["propositions"]),
+  find: O({ query: S({ minLength: 1 }), candidates: CANDIDATES, top_k: { type: "integer", minimum: 1, maximum: 50 } }, ["query", "candidates"]),
+  classify: O({
+    items: A(O({ id: S(), text: S() }, ["text"]), { minItems: 1, maxItems: 64 }),
+    classes: A(O({ id: S(), description: S() }, ["description"]), { minItems: 2, maxItems: 250 }),
+    purpose: S(),
+    context: { anyOf: [S(), { type: "object", propertyNames: { type: "string" }, additionalProperties: {} }] },
+    auto_accept: N01,
+    minimum_margin: N01,
+  }, ["items", "classes"]),
+  decide: O({
+    decision: S({ minLength: 1, maxLength: 1500 }),
+    evidence: S({ minLength: 1, maxLength: 12000 }),
+    priorities: S({ minLength: 1, maxLength: 2000 }),
+    candidates: A(O({ id: S({ maxLength: 64, pattern: SLUG }), description: S({ minLength: 1, maxLength: 2000 }) }, ["id", "description"]), { minItems: 2, maxItems: 6 }),
+    requirements: A(S({ minLength: 1, maxLength: 500 }), { maxItems: 3 }),
+    escape_hatches: { type: "boolean" },
+  }, ["decision", "evidence", "priorities", "candidates"]),
+  rerank: O({ query: S({ minLength: 1, maxLength: 2000 }), candidates: CANDIDATES, top_k: { type: "integer", minimum: 1, maximum: 250 } }, ["query", "candidates"]),
+  compare: O({ passage_a: PASSAGE, passage_b: PASSAGE, aspects: A(S({ minLength: 1, maxLength: 200 }), { maxItems: 10 }), purpose: S(), auto_accept: N01, minimum_margin: N01 }, ["passage_a", "passage_b"]),
+  extract: O({
+    document: S({ minLength: 1, maxLength: 50000 }),
+    fields: A(O({ id: S({ maxLength: 64, pattern: SLUG }), pattern: S({ minLength: 1, maxLength: 500 }), flags: S({ maxLength: 8 }), description: S({ minLength: 1, maxLength: 2000 }) }, ["id", "pattern", "description"]), { minItems: 1, maxItems: 32 }),
+    purpose: S(),
+    auto_accept: N01,
+    minimum_margin: N01,
+  }, ["document", "fields"]),
+  review: O({ request: S({ minLength: 1 }), diff: S({ minLength: 1 }), tests: S(), auto_accept: N01, review_at: N01, composite_floor: N01 }, ["request", "diff"]),
+  gate: O({ request: S({ minLength: 1 }), diff: S({ minLength: 1 }), claims: A(S({ minLength: 1 }), { minItems: 1, maxItems: 16 }), evidence: EVIDENCE, tests: S(), auto_accept: N01, review_at: N01, composite_floor: N01 }, ["request", "diff", "claims", "evidence"]),
+  // jev_audit is not part of jev-mcp; any object schema stands in for it (optional, never checked).
+  audit: O({ source: S(), records: A({ type: "object" }) }, ["source", "records"]),
 };
+const HATCHES = ["ask_user", "investigate", "none"];
+const patch = process.env.FAKE_CONTROL_SCHEMA_PATCH && existsSync(process.env.FAKE_CONTROL_SCHEMA_PATCH) ? JSON.parse(readFileSync(process.env.FAKE_CONTROL_SCHEMA_PATCH, "utf8")) : {};
+
 const listed = (process.env.FAKE_CONTROL_TOOLS ? process.env.FAKE_CONTROL_TOOLS.split(",") : [...CORE, "audit"]).filter(Boolean);
 const script = process.env.FAKE_CONTROL_SCRIPT && existsSync(process.env.FAKE_CONTROL_SCRIPT) ? JSON.parse(readFileSync(process.env.FAKE_CONTROL_SCRIPT, "utf8")) : {};
 const stateFile = process.env.FAKE_CONTROL_STATE;
@@ -54,7 +103,13 @@ function answer(tool, args, entry) {
     const selected = entry.selected ?? ids[0];
     const escaped = entry.escaped === true;
     const confidence = entry.confidence ?? 0.97;
-    return { tool: "jev_decide", model: "fake", provider: "fake", recommendation: { selected, escaped, confidence, probabilities: Object.fromEntries(ids.map((id) => [id, id === selected ? confidence : 0.01])) }, requirements_checked: 0, checks: [], warnings: entry.warnings ?? [], usage: {} };
+    // The distribution is the Choice's own (the confidence is reported separately, as upstream):
+    // selected holds max(confidence, 0.5), the rest share the remainder evenly.
+    const keys = [...ids, ...(args.escape_hatches === false ? [] : HATCHES)];
+    if (!keys.includes(selected)) keys.push(selected);
+    const top = Math.max(confidence, 0.5);
+    const probabilities = entry.probabilities ?? Object.fromEntries(keys.map((k) => [k, k === selected ? top : Number(((1 - top) / (keys.length - 1)).toFixed(6))]));
+    return { tool: "jev_decide", model: "fake", provider: "fake", recommendation: { selected, escaped, confidence, probabilities }, requirements_checked: 0, checks: [], warnings: entry.warnings ?? [], usage: {} };
   }
   if (tool === "rerank" || tool === "find") {
     const cands = args.candidates;
@@ -74,11 +129,10 @@ function handle(msg) {
   if (msg.method === "initialize") return send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "fake-jev", version: "9.9.9" } } });
   if (msg.method === "notifications/initialized") return;
   if (msg.method === "tools/list") {
-    const tools = listed.map((short) => ({
-      name: `jev_${short}`,
-      description: short,
-      ...(process.env.FAKE_CONTROL_NO_SCHEMA === "1" ? {} : { inputSchema: { type: "object", properties: Object.fromEntries([...(REQUIRED[short] ?? []), "auto_accept", "top_k", "context", "escape_hatches", "requirements", "tests"].map((k) => [k, {}])), required: REQUIRED[short] ?? [] } }),
-    }));
+    const tools = listed.map((short) => {
+      const schema = Object.hasOwn(patch, short) ? patch[short] : (SCHEMAS[short] ?? O({}, []));
+      return { name: `jev_${short}`, description: short, ...(process.env.FAKE_CONTROL_NO_SCHEMA === "1" || schema === null ? {} : { inputSchema: schema }) };
+    });
     return send({ jsonrpc: "2.0", id: msg.id, result: { tools } });
   }
   if (msg.method === "tools/call") {

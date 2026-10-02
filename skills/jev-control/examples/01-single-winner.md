@@ -68,7 +68,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_wrapper is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Add a wrapper around pageCount in src/utils/math.mjs",
     "Taking option opt_tests is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Change the failing test to the current behavior",
     "Taking option action_gather_evidence is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Ask the user which option to take."
+    "Taking option action_ask_user is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
@@ -97,7 +97,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_6",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
     },
     {
       "id": "priorities",
@@ -117,42 +117,49 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
+      "proposition": "Taking option opt_pagination is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Fix the page count in src/pagination.mjs (floor + 1 should be a ceiling)",
       "probability": 0.982,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition1",
+      "proposition": "Taking option opt_report is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Subtract one page inside src/report.mjs when the count is exact",
       "probability": 0.61,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition2",
+      "proposition": "Taking option opt_cli is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Clamp the printed page number in src/cli.mjs",
       "probability": 0.43,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition3",
+      "proposition": "Taking option opt_wrapper is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Add a wrapper around pageCount in src/utils/math.mjs",
       "probability": 0.2,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition4",
+      "proposition": "Taking option opt_tests is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Change the failing test to the current behavior",
       "probability": 0.12,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition5",
+      "proposition": "Taking option action_gather_evidence is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Gather more evidence before acting: read or run something that could change the choice.",
       "probability": 0.35,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition6",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which module should hold the fix for the extra empty page? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
       "probability": 0.4,
       "label": "uncertain",
       "auto": false
@@ -167,7 +174,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"selected","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"scores":{"opt_pagination":0.982,"opt_report":0.61,"opt_cli":0.43,"opt_wrapper":0.2,"opt_tests":0.12,"action_gather_evidence":0.35,"action_ask_user":0.4},"plan":[{"id":"opt_pagination","action":"execute"}]}
+{"status":"selected","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"plan":["opt_pagination:e:0.982:-"],"plan_total":1}
 ```
 
 **Comparison (strict, on the raw probabilities)**
@@ -184,6 +191,8 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 
 Only `opt_pagination` is strictly above 0.95. There is a single eligible option, so no `jev_decide` tie-break is needed (`jev_decide` needs at least two candidates, and its probabilities sum to 1 with its escape hatches, so it is never an eligibility test).
 
-**Action:** run the first `execute` item, `opt_pagination`: edit `src/pagination.mjs`. The `reserve` items are not executed.
+**Reading the plan.** Each item is `id:step:score:action-hash`. The step is `e` (execute), `r` (an ordered reserve, never an automatic fallback), `s` (suspend: a control option, gather evidence or ask the user) or `x` (after a suspend). The score is the raw `jev_noul` probability, never rounded. The hash is the first 12 hex characters of the SHA-256 of the option's concrete action (`-` here: an `approach` option names no single tool call; options of the kinds `order`, `command`, `edit` and `delegate` do, see example 05 and 07). A list that does not fit the 1.5 KB cap is cut with `plan_total` and `plan_next`; the rest is read with `cli.mjs page --decision <id> --from <plan_next>`. The CLI also adds `receipt` (a 32-hex id) to a selected or ordered result.
+
+**Action:** run the first `e` item, `opt_pagination`: edit `src/pagination.mjs`. The `r` items are not executed.
 
 **Accounting:** 1 `tools/call` attempt (source `helper`) of the 25 for this user request. Provider calls inside the server: unknown.

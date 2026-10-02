@@ -78,11 +78,14 @@ describe("file search (D9, D21-D23)", () => {
     assert.equal(r.hits[0].path, "src/upload/uploader.mjs", "the tie-break winner comes first");
     assert.equal(r.hits.length, 2);
   });
-  it("an unresolved near-tie is reported, not guessed", async () => {
+  it("an unresolved near-tie is reported, not guessed: no found, no order for the tied files", async () => {
     const repo = materialize(S3);
     const r = await controlSearch({ query: QUERY }, ctxFor(repo, scriptedCaller([rerank([0.97, 0.965, 0.1, 0.05]), decide("c0", 0.9)])));
-    assert.equal(r.status, "found");
-    assert.equal(r.tie_unresolved, true);
+    assert.equal(r.status, "tie_unresolved");
+    assert.equal(r.hits, undefined);
+    assert.deepEqual(r.resolved_hits, []);
+    assert.equal(r.unresolved_count, 2);
+    assert.equal(r.evaluations, 2);
   });
   it("an exact path the user gave is read directly, without Jev; a path outside the repository is not", async () => {
     const repo = materialize(S3);

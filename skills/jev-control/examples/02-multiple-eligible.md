@@ -17,35 +17,55 @@ Illustrative — not measured. Threshold `T = 0.95`; the decision is an **order*
       "evidence": [
         "src/user.mjs:2 defines fullname",
         "the greeting and its test read the field"
-      ]
+      ],
+      "action": {
+        "tool": "Edit",
+        "target": "src/user.mjs"
+      }
     },
     {
       "id": "t_consumer",
       "text": "Update src/greeting.mjs to read displayName",
       "evidence": [
         "src/greeting.mjs:2 reads user.fullname"
-      ]
+      ],
+      "action": {
+        "tool": "Edit",
+        "target": "src/greeting.mjs"
+      }
     },
     {
       "id": "t_tests",
       "text": "Update test/greeting.test.mjs to the new field",
       "evidence": [
         "test/greeting.test.mjs asserts the greeting only"
-      ]
+      ],
+      "action": {
+        "tool": "Edit",
+        "target": "test/greeting.test.mjs"
+      }
     },
     {
       "id": "t_changelog",
       "text": "Add the changelog line to CHANGELOG.md",
       "evidence": [
         "CHANGELOG.md has one line"
-      ]
+      ],
+      "action": {
+        "tool": "Edit",
+        "target": "CHANGELOG.md"
+      }
     },
     {
       "id": "t_docs",
       "text": "Rewrite the documentation of the user module",
       "evidence": [
         "no documentation file exists for the user module"
-      ]
+      ],
+      "action": {
+        "tool": "Write",
+        "target": "docs/user.md"
+      }
     }
   ]
 }
@@ -62,34 +82,34 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "propositions": [
-    "Taking option t_schema is the right next step for this decision: In which order should the four release tasks be done? — Option: Rename the fullname field to displayName in src/user.mjs",
-    "Taking option t_consumer is the right next step for this decision: In which order should the four release tasks be done? — Option: Update src/greeting.mjs to read displayName",
-    "Taking option t_tests is the right next step for this decision: In which order should the four release tasks be done? — Option: Update test/greeting.test.mjs to the new field",
-    "Taking option t_changelog is the right next step for this decision: In which order should the four release tasks be done? — Option: Add the changelog line to CHANGELOG.md",
-    "Taking option t_docs is the right next step for this decision: In which order should the four release tasks be done? — Option: Rewrite the documentation of the user module",
+    "Taking option t_schema is the right next step for this decision: In which order should the four release tasks be done? — Option: Rename the fullname field to displayName in src/user.mjs Concrete action: Edit src/user.mjs.",
+    "Taking option t_consumer is the right next step for this decision: In which order should the four release tasks be done? — Option: Update src/greeting.mjs to read displayName Concrete action: Edit src/greeting.mjs.",
+    "Taking option t_tests is the right next step for this decision: In which order should the four release tasks be done? — Option: Update test/greeting.test.mjs to the new field Concrete action: Edit test/greeting.test.mjs.",
+    "Taking option t_changelog is the right next step for this decision: In which order should the four release tasks be done? — Option: Add the changelog line to CHANGELOG.md Concrete action: Edit CHANGELOG.md.",
+    "Taking option t_docs is the right next step for this decision: In which order should the four release tasks be done? — Option: Rewrite the documentation of the user module Concrete action: Write docs/user.md.",
     "Taking option action_gather_evidence is the right next step for this decision: In which order should the four release tasks be done? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: In which order should the four release tasks be done? — Option: Ask the user which option to take."
+    "Taking option action_ask_user is the right next step for this decision: In which order should the four release tasks be done? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
       "id": "evidence_0",
-      "text": "Option t_schema: src/user.mjs:2 defines fullname | the greeting and its test read the field"
+      "text": "Option t_schema: src/user.mjs:2 defines fullname | the greeting and its test read the field Concrete action: Edit src/user.mjs."
     },
     {
       "id": "evidence_1",
-      "text": "Option t_consumer: src/greeting.mjs:2 reads user.fullname"
+      "text": "Option t_consumer: src/greeting.mjs:2 reads user.fullname Concrete action: Edit src/greeting.mjs."
     },
     {
       "id": "evidence_2",
-      "text": "Option t_tests: test/greeting.test.mjs asserts the greeting only"
+      "text": "Option t_tests: test/greeting.test.mjs asserts the greeting only Concrete action: Edit test/greeting.test.mjs."
     },
     {
       "id": "evidence_3",
-      "text": "Option t_changelog: CHANGELOG.md has one line"
+      "text": "Option t_changelog: CHANGELOG.md has one line Concrete action: Edit CHANGELOG.md."
     },
     {
       "id": "evidence_4",
-      "text": "Option t_docs: no documentation file exists for the user module"
+      "text": "Option t_docs: no documentation file exists for the user module Concrete action: Write docs/user.md."
     },
     {
       "id": "evidence_5",
@@ -97,7 +117,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_6",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
     },
     {
       "id": "priorities",
@@ -117,42 +137,49 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
+      "proposition": "Taking option t_schema is the right next step for this decision: In which order should the four release tasks be done? — Option: Rename the fullname field to displayName in src/user.mjs Concrete action: Edit src/user.mjs.",
       "probability": 0.991,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition1",
+      "proposition": "Taking option t_consumer is the right next step for this decision: In which order should the four release tasks be done? — Option: Update src/greeting.mjs to read displayName Concrete action: Edit src/greeting.mjs.",
       "probability": 0.987,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition2",
+      "proposition": "Taking option t_tests is the right next step for this decision: In which order should the four release tasks be done? — Option: Update test/greeting.test.mjs to the new field Concrete action: Edit test/greeting.test.mjs.",
       "probability": 0.972,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition3",
+      "proposition": "Taking option t_changelog is the right next step for this decision: In which order should the four release tasks be done? — Option: Add the changelog line to CHANGELOG.md Concrete action: Edit CHANGELOG.md.",
       "probability": 0.96,
       "label": "likely",
       "auto": true
     },
     {
       "id": "proposition4",
+      "proposition": "Taking option t_docs is the right next step for this decision: In which order should the four release tasks be done? — Option: Rewrite the documentation of the user module Concrete action: Write docs/user.md.",
       "probability": 0.42,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition5",
+      "proposition": "Taking option action_gather_evidence is the right next step for this decision: In which order should the four release tasks be done? — Option: Gather more evidence before acting: read or run something that could change the choice.",
       "probability": 0.3,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition6",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: In which order should the four release tasks be done? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
       "probability": 0.25,
       "label": "uncertain",
       "auto": false
@@ -169,20 +196,20 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "decision": "In which order should the four release tasks be done?",
-  "evidence": "Option t_schema: src/user.mjs:2 defines fullname | the greeting and its test read the field\nOption t_consumer: src/greeting.mjs:2 reads user.fullname\nOption t_tests: test/greeting.test.mjs asserts the greeting only",
+  "evidence": "Option t_schema: src/user.mjs:2 defines fullname | the greeting and its test read the field Concrete action: Edit src/user.mjs.\nOption t_consumer: src/greeting.mjs:2 reads user.fullname Concrete action: Edit src/greeting.mjs.\nOption t_tests: test/greeting.test.mjs asserts the greeting only Concrete action: Edit test/greeting.test.mjs.",
   "priorities": "fix it with the smallest correct change",
   "candidates": [
     {
       "id": "t_schema",
-      "description": "Rename the fullname field to displayName in src/user.mjs"
+      "description": "Rename the fullname field to displayName in src/user.mjs Concrete action: Edit src/user.mjs."
     },
     {
       "id": "t_consumer",
-      "description": "Update src/greeting.mjs to read displayName"
+      "description": "Update src/greeting.mjs to read displayName Concrete action: Edit src/greeting.mjs."
     },
     {
       "id": "t_tests",
-      "description": "Update test/greeting.test.mjs to the new field"
+      "description": "Update test/greeting.test.mjs to the new field Concrete action: Edit test/greeting.test.mjs."
     }
   ]
 }
@@ -200,7 +227,10 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "probabilities": {
       "t_schema": 0.97,
       "t_consumer": 0.006,
-      "t_tests": 0.006
+      "t_tests": 0.006,
+      "ask_user": 0.006,
+      "investigate": 0.006,
+      "none": 0.006
     }
   },
   "requirements_checked": 0,
@@ -214,16 +244,16 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "decision": "In which order should the four release tasks be done?",
-  "evidence": "Option t_consumer: src/greeting.mjs:2 reads user.fullname\nOption t_tests: test/greeting.test.mjs asserts the greeting only",
+  "evidence": "Option t_consumer: src/greeting.mjs:2 reads user.fullname Concrete action: Edit src/greeting.mjs.\nOption t_tests: test/greeting.test.mjs asserts the greeting only Concrete action: Edit test/greeting.test.mjs.",
   "priorities": "fix it with the smallest correct change",
   "candidates": [
     {
       "id": "t_consumer",
-      "description": "Update src/greeting.mjs to read displayName"
+      "description": "Update src/greeting.mjs to read displayName Concrete action: Edit src/greeting.mjs."
     },
     {
       "id": "t_tests",
-      "description": "Update test/greeting.test.mjs to the new field"
+      "description": "Update test/greeting.test.mjs to the new field Concrete action: Edit test/greeting.test.mjs."
     }
   ]
 }
@@ -240,7 +270,10 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "confidence": 0.962,
     "probabilities": {
       "t_consumer": 0.962,
-      "t_tests": 0.0095
+      "t_tests": 0.0095,
+      "ask_user": 0.0095,
+      "investigate": 0.0095,
+      "none": 0.0095
     }
   },
   "requirements_checked": 0,
@@ -254,16 +287,16 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 ```json
 {
   "decision": "In which order should the four release tasks be done?",
-  "evidence": "Option t_tests: test/greeting.test.mjs asserts the greeting only\nOption t_changelog: CHANGELOG.md has one line",
+  "evidence": "Option t_tests: test/greeting.test.mjs asserts the greeting only Concrete action: Edit test/greeting.test.mjs.\nOption t_changelog: CHANGELOG.md has one line Concrete action: Edit CHANGELOG.md.",
   "priorities": "fix it with the smallest correct change",
   "candidates": [
     {
       "id": "t_tests",
-      "description": "Update test/greeting.test.mjs to the new field"
+      "description": "Update test/greeting.test.mjs to the new field Concrete action: Edit test/greeting.test.mjs."
     },
     {
       "id": "t_changelog",
-      "description": "Add the changelog line to CHANGELOG.md"
+      "description": "Add the changelog line to CHANGELOG.md Concrete action: Edit CHANGELOG.md."
     }
   ]
 }
@@ -280,7 +313,10 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "confidence": 0.957,
     "probabilities": {
       "t_tests": 0.957,
-      "t_changelog": 0.0108
+      "t_changelog": 0.01075,
+      "ask_user": 0.01075,
+      "investigate": 0.01075,
+      "none": 0.01075
     }
   },
   "requirements_checked": 0,
@@ -292,7 +328,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"ordered","decision_id":"3f9c2a71d4e85b06","kind":"order","threshold":0.95,"round":0,"calls":4,"tiebreaks":3,"scores":{"t_schema":0.991,"t_consumer":0.987,"t_tests":0.972,"t_changelog":0.96,"t_docs":0.42,"action_gather_evidence":0.3,"action_ask_user":0.25},"plan":[{"id":"t_schema","action":"execute"},{"id":"t_consumer","action":"execute"},{"id":"t_tests","action":"execute"},{"id":"t_changelog","action":"execute"}]}
+{"status":"ordered","decision_id":"3f9c2a71d4e85b06","kind":"order","threshold":0.95,"round":0,"calls":4,"tiebreaks":3,"plan":["t_schema:e:0.991:f0be44b171fa","t_consumer:e:0.987:7e863bfe3aa5","t_tests:e:0.972:f8e831eda89d","t_changelog:e:0.96:8f55ac55d81a"],"plan_total":4}
 ```
 
 **Comparison (strict)**

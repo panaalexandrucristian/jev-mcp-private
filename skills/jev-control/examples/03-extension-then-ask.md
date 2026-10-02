@@ -68,7 +68,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_ini is the right next step for this decision: Which library should parse the configuration files? — Option: Use an INI parser for the flat files",
     "Taking option opt_own is the right next step for this decision: Which library should parse the configuration files? — Option: Write a small parser for the subset in use",
     "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take."
+    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
@@ -97,7 +97,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_6",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
     },
     {
       "id": "priorities",
@@ -117,42 +117,49 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
+      "proposition": "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
       "probability": 0.81,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition1",
+      "proposition": "Taking option opt_toml is the right next step for this decision: Which library should parse the configuration files? — Option: Add a TOML parser and convert the configs",
       "probability": 0.3,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition2",
+      "proposition": "Taking option opt_json is the right next step for this decision: Which library should parse the configuration files? — Option: Convert the configs to JSON and use JSON.parse",
       "probability": 0.41,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition3",
+      "proposition": "Taking option opt_ini is the right next step for this decision: Which library should parse the configuration files? — Option: Use an INI parser for the flat files",
       "probability": 0.2,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition4",
+      "proposition": "Taking option opt_own is the right next step for this decision: Which library should parse the configuration files? — Option: Write a small parser for the subset in use",
       "probability": 0.25,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition5",
+      "proposition": "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
       "probability": 0.5,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition6",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
       "probability": 0.45,
       "label": "uncertain",
       "auto": false
@@ -167,7 +174,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"expand","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"scores":{"opt_yaml":0.81,"opt_toml":0.3,"opt_json":0.41,"opt_ini":0.2,"opt_own":0.25,"action_gather_evidence":0.5,"action_ask_user":0.45},"plan":[],"reason":"none_above_threshold","expansions_left":2}
+{"status":"expand","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","expansions_left":2,"plan":[],"plan_total":0,"scores":["opt_yaml:0.81","action_gather_evidence:0.5","action_ask_user:0.45","opt_json:0.41","opt_toml:0.3","opt_own:0.25","opt_ini:0.2"],"scores_total":7}
 ```
 
 Round 0 comparison: the best probability is 0.81, not above 0.95. Nothing is eligible, so the helper answers `expand` (2 rounds left). The session gathers evidence (it reads `package.json` and `src/load.mjs`) and calls again with the **same decision id** and a `new_material` note; resubmitting the same options is refused (`no_new_material`).
@@ -214,7 +221,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
     "Taking option opt_json is the right next step for this decision: Which library should parse the configuration files? — Option: Convert the configs to JSON and use JSON.parse",
     "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take."
+    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
@@ -231,7 +238,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_3",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
     },
     {
       "id": "priorities",
@@ -251,24 +258,28 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
+      "proposition": "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
       "probability": 0.93,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition1",
+      "proposition": "Taking option opt_json is the right next step for this decision: Which library should parse the configuration files? — Option: Convert the configs to JSON and use JSON.parse",
       "probability": 0.4,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition2",
+      "proposition": "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
       "probability": 0.3,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition3",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
       "probability": 0.25,
       "label": "uncertain",
       "auto": false
@@ -283,7 +294,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"expand","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":1,"calls":1,"tiebreaks":0,"scores":{"opt_yaml":0.93,"opt_json":0.4,"action_gather_evidence":0.3,"action_ask_user":0.25},"plan":[],"reason":"none_above_threshold","expansions_left":1}
+{"status":"expand","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":1,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","expansions_left":1,"plan":[],"plan_total":0,"scores":["opt_yaml:0.93","opt_json:0.4","action_gather_evidence:0.3","action_ask_user:0.25"],"scores_total":4}
 ```
 
 Round 1: 0.93 is still not above 0.95 (`expand`, 1 round left).
@@ -330,7 +341,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
     "Taking option opt_yaml_strict is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package in strict mode and fix the duplicate keys",
     "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
-    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take."
+    "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion."
   ],
   "context": [
     {
@@ -347,7 +358,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
     },
     {
       "id": "evidence_3",
-      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact."
+      "text": "Option action_ask_user: Always available as an option (D6): the control option, not a repository fact. Concrete action: AskUserQuestion."
     },
     {
       "id": "priorities",
@@ -367,24 +378,28 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
   "results": [
     {
       "id": "proposition0",
+      "proposition": "Taking option opt_yaml is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package that is already a dependency",
       "probability": 0.94,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition1",
+      "proposition": "Taking option opt_yaml_strict is the right next step for this decision: Which library should parse the configuration files? — Option: Use the yaml package in strict mode and fix the duplicate keys",
       "probability": 0.9,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition2",
+      "proposition": "Taking option action_gather_evidence is the right next step for this decision: Which library should parse the configuration files? — Option: Gather more evidence before acting: read or run something that could change the choice.",
       "probability": 0.2,
       "label": "uncertain",
       "auto": false
     },
     {
       "id": "proposition3",
+      "proposition": "Taking option action_ask_user is the right next step for this decision: Which library should parse the configuration files? — Option: Ask the user which option to take. Concrete action: AskUserQuestion.",
       "probability": 0.2,
       "label": "uncertain",
       "auto": false
@@ -399,7 +414,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper output** (one line)
 
 ```json
-{"status":"ask_user","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":2,"calls":1,"tiebreaks":0,"scores":{"opt_yaml":0.94,"opt_yaml_strict":0.9,"action_gather_evidence":0.2,"action_ask_user":0.2},"plan":[],"reason":"none_above_threshold","report":"no option exceeded T=0.95 after 2 expansion round(s); scores: opt_yaml=0.94, opt_yaml_strict=0.9, action_gather_evidence=0.2, action_ask_user=0.2"}
+{"status":"ask_user","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":2,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","report":"no option exceeded T=0.95 after 2 expansion round(s); scores: opt_yaml=0.94, opt_yaml_strict=0.9, action_gather_evidence=0.2, action_ask_user=0.2","plan":[],"plan_total":0,"scores":["opt_yaml:0.94","opt_yaml_strict:0.9","action_gather_evidence:0.2","action_ask_user:0.2"],"scores_total":4}
 ```
 
 Round 2: 0.94 is still not above 0.95 and no expansion is left, so the status is `ask_user`. Show the user the options and the scores, and wait. The user may approve one option explicitly; that is recorded as an override of exactly that option (`cli.mjs approve --decision 3f9c2a71d4e85b06 --option opt_yaml --message "<the user's words>"`).
@@ -407,7 +422,7 @@ Round 2: 0.94 is still not above 0.95 and no expansion is left, so the status is
 **Headless variant** (`--headless`, or `JEV_CONTROL_HEADLESS=1`): the same final round ends with
 
 ```json
-{"status":"incomplete","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":2,"calls":1,"tiebreaks":0,"scores":{"opt_yaml":0.94,"opt_yaml_strict":0.9,"action_gather_evidence":0.2,"action_ask_user":0.2},"plan":[],"reason":"none_above_threshold","report":"Incomplete: no option exceeded T=0.95 after 2 expansion round(s); scores: opt_yaml=0.94, opt_yaml_strict=0.9, action_gather_evidence=0.2, action_ask_user=0.2"}
+{"status":"incomplete","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":2,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","report":"Incomplete: no option exceeded T=0.95 after 2 expansion round(s); scores: opt_yaml=0.94, opt_yaml_strict=0.9, action_gather_evidence=0.2, action_ask_user=0.2","plan":[],"plan_total":0,"scores":["opt_yaml:0.94","opt_yaml_strict:0.9","action_gather_evidence:0.2","action_ask_user:0.2"],"scores_total":4}
 ```
 
 and the session's final message is that report, starting `Incomplete:`, with no action taken. For a scenario that expects it, this is the correct stop.

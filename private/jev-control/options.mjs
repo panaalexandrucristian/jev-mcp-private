@@ -4,8 +4,13 @@
 // small), at most twenty including the two control options, 1-3 evidence lines
 // each. The control options "gather more evidence" and "ask the user" are always
 // present; their ids cannot collide with jev_decide's escape hatches
-// (ask_user, investigate, none).
+// (ask_user, investigate, none). An option that is meant to be carried out names
+// ONE concrete observable action ({tool, target}) and optional preconditions
+// (see actions.mjs): they are kept, hashed, checked for availability before the
+// decision and bound into the plan and the receipt. A kind whose options are
+// actions (order, command, edit, delegate) requires the descriptor.
 import { createHash } from "node:crypto";
+import { actionHash, EDIT_TOOLS, normalizeDescriptor, normalizePreconditions } from "./actions.mjs";
 import { DECIDE_HATCHES } from "./contracts.mjs";
 
 export const KINDS = Object.freeze(["order", "approach", "command", "edit", "delegate", "ask", "done"]);
@@ -28,19 +33,30 @@ const CONTROL_TEXT = {
 
 const norm = (text) => String(text).toLowerCase().replace(/\s+/g, " ").trim();
 
-export function optionHash(option) {
-  return createHash("sha256").update(`${norm(option.text)}\n${option.evidence.map(norm).join("\n")}`).digest("hex").slice(0, 16);
+/** The kinds whose real options are single actions, and the tools each allows (null: any action tool). */
+export const ACTION_REQUIRED = Object.freeze({ order: null, command: ["Bash"], edit: EDIT_TOOLS, delegate: ["Agent"] });
+const ASK_ACTION = Object.freeze({ tool: "AskUserQuestion", target: "" });
+
+/** Hash of an option's meaning: text, evidence, concrete action and preconditions (new material when any of them changes). */
+export function optionHash(option, length = 16) {
+  const action = option.action ? `${option.action.tool}\n${option.action.target}` : "-";
+  const pre = (option.preconditions ?? []).map((p) => `${p.kind}:${p.path}:${p.sha256 ?? ""}`).join("|");
+  return createHash("sha256").update(`${norm(option.text)}\n${option.evidence.map(norm).join("\n")}\n${action}\n${pre}`).digest("hex").slice(0, length);
 }
+
+/** Full SHA-256 of the option's action descriptor, or null when the option names no observable action. */
+export const optionActionHash = (option) => (option.action ? actionHash(option.action) : null);
 
 export function evidenceHash(lines) {
   return createHash("sha256").update(lines.map(norm).join("\n")).digest("hex").slice(0, 16);
 }
 
 /**
- * Validate and normalize a raw batch {decision, kind, options: [{id, text, evidence: [..]}], priorities?, space_small?}.
+ * Validate and normalize a raw batch {decision, kind, options: [{id, text, evidence: [..], action?: {tool, target},
+ * preconditions?: [{kind, path, sha256?}]}], priorities?, space_small?}. `root` (the repository) makes paths relative.
  * Returns {ok: true, batch} or {ok: false, problems}.
  */
-export function normalizeBatch(raw) {
+export function normalizeBatch(raw, { root = null } = {}) {
   const problems = [];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, problems: ["batch must be a JSON object {decision, kind, options}"] };
   const decision = typeof raw.decision === "string" ? raw.decision.trim() : "";
@@ -65,17 +81,32 @@ export function normalizeBatch(raw) {
       // The control options are always present; a model-supplied one only has to be well formed.
       if (!ids.has(id)) {
         ids.add(id);
-        merged.push({ id, text: text || CONTROL_TEXT[id], evidence: evidence.length ? evidence.slice(0, MAX_EVIDENCE_LINES) : ["Always available as an option (D6): the control option, not a repository fact."], control: true });
+        merged.push({ id, text: text || CONTROL_TEXT[id], evidence: evidence.length ? evidence.slice(0, MAX_EVIDENCE_LINES) : ["Always available as an option (D6): the control option, not a repository fact."], control: true, action: id === ASK_ID ? { ...ASK_ACTION } : null, preconditions: [] });
       }
       continue;
     }
+    let action = null;
+    if (o.action !== undefined && o.action !== null) {
+      const d = normalizeDescriptor(o.action, root);
+      if (!d.ok) problems.push(...d.problems.map((m) => `${where}.${m}`));
+      else action = d.descriptor;
+    }
+    if (raw.kind in ACTION_REQUIRED) {
+      const allowed = ACTION_REQUIRED[raw.kind];
+      if (!action) problems.push(`${where}.action is required for kind ${raw.kind}: name the one concrete tool call this option stands for`);
+      else if (allowed && !allowed.includes(action.tool)) problems.push(`${where}.action.tool must be ${allowed.join(" or ")} for kind ${raw.kind}`);
+      else if (action.tool === "AskUserQuestion") problems.push(`${where}.action must not be a question: asking the user is the control option ${ASK_ID}`);
+    }
+    if (action?.tool === "Bash" && /jev-control\/cli\.mjs/.test(action.target)) problems.push(`${where}.action must not be a control step: the helper is not an option`);
+    const pre = normalizePreconditions(o.preconditions, root);
+    if (!pre.ok) problems.push(...pre.problems.map((m) => `${where}.${m}`));
     if (evidence.length < 1 || evidence.length > MAX_EVIDENCE_LINES) problems.push(`${where}.evidence must have 1-${MAX_EVIDENCE_LINES} concrete lines`);
     else if (evidence.some((e) => e.length > MAX_EVIDENCE_LINE_CHARS)) problems.push(`${where}.evidence lines must be at most ${MAX_EVIDENCE_LINE_CHARS} characters`);
     if (ids.has(id)) {
       problems.push(`${where}.id "${id}" is repeated`);
       continue;
     }
-    const twin = merged.find((m) => !m.control && norm(m.text) === norm(text));
+    const twin = merged.find((m) => !m.control && norm(m.text) === norm(text) && JSON.stringify(m.action) === JSON.stringify(action) && JSON.stringify(m.preconditions) === JSON.stringify(pre.preconditions ?? []));
     if (twin) {
       // Duplicates are merged, keeping the first id and the evidence of both (at most three lines).
       for (const line of evidence) if (twin.evidence.length < MAX_EVIDENCE_LINES && !twin.evidence.map(norm).includes(norm(line))) twin.evidence.push(line);
@@ -83,10 +114,10 @@ export function normalizeBatch(raw) {
       continue;
     }
     ids.add(id);
-    merged.push({ id, text, evidence, control: false });
+    merged.push({ id, text, evidence, control: false, action, preconditions: pre.preconditions ?? [] });
   }
   for (const id of CONTROL_IDS) {
-    if (!ids.has(id)) merged.push({ id, text: CONTROL_TEXT[id], evidence: ["Always available as an option (D6): the control option, not a repository fact."], control: true });
+    if (!ids.has(id)) merged.push({ id, text: CONTROL_TEXT[id], evidence: ["Always available as an option (D6): the control option, not a repository fact."], control: true, action: id === ASK_ID ? { ...ASK_ACTION } : null, preconditions: [] });
   }
   const real = merged.filter((m) => !m.control);
   if (real.length === 0) problems.push("at least one real option is required");

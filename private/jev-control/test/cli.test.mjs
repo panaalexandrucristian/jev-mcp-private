@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { symlinkSync, writeFileSync } from "node:fs";
+import { symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { S3 } from "../fixtures/scenarios.mjs";
 import { materialize } from "../fixtures/lib.mjs";
-import { controlSessionDir, loadControlState, writeBinding } from "../state.mjs";
+import { actionHash, planItem, shortHash } from "../actions.mjs";
+import { compactOut } from "../cli.mjs";
+import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
 import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
 
 const SID = ["--session-id", "cli-session-1"];
@@ -73,22 +75,64 @@ describe("activation (D1, D2, D13, D16)", () => {
     const env = controlEnv();
     const r = cli(["on"], { env, cwd: repo });
     assert.equal(r.code, 4);
-    assert.match(r.json.message, /no real session identity/);
+    assert.match(r.json.message, /no verifiable session identity/);
   });
-  it("takes the identity from CLAUDE_CODE_SESSION_ID or from the hook's fresh, unambiguous binding", () => {
+  it("takes the identity from CLAUDE_CODE_SESSION_ID, or from the per-session capability the hook injected", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const viaEnv = controlEnv({ extra: { CLAUDE_CODE_SESSION_ID: "env-session" } });
     const a = cli(["on"], { env: viaEnv, cwd: repo });
     assert.equal(a.json.session, "environment");
     const env = controlEnv();
-    writeBinding(repo, "bound-session", env);
-    const b = cli(["on"], { env, cwd: repo });
-    assert.equal(b.json.session, "hook_binding");
-    assert.equal(loadControlState(controlSessionDir(repo, "bound-session", env)).mode, "on");
-    writeBinding(repo, "another-session", env);
-    const c = cli(["on"], { env, cwd: repo });
-    assert.equal(c.code, 4);
-    assert.match(c.json.message, /ambiguous_binding/);
+    const cap = ensureSessionCap(controlSessionDir(repo, "capped-session", env), sessionKey("capped-session"));
+    const b = cli(["on", "--session-cap", cap], { env, cwd: repo });
+    assert.equal(b.json.session, "capability");
+    assert.equal(loadControlState(controlSessionDir(repo, "capped-session", env)).mode, "on");
+  });
+  it("never adopts the most recent session: without an identity of its own a CLI is refused, whatever other sessions did", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    // Session A just activated (its hook injected a capability); a CLI of session B has neither the id nor the capability.
+    const capA = ensureSessionCap(controlSessionDir(repo, "session-A", env), sessionKey("session-A"));
+    assert.equal(cli(["on", "--session-cap", capA], { env, cwd: repo }).code, 0);
+    for (const args of [["on"], ["status"], ["decide", "--file", "x"], ["budget", "status"]]) {
+      const r = cli(args, { env, cwd: repo });
+      assert.equal(r.code, 4, args[0]);
+      assert.match(r.json.message, /no verifiable session identity/);
+    }
+    assert.equal(loadControlState(controlSessionDir(repo, "session-A", env)).mode, "on");
+  });
+  it("two simultaneous sessions in one repository stay apart, and a subagent with the parent's capability shares the parent's state", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const capA = ensureSessionCap(controlSessionDir(repo, "session-A", env), sessionKey("session-A"));
+    const capB = ensureSessionCap(controlSessionDir(repo, "session-B", env), sessionKey("session-B"));
+    assert.equal(cli(["on", "--session-cap", capA, "--threshold", "0.9"], { env, cwd: repo }).json.threshold, 0.9);
+    assert.equal(cli(["on", "--session-cap", capB, "--threshold", "0.8"], { env, cwd: repo }).json.threshold, 0.8);
+    assert.equal(cli(["status", "--session-cap", capA], { env, cwd: repo }).json.threshold, 0.9);
+    assert.equal(cli(["status", "--session-cap", capB], { env, cwd: repo }).json.threshold, 0.8);
+    // A subagent is a separate process that was handed the parent's capability: same session, source recorded as subagent.
+    const sub = cli(["budget", "reserve", "--session-cap", capA, "--tool", "noul", "--source", "subagent"], { env, cwd: repo });
+    assert.equal(sub.json.status, "ok");
+    assert.equal(cli(["budget", "status", "--session-cap", capA], { env, cwd: repo }).json.by_source.subagent, 1);
+    assert.equal(cli(["budget", "status", "--session-cap", capB], { env, cwd: repo }).json.by_source.subagent, 0);
+  });
+  it("a wrong, foreign, malformed or expired capability is refused; so is one that contradicts the environment's session", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const dirA = controlSessionDir(repo, "session-A", env);
+    const capA = ensureSessionCap(dirA, sessionKey("session-A"));
+    const secretA = capA.split(".")[1];
+    for (const bad of [`${sessionKey("session-B")}.${secretA}`, `${sessionKey("session-A")}.${"0".repeat(32)}`, "garbage"]) {
+      const r = cli(["status", "--session-cap", bad], { env, cwd: repo });
+      assert.equal(r.code, 4, bad);
+      assert.match(r.json.message, /capability is not valid/);
+    }
+    const conflict = cli(["status", "--session-cap", capA], { env: { ...env, CLAUDE_CODE_SESSION_ID: "session-B" }, cwd: repo });
+    assert.match(conflict.json.message, /identity_conflict/);
+    removeSessionCap(dirA);
+    const expired = cli(["status", "--session-cap", capA], { env, cwd: repo });
+    assert.equal(expired.code, 4);
+    assert.match(expired.json.message, /capability_unknown_or_expired/);
   });
   it("refuses when the repository opts out of Jev", () => {
     const repo = makeRepo({ "a.txt": "a\n", ".jev-flow-denylist": "*\n" });
@@ -133,27 +177,57 @@ describe("activation (D1, D2, D13, D16)", () => {
 });
 
 describe("decide through the CLI", () => {
-  it("selected: compact one-line output, a signed receipt, counts and reserves", () => {
+  it("selected: compact one-line output, a signed receipt bound to the concrete action, counts and reserves", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv({ script: { noul: [{ p: p7([0.99, 0.97, 0.5, 0.4, 0.3]) }], decide: [{ selected: "o2", confidence: 0.96 }] } });
     on(repo, env);
-    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(5, { kind: "command" }))], { env, cwd: repo });
     assert.equal(r.code, 0, r.stdout);
     assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500);
     assert.equal(r.stdout.trim().split("\n").length, 1);
     assert.equal(r.json.status, "selected");
-    assert.deepEqual(r.json.plan.map((p) => `${p.id}:${p.action}`), ["o2:execute", "o1:reserve"]);
+    const ah = (n) => shortHash(actionHash({ tool: "Bash", target: `npm run check-${n}` }));
+    assert.deepEqual(r.json.plan, [`o2:e:0.97:${ah(2)}`, `o1:r:0.99:${ah(1)}`], "compact items: id, step, raw score, action hash");
+    assert.equal(r.json.plan_total, 2);
+    assert.equal(r.json.plan_next, undefined, "complete");
+    assert.equal(r.json.provenance, undefined, "provenance goes to the receipt, not to the output");
     assert.match(r.json.receipt, /^[0-9a-f]{32}$/);
     assert.equal(serverLog(env).map((l) => l.name).join(), "jev_noul,jev_decide");
     const budget = cli(["budget", "status", ...SID], { env, cwd: repo });
     assert.equal(budget.json.used, 2);
     assert.equal(budget.json.by_source.helper, 1);
     assert.equal(budget.json.by_source.tiebreak, 1);
-    const ok = cli(["receipt", "verify", ...SID, "--id", r.json.receipt, "--option", "o2"], { env, cwd: repo });
-    assert.equal(ok.json.authorized, true);
-    const reserve = cli(["receipt", "verify", ...SID, "--id", r.json.receipt, "--option", "o1"], { env, cwd: repo });
+    const verify = (args) => cli(["receipt", "verify", ...SID, "--id", r.json.receipt, ...args], { env, cwd: repo });
+    assert.equal(verify(["--option", "o2"]).json.message, "action_required");
+    assert.equal(verify(["--option", "o2", "--tool", "Bash", "--target", "rm -rf build"]).json.message, "action_mismatch", "a changed command under the same id");
+    const reserve = verify(["--option", "o1", "--tool", "Bash", "--target", "npm run check-1"]);
     assert.equal(reserve.code, 4);
     assert.equal(reserve.json.authorized, false);
+    const dry = verify(["--option", "o2", "--tool", "Bash", "--target", "npm   run  check-2", "--dry-run"]);
+    assert.deepEqual([dry.json.authorized, dry.json.consumed], [true, false]);
+    const ok = verify(["--option", "o2", "--tool", "Bash", "--target", "npm run check-2"]);
+    assert.deepEqual([ok.json.authorized, ok.json.consumed], [true, true]);
+    const replay = verify(["--option", "o2", "--tool", "Bash", "--target", "npm run check-2"]);
+    assert.equal(replay.json.message, "receipt_replayed");
+    assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).consumed.length, 1);
+  });
+  it("receipt verify refuses a false precondition and a stale snapshot", () => {
+    const repo = makeRepo({ "a.js": "export const a = 1;\n" });
+    const env = controlEnv({ script: { noul: [{ p: p7([0.99, 0.5, 0.4, 0.3, 0.2]) }, { p: [0.5, 0.4, 0.3, 0.2, 0.1, 0.1] }] } });
+    on(repo, env);
+    const batch = batchOf(5, { kind: "edit" });
+    batch.options[0].preconditions = [{ kind: "path_exists", path: "a.js" }];
+    const d = cli(["decide", ...SID, "--decision-id", "p1", "--file", writeBatch(batch)], { env, cwd: repo });
+    assert.equal(d.json.status, "selected", d.stdout);
+    const args = ["receipt", "verify", ...SID, "--id", d.json.receipt, "--option", "o1", "--tool", "Edit", "--target", "src/file-1.js"];
+    // The precondition (a.js exists) held at decision time; deleting it before the action makes the authorization fail.
+    unlinkSync(join(repo, "a.js"));
+    const stale = cli(args, { env, cwd: repo });
+    assert.match(stale.json.message, /receipt_stale_snapshot|precondition_failed/);
+    assert.equal(stale.json.authorized, false);
+    const d2 = cli(["decide", ...SID, "--decision-id", "p2", "--file", writeBatch(batch)], { env, cwd: repo });
+    assert.equal(d2.json.status, "expand", "the option is unavailable now: its precondition is false");
+    assert.deepEqual(d2.json.unavailable, ["o1:path_exists_missing"]);
   });
   it("a batch with 20 options still prints at most 1.5 KB", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
@@ -318,5 +392,77 @@ describe("search through the CLI", () => {
     const r = cli(["search", ...SID, "--exact-path", "src/upload/retry.mjs"], { env, cwd: repo });
     assert.equal(r.json.status, "direct_read");
     assert.equal(serverLog(env).length, 0);
+  });
+});
+
+describe("compact output never loses decision data silently", () => {
+  const longIds = Array.from({ length: 20 }, (_, i) => `option_${String(i).padStart(2, "0")}_${"x".repeat(50)}`);
+  const items = longIds.map((id, i) => planItem({ id, action: i === 0 ? "execute" : "reserve", score: 0.9876543 - i * 0.0001, ah: "0123456789ab" }));
+  it("pages a 20-item plan of long ids: nothing cut without a marker, every page within 1.5 KB, the pages join to the whole plan", () => {
+    const base = { status: "selected", decision_id: "dec", kind: "approach", threshold: 0.95, round: 0, calls: 2, tiebreaks: 1, receipt: "a".repeat(32) };
+    let from = 0;
+    const seen = [];
+    let pages = 0;
+    for (;;) {
+      const out = JSON.parse(compactOut({ ...base, plan: items }, 1500, { from: { plan: from } }));
+      assert.ok(Buffer.byteLength(JSON.stringify(out)) <= 1500, String(Buffer.byteLength(JSON.stringify(out))));
+      assert.equal(out.plan_total, 20);
+      seen.push(...out.plan);
+      pages += 1;
+      if (out.plan_next === undefined) break;
+      assert.equal(out.plan_next, seen.length, "the marker is the exact index to continue from");
+      from = out.plan_next;
+      assert.ok(out.plan.length > 0, "every page makes progress");
+    }
+    assert.ok(pages > 1);
+    assert.deepEqual(seen, items);
+  });
+  it("scores stay raw in stop reports and are paged with the same markers", () => {
+    const scores = longIds.map((id, i) => `${id}:${0.95001 - i * 0.0001}`);
+    const out = JSON.parse(compactOut({ status: "expand", decision_id: "d", reason: "none_above_threshold", report: "r".repeat(400), message: "m".repeat(400), scores }, 1500));
+    assert.ok(Buffer.byteLength(JSON.stringify(out)) <= 1500);
+    assert.equal(out.scores_total, 20);
+    assert.ok(out.scores_next > 0);
+    assert.equal(out.scores[0], `${longIds[0]}:0.95001`, ".95001 is not rounded to .95");
+  });
+  it("the page command returns the rest of a logged decision", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    on(repo, env);
+    const dir = controlSessionDir(repo, "cli-session-1", env);
+    withControlState(dir, (state) => {
+      state.decisions.push({ id: "big", req: 1, ts: 1, kind: "order", t: 0.95, status: "ordered", round: 0, opts: longIds.map((id, i) => [id, 0.99 - i * 0.001, "h".repeat(8), "-"]), order: items, calls: 1, tb: 0, snap: null });
+    });
+    const seen = [];
+    let from = 0;
+    for (let guard = 0; guard < 10; guard++) {
+      const r = cli(["page", ...SID, "--decision", "big", "--from", String(from)], { env, cwd: repo });
+      assert.equal(r.code, 0, r.stdout);
+      assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500);
+      seen.push(...r.json.plan);
+      if (r.json.plan_next === undefined) break;
+      from = r.json.plan_next;
+    }
+    assert.deepEqual(seen, items);
+    const scores = cli(["page", ...SID, "--decision", "big", "--part", "scores"], { env, cwd: repo });
+    assert.equal(scores.json.scores_total, 20);
+    assert.equal(scores.json.scores[0].split(":")[1], "0.99");
+    assert.equal(cli(["page", ...SID, "--decision", "nope"], { env, cwd: repo }).code, 4);
+    assert.equal(cli(["page", ...SID, "--decision", "big", "--from", "99"], { env, cwd: repo }).code, 4);
+  });
+  it("a stop with 20 options keeps the raw scores a threshold audit needs, with markers when they do not fit", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const probs = [0.95001, ...Array(17).fill(0.3), 0.1, 0.1];
+    const env = controlEnv({ script: { noul: [{ p: probs }] } });
+    on(repo, env);
+    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(18))], { env, cwd: repo });
+    assert.equal(r.json.status, "selected", "0.95001 is above 0.95");
+    const none = controlEnv({ script: { noul: [{ p: [0.95, ...Array(17).fill(0.3), 0.1, 0.1] }] } });
+    on(repo, none);
+    const stop = cli(["decide", ...SID, "--file", writeBatch(batchOf(18)), "--decision-id", "stop1"], { env: none, cwd: repo });
+    assert.equal(stop.json.status, "expand");
+    assert.ok(Buffer.byteLength(stop.stdout.trim()) <= 1500);
+    assert.equal(stop.json.scores[0], "o1:0.95", "the exact value, so that .95 is not mistaken for a higher score");
+    assert.equal(stop.json.scores_total, 20);
   });
 });

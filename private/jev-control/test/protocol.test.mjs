@@ -2,18 +2,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { actionHash, shortHash } from "../actions.mjs";
 import { normalizeBatch } from "../options.mjs";
 import { runDecision } from "../protocol.mjs";
 import { loadControlState } from "../state.mjs";
-import { batchOf, decide, noul, rerank, scriptedCaller, stateDir } from "./helpers.mjs";
+import { batchOf, decide, makeRepo, noul, rerank, scriptedCaller, stateDir, writeFiles } from "./helpers.mjs";
 
 /** Run a decision through the real protocol with scripted Jev answers. */
+const dirs = new WeakMap();
+const stateDirOf = (result) => dirs.get(result);
 async function go(raw, steps, ctx = {}) {
   const dir = ctx.dir ?? stateDir();
   const caller = scriptedCaller(steps);
-  const n = normalizeBatch(raw);
+  const n = normalizeBatch(raw, { root: ctx.repoRoot ?? null });
   assert.equal(n.ok, true, JSON.stringify(n.problems));
   const result = await runDecision(n.batch, { caller, session: {}, dir, T: 0.95, priorities: "smallest correct change", headless: false, decisionId: "d1", now: Date.now, ...ctx });
+  dirs.set(result, dir);
   return { result, caller, dir };
 }
 const probs = (real, control = [0.1, 0.1]) => [...real, ...control];
@@ -235,6 +239,77 @@ describe("the decision log is metadata only", () => {
     assert.equal(state.decisions.length, 1);
     assert.equal(state.decisions[0].t, 0.95);
     assert.equal(state.decisions[0].status, "selected");
-    assert.deepEqual(state.decisions[0].order, ["o1:execute"]);
+    assert.deepEqual(state.decisions[0].order, ["o1:e:0.99:-"], "the compact plan item: id, step, raw score, action hash");
+    assert.deepEqual(state.decisions[0].opts[0], ["o1", 0.99, state.decisions[0].opts[0][2], "-"]);
+  });
+});
+
+describe("raw scores, concrete actions and availability", () => {
+  it("scores stay raw: 0.95001 is eligible at T = 0.95 and is reported as 0.95001, never rounded to 0.95", async () => {
+    const { result } = await go(batchOf(5), [noul(probs([0.95001, 0.9, 0.5, 0.4, 0.3]))]);
+    assert.equal(result.status, "selected");
+    assert.equal(result.plan[0].score, 0.95001);
+    const state = loadControlState(stateDirOf(result)).decisions;
+    assert.equal(state.length, 1);
+    const at = await go(batchOf(5), [noul(probs([0.95, 0.9, 0.5, 0.4, 0.3]))]);
+    assert.equal(at.result.status, "expand");
+    assert.equal(at.result.scores.o1, 0.95);
+    const near = await go(batchOf(5), [noul(probs([0.949999, 0.9, 0.5, 0.4, 0.3]))]);
+    assert.equal(near.result.scores.o1, 0.949999);
+    assert.match(near.result.status, /expand/);
+  });
+  it("a plan item carries the option's raw score and the hash of its concrete action; the receipt provenance has the full records", async () => {
+    const { result, caller } = await go(batchOf(5, { kind: "command" }), [noul(probs([0.981234, 0.6, 0.4, 0.3, 0.2]))]);
+    const first = result.plan[0];
+    assert.equal(first.action, "execute");
+    assert.equal(first.score, 0.981234);
+    assert.equal(first.ah, shortHash(actionHash({ tool: "Bash", target: "npm run check-1" })));
+    const o1 = result.provenance.options.find((o) => o.id === "o1");
+    assert.equal(o1.ah, actionHash({ tool: "Bash", target: "npm run check-1" }));
+    assert.equal(o1.score, 0.981234);
+    assert.equal(o1.oh.length, 64);
+    assert.equal(result.provenance.calls[0].tool, "noul");
+    assert.equal(result.provenance.calls[0].attempts, 1);
+    assert.equal(result.provenance.t, 0.95);
+    assert.match(caller.calls[0].args.propositions[0], /Concrete action: Bash npm run check-1\./, "Jev judges the concrete action, not only its description");
+  });
+  it("an option whose precondition is false is not scored and is reported as unavailable", async () => {
+    const repo = makeRepo({ "a.js": "a\n" });
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options[0].preconditions = [{ kind: "path_exists", path: "missing.js" }];
+    raw.options[1].preconditions = [{ kind: "path_exists", path: "a.js" }];
+    const { result, caller } = await go(raw, [noul([0.99, 0.5, 0.4, 0.3, 0.1, 0.1])], { repoRoot: repo });
+    assert.equal(caller.calls[0].args.propositions.length, 6, "five real options minus one unavailable, plus two control options");
+    assert.ok(!caller.calls[0].args.propositions.some((p) => p.includes("option o1")));
+    assert.deepEqual(result.unavailable, ["o1:path_exists_missing"]);
+    assert.equal(result.status, "selected");
+    assert.equal(result.plan[0].id, "o2");
+    assert.equal(result.provenance.options.find((o) => o.id === "o1").unavailable, "path_exists_missing");
+  });
+  it("preconditions that cannot be evaluated (no repository) make the option unavailable, never available", async () => {
+    const raw = batchOf(5, { kind: "edit" });
+    raw.options[0].preconditions = [{ kind: "path_exists", path: "a.js" }];
+    const { result } = await go(raw, [noul([0.99, 0.5, 0.4, 0.3, 0.1, 0.1])]);
+    assert.deepEqual(result.unavailable, ["o1:preconditions_not_evaluable"]);
+  });
+  it("when every real option is unavailable nothing is sent and the expansion rule applies", async () => {
+    const repo = makeRepo({ "a.js": "a\n" });
+    const raw = batchOf(5, { kind: "edit" });
+    for (const o of raw.options) o.preconditions = [{ kind: "path_absent", path: "a.js" }];
+    const { result, caller } = await go(raw, [], { repoRoot: repo });
+    assert.equal(result.status, "expand");
+    assert.equal(result.reason, "all_options_unavailable");
+    assert.equal(caller.calls.length, 0);
+    assert.equal(result.unavailable.length, 5);
+  });
+  it("a changed command or precondition is new material in an expansion round", async () => {
+    const dir = stateDir();
+    const none = noul(probs([0.81, 0.77, 0.6, 0.4, 0.3]));
+    await go(batchOf(5, { kind: "command" }), [none], { dir });
+    const same = batchOf(5, { kind: "command", extra: { new_material: "same again" } });
+    assert.equal((await go(same, [], { dir })).result.reason, "no_new_material");
+    const changed = batchOf(5, { kind: "command", extra: { new_material: "another command" } });
+    changed.options[0].action = { tool: "Bash", target: "npm run other" };
+    assert.equal((await go(changed, [none], { dir })).result.round, 1);
   });
 });

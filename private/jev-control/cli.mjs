@@ -6,14 +6,17 @@
 //   cli.mjs off | status | threshold <x>
 //   cli.mjs decide --file <batch.json|-> [--decision-id id] [--headless] [--source subagent]
 //   cli.mjs search --query <text> [--single] [--exact-path p] [--search-id id --widen] [--source subagent]
+//   cli.mjs page --decision id [--part plan|scores] [--from n]
 //   cli.mjs approve --decision id --option id --message "<the user's words>"
 //   cli.mjs budget status|reserve --tool noul [--source main|subagent]|confirm --id x [--ok 0|1] [--ms n]|release --id x|approve [--n 25]
-//   cli.mjs receipt verify --id x [--option id]
+//   cli.mjs receipt verify --id x --option id --tool T --target t [--dry-run]
 //   cli.mjs done --claims <file|-> [--check '["cmd","arg"]']... [--check-timeout s]
-// Common: [--root <repo>] [--session-id <id>]. The session is the one in
-// CLAUDE_CODE_SESSION_ID, an explicit --session-id, or the fresh unambiguous
-// binding the UserPromptSubmit hook wrote for a /jev:jev-control prompt; with none
-// of them there is no identity and nothing is activated.
+// Common: [--root <repo>] [--session-id <id>] [--session-cap <capability>]. The
+// session is the one in an explicit --session-id (operators and tests), in
+// CLAUDE_CODE_SESSION_ID, or the one proven by the per-session capability the hook
+// injected into that session's context (--session-cap, which must also be passed
+// to subagents); with none of them there is no identity: nothing is activated,
+// read or recorded, and the most recent session is never guessed.
 // Exit codes: 0 ok / selected / ordered / found, 2 needs the user (expand, ask_user,
 // incomplete, none eligible, budget), 3 Jev unavailable, 4 invalid or refused, 1 internal.
 import { readFileSync, realpathSync } from "node:fs";
@@ -22,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { loadDenylist } from "../jev-flow/paths.mjs";
 import { sanitizeText } from "../jev-flow/sanitize.mjs";
 import { computeSnapshot, gitTopLevel } from "../jev-flow/state.mjs";
+import { normalizeDescriptor, planItem } from "./actions.mjs";
 import { approveMore, budgetView, confirm, release, reserve, startRequest } from "./budget.mjs";
 import { BudgetedCaller } from "./client.mjs";
 import { checkTools } from "./contracts.mjs";
@@ -30,7 +34,7 @@ import { normalizeBatch } from "./options.mjs";
 import { runDecision } from "./protocol.mjs";
 import { verifyDecisionReceipt, writeDecisionReceipt } from "./receipts.mjs";
 import { controlSearch } from "./search.mjs";
-import { controlSessionDir, controlSessionDirFromKey, hasSessionId, loadControlState, oneLine, readBinding, repoKey, sessionKey, withControlState } from "./state.mjs";
+import { controlSessionDir, hasSessionId, loadControlState, oneLine, repoKey, sessionKey, verifySessionCap, withControlState } from "./state.mjs";
 import { DEFAULT_THRESHOLD, parseThreshold, resolveThreshold } from "./threshold.mjs";
 
 const OUT_MAX = 1500;
@@ -63,24 +67,50 @@ function parseFlags(argv, { values = [], bools = [], multi = [] } = {}) {
   return flags;
 }
 
-/** One line of JSON of at most OUT_MAX bytes: long optional parts are dropped, never the status. */
-export function compactOut(object, max = OUT_MAX) {
-  const o = { ...object };
+const bytes = (value) => Buffer.byteLength(JSON.stringify(value));
+
+/** Shorten the free-text parts of a status object; decision data (plan, scores, ids) is never shortened here. */
+function shrink(o, max) {
   const steps = [
-    () => { if (o.scores && Object.keys(o.scores).length > 8) o.scores = Object.fromEntries(Object.entries(o.scores).sort((a, b) => b[1] - a[1]).slice(0, 8)); },
     () => { if (typeof o.message === "string") o.message = o.message.slice(0, 200); },
-    () => { if (Array.isArray(o.plan) && o.plan.length > 8) o.plan = o.plan.slice(0, 8); },
-    () => { delete o.scores; },
-    () => { delete o.problems; },
+    () => { if (Array.isArray(o.problems)) o.problems = o.problems.slice(0, 3).map((p) => String(p).slice(0, 120)); },
     () => { if (typeof o.report === "string") o.report = o.report.slice(0, 200); },
+    () => { if (Array.isArray(o.unavailable) && o.unavailable.length > 6) o.unavailable = [...o.unavailable.slice(0, 6), `…${o.unavailable.length - 6} more`]; },
+    () => { if (Array.isArray(o.unresolved) && o.unresolved.length > 6) o.unresolved = [...o.unresolved.slice(0, 6), `…${o.unresolved.length - 6} more`]; },
+    () => { if (typeof o.message === "string") o.message = o.message.slice(0, 80); },
+    () => { delete o.problems; },
   ];
-  let out = JSON.stringify(o);
   for (const step of steps) {
-    if (Buffer.byteLength(out) <= max) break;
+    if (bytes(o) <= max) break;
     step();
-    out = JSON.stringify(o);
   }
-  return out;
+  return o;
+}
+
+/**
+ * One line of JSON of at most `max` bytes. Free text is shortened first. The decision lists
+ * (`plan` and `scores`: arrays of compact strings) are NEVER cut silently: as many items as fit
+ * are printed together with `<list>_total` and, when items remain, `<list>_next` (the index to
+ * pass to `cli.mjs page --from`). `from` gives the first index of a list (paging).
+ */
+export function compactOut(object, max = OUT_MAX, { from = {} } = {}) {
+  const o = { ...object };
+  const lists = {};
+  for (const key of ["plan", "scores"]) {
+    if (Array.isArray(o[key])) {
+      lists[key] = o[key];
+      delete o[key];
+    }
+  }
+  shrink(o, max - (Object.keys(lists).length ? 60 : 0));
+  for (const [key, items] of Object.entries(lists)) {
+    const start = from[key] ?? 0;
+    const candidate = (k) => ({ ...o, [key]: items.slice(start, start + k), [`${key}_total`]: items.length, ...(start + k < items.length ? { [`${key}_next`]: start + k } : {}) });
+    let k = 0;
+    while (start + k < items.length && bytes(candidate(k + 1)) <= max) k += 1;
+    Object.assign(o, candidate(k));
+  }
+  return JSON.stringify(o);
 }
 
 function print(object) {
@@ -89,10 +119,17 @@ function print(object) {
 
 function resolveSession(repoRoot, flags, env) {
   const id = flags["session-id"] ?? env.CLAUDE_CODE_SESSION_ID;
-  if (hasSessionId(id)) return { ok: true, key: sessionKey(id), dir: controlSessionDir(repoRoot, id, env), via: flags["session-id"] ? "argument" : "environment" };
-  const binding = readBinding(repoRoot, env);
-  if (binding.ok) return { ok: true, key: binding.key, dir: controlSessionDirFromKey(repoRoot, binding.key, env), via: "hook_binding" };
-  return { ok: false, reason: `no real session identity (${binding.reason}); nothing is activated or recorded without one` };
+  let proven = null;
+  if (flags["session-cap"] !== undefined) {
+    proven = verifySessionCap(repoRoot, flags["session-cap"], env);
+    if (!proven.ok) return { ok: false, reason: `the session capability is not valid (${proven.reason}); use the line the hook injected into this session, or ask the user to run /jev:jev-control on again` };
+  }
+  if (hasSessionId(id)) {
+    if (proven && proven.key !== sessionKey(id)) return { ok: false, reason: "identity_conflict: the session capability belongs to another session than the one in this environment; nothing is read or recorded" };
+    return { ok: true, key: sessionKey(id), dir: controlSessionDir(repoRoot, id, env), via: flags["session-id"] ? "argument" : "environment" };
+  }
+  if (proven) return { ok: true, key: proven.key, dir: proven.dir, via: "capability" };
+  return { ok: false, reason: "no verifiable session identity: CLAUDE_CODE_SESSION_ID is not set and no --session-cap was given (the hook injects the capability when the user activates the mode); nothing is activated or recorded, and no recent session is guessed" };
 }
 
 function nodeMajor() {
@@ -217,12 +254,27 @@ function cmdThreshold(flags, ctx) {
   return { status: "ok", threshold: value, applies_to: "later decisions only", ...(notice ? { notice } : {}) };
 }
 
+/**
+ * What a decision result prints: no provenance (it goes to the receipt), the plan as compact
+ * items (id:step:raw score:action hash) and, for a stop, the scores as "id:raw" sorted descending.
+ */
+export function printable(result) {
+  const o = { ...result };
+  delete o.provenance;
+  if (Array.isArray(o.plan)) o.plan = o.plan.map((p) => (typeof p === "string" ? p : planItem(p)));
+  if (o.scores && !Array.isArray(o.scores)) {
+    if (["selected", "ordered"].includes(o.status)) delete o.scores;
+    else o.scores = Object.entries(o.scores).sort((x, y) => y[1] - x[1]).map(([id, p]) => `${id}:${p}`);
+  }
+  return o;
+}
+
 async function cmdDecide(flags, ctx) {
   const state = modeOn(ctx.dir);
   if (!state) return OFF;
   if (loadDenylist(ctx.repoRoot).disabled) return { status: "refused", message: "the repository opts out of Jev (.jev-flow-denylist): nothing is sent" };
   if (!flags.file) throw new UsageError("--file is required");
-  const normalized = normalizeBatch(await readJson(flags.file));
+  const normalized = normalizeBatch(await readJson(flags.file), { root: ctx.repoRoot });
   if (!normalized.ok) return { status: "invalid", problems: normalized.problems.slice(0, 6), message: normalized.problems[0] };
   const batch = sanitizeBatch(normalized.batch);
   const priorities = batch.priorities || state.priorities;
@@ -245,6 +297,7 @@ async function cmdDecide(flags, ctx) {
       priorities,
       headless: flags.headless === true || ctx.env.JEV_CONTROL_HEADLESS === "1",
       decisionId: flags["decision-id"],
+      repoRoot: ctx.repoRoot,
       now: Date.now,
       snapshot,
       source: callerSource(flags),
@@ -252,26 +305,29 @@ async function cmdDecide(flags, ctx) {
   } finally {
     await session.close();
   }
-  if (["selected", "ordered"].includes(result.status)) {
+  const shown = printable(result);
+  if (["selected", "ordered"].includes(shown.status) && result.provenance) {
     try {
-      result.receipt = writeDecisionReceipt(ctx.dir, {
+      shown.receipt = writeDecisionReceipt(ctx.dir, {
         session: ctx.key,
         repo: repoKey(ctx.repoRoot),
         req: loadControlState(ctx.dir).request.seq,
-        decision: result.decision_id,
+        decision: shown.decision_id,
         kind: batch.kind,
-        threshold: result.threshold,
-        status: result.status,
-        plan: result.plan,
-        options: batch.options.map((o) => o.id),
-        calls: [],
+        threshold: shown.threshold,
+        round: shown.round,
+        status: shown.status,
+        plan: shown.plan,
+        options: result.provenance.options,
+        calls: result.provenance.calls,
+        tiebreaks: result.provenance.tiebreaks,
         snap: snapshot ? snapshot.slice(0, 16) : "unknown",
       });
     } catch (error) {
-      result.receipt_note = `receipt not written: ${String(error?.message ?? error).slice(0, 80)}`;
+      shown.receipt_note = `receipt not written: ${String(error?.message ?? error).slice(0, 80)}`;
     }
   }
-  return result;
+  return shown;
 }
 
 async function cmdSearch(flags, ctx) {
@@ -303,9 +359,23 @@ function cmdApprove(flags, ctx) {
     if (!decision) return { status: "refused", message: "unknown decision id; an approval is bound to a logged decision" };
     const opt = decision.opts.find((o) => o[0] === flags.option);
     if (!opt) return { status: "refused", message: "the option is not in that decision" };
-    state.approvals.push({ decision: decision.id, option: flags.option, hash: opt[2], req: state.request.seq, ts: Date.now(), msg: oneLine(sanitizeText(flags.message).text, 200) });
-    return { status: "ok", override: "user", decision_id: decision.id, option: flags.option, note: "recorded as a user override of exactly this option; it is not a general exception" };
+    state.approvals.push({ decision: decision.id, option: flags.option, hash: opt[2], ah: opt[3] ?? "-", req: state.request.seq, ts: Date.now(), msg: oneLine(sanitizeText(flags.message).text, 200) });
+    return { status: "ok", override: "user", decision_id: decision.id, option: flags.option, ah: opt[3] ?? "-", note: "recorded as a user override of exactly this option; it is not a general exception" };
   });
+}
+
+/** The next page of a logged decision's plan or scores (what a printed list had to cut). */
+function cmdPage(flags, ctx) {
+  if (!flags.decision) throw new UsageError("--decision is required");
+  const part = flags.part ?? "plan";
+  if (!["plan", "scores"].includes(part)) throw new UsageError("--part must be plan or scores");
+  const from = flags.from === undefined ? 0 : Number(flags.from);
+  if (!Number.isInteger(from) || from < 0) throw new UsageError("--from must be a non-negative integer");
+  const decision = [...loadControlState(ctx.dir).decisions].reverse().find((d) => d.id === flags.decision);
+  if (!decision) return { status: "refused", message: "unknown decision id" };
+  const items = part === "plan" ? decision.order : decision.opts.filter((o) => typeof o[1] === "number").sort((a, b) => b[1] - a[1]).map((o) => `${o[0]}:${o[1]}`);
+  if (from > items.length) return { status: "invalid", message: `--from is past the end (${items.length} items)` };
+  return { raw: true, line: compactOut({ status: "ok", decision_id: decision.id, part, from, [part]: items }, OUT_MAX, { from: { [part]: from } }) };
 }
 
 function cmdBudget(flags, ctx) {
@@ -322,17 +392,27 @@ function cmdBudget(flags, ctx) {
   throw new UsageError(`unknown budget subcommand: ${sub}`);
 }
 
-function cmdReceipt(flags, ctx) {
-  if (flags._[1] !== "verify" || !flags.id) throw new UsageError("receipt verify --id <id> [--option id]");
-  const state = loadControlState(ctx.dir);
+async function cmdReceipt(flags, ctx) {
+  if (flags._[1] !== "verify" || !flags.id) throw new UsageError("receipt verify --id <id> --option <id> --tool <T> --target <t> [--dry-run]");
+  let action = null;
+  if (flags.tool !== undefined) {
+    const d = normalizeDescriptor({ tool: flags.tool, target: flags.target ?? "" }, ctx.repoRoot);
+    if (!d.ok) return { status: "refused", authorized: false, message: d.problems[0] };
+    action = d.descriptor;
+  }
   let snap = null;
   try {
-    snap = computeSnapshot(ctx.repoRoot).hash;
+    snap = computeSnapshot(ctx.repoRoot).hash.slice(0, 16);
   } catch {
     snap = null;
   }
-  const v = verifyDecisionReceipt(ctx.dir, flags.id, { session: ctx.key, req: state.request.seq, snap: snap ? snap.slice(0, 16) : null, option: flags.option ?? null });
-  return v.ok ? { status: "ok", authorized: true } : { status: "refused", authorized: false, message: v.reason };
+  // Check and consume under one lock: two processes cannot both use the same authorization.
+  return withControlState(ctx.dir, (state) => {
+    const v = verifyDecisionReceipt(ctx.dir, flags.id, { session: ctx.key, req: state.request.seq, snap, root: ctx.repoRoot, option: flags.option ?? null, action, consumed: state.consumed });
+    if (!v.ok) return { status: "refused", authorized: false, message: v.reason, ...(v.expected ? { expected: v.expected } : {}) };
+    if (flags["dry-run"] !== true) state.consumed.push({ receipt: flags.id, option: flags.option, req: state.request.seq, ts: Date.now() });
+    return { status: "ok", authorized: true, consumed: flags["dry-run"] !== true };
+  });
 }
 
 async function cmdDone(flags, ctx) {
@@ -354,8 +434,8 @@ export async function main(argv, env = process.env) {
     return EXIT.ok;
   }
   const flags = parseFlags(argv.slice(), {
-    values: ["root", "session-id", "threshold", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "source", "id", "ok", "ms", "n", "claims", "check-timeout"],
-    bools: ["headless", "single", "widen"],
+    values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "source", "id", "ok", "ms", "n", "claims", "check-timeout"],
+    bools: ["headless", "single", "widen", "dry-run"],
     multi: ["check"],
   });
   flags._.shift();
@@ -378,11 +458,18 @@ export async function main(argv, env = process.env) {
     case "search": result = await cmdSearch(flags, ctx); break;
     case "approve": result = cmdApprove(flags, ctx); break;
     case "budget": result = cmdBudget(flags, ctx); break;
-    case "receipt": result = cmdReceipt(flags, ctx); break;
+    case "receipt": result = await cmdReceipt(flags, ctx); break;
+    case "page": result = cmdPage(flags, ctx); break;
     case "done": result = await cmdDone(flags, ctx); break;
     default: throw new UsageError(`unknown command: ${cmd}`);
   }
-  if (result.raw) return result.code;
+  if (result.raw) {
+    if (result.line) {
+      process.stdout.write(`${result.line}\n`);
+      return EXIT.ok;
+    }
+    return result.code;
+  }
   print(result);
   if (result.status === "ok") return EXIT.ok;
   return STATUS_EXIT[result.status] ?? EXIT.user;

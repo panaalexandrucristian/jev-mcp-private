@@ -1,21 +1,46 @@
-// Claude Code hook logic for jev-control: local and minimal. With the mode ON it
-// re-injects a one-line reminder (at SessionStart, which also fires after a
-// compaction, and at every prompt); it binds the session of a `/jev:jev-control`
-// prompt so the CLI can know it; it starts a new request (budget counters) at an
-// ordinary prompt. It never runs Jev or tests and never blocks. jev-flow's
-// directives, hints and Stop redirects are suppressed while the mode is ON (the
-// jev-flow data guard stays); the adapter and private/jev-flow/hook.mjs use
-// controlActive() for that. Budget accounting is NOT done here: helper calls are
-// counted at the client boundary, direct calls by reserve-before-call and
-// transcript reconciliation (measure.mjs).
+// Claude Code hook logic for jev-control: local and minimal. The hook sees the
+// real session_id, so it is where the session is proven: when the user asks for
+// the mode (the /jev:jev-control command or a natural-language request) it injects
+// a per-session capability into that session's own context, and with the mode ON
+// it re-injects the one-line reminder (at SessionStart after a compaction and at
+// every prompt) together with that capability; the CLI accepts the capability as
+// the session identity (state.mjs). A fresh session, a resume, a clear and the end
+// of a session switch the mode OFF and rotate the capability: nothing carries over.
+// A prompt that is not a mode request starts a new request (budget counters). The
+// hook never runs Jev or tests and never blocks.
+// Budget accounting is NOT done here: helper calls are counted at the client
+// boundary, direct calls by reserve-before-call and transcript reconciliation.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { gitTopLevel } from "../jev-flow/state.mjs";
 import { startRequest } from "./budget.mjs";
-import { cleanupControlRetention, controlSessionDir, hasSessionId, isControlOn, loadControlState, withControlState, writeBinding } from "./state.mjs";
+import { cleanupControlRetention, controlSessionDir, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, sessionKey, withControlState } from "./state.mjs";
 
 const COMMAND = /^\s*\/(?:jev:)?jev-control\b/i;
+// The explicit natural-language requests of the skill description (English and Romanian), after lowercasing and removing diacritics.
+const NATURAL = [
+  /\blet jev control (?:this|the|my) session\b/,
+  /\bjev decides everything\b/,
+  /\brun this session under jev\b/,
+  /\blasa jev sa controleze (?:aceasta |sesiunea )?sesiunea?\b/,
+  /\bsesiune controlata de jev\b/,
+  /\bjev sa ia toate deciziile\b/,
+];
+const plain = (text) => String(text).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-export function reminder(threshold) {
-  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; see the jev-control skill. jev-flow directives are suppressed.`;
+/** True when the prompt explicitly asks for the mode: the command, or one of the documented phrases. */
+export function asksForControl(prompt) {
+  return COMMAND.test(prompt) || NATURAL.some((re) => re.test(plain(prompt)));
+}
+
+const capNote = (cap) => `Session capability: pass --session-cap ${cap} to every cli.mjs call, also in subagent prompts.`;
+
+export function reminder(threshold, cap = null) {
+  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; see the jev-control skill. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
+}
+
+function activation(cap) {
+  return `jev-control was requested by the user for this session. ${capNote(cap)}`;
 }
 
 function repoFor(input) {
@@ -36,29 +61,39 @@ function additionalContext(event, text) {
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
 }
 
+/** Mode OFF and the capability gone: a new, resumed or ended session starts with nothing active. */
+function resetSession(dir, now) {
+  if (existsSync(join(dir, "state.json")) && isControlOn(dir)) withControlState(dir, (s) => { s.mode = "off"; }, now);
+  removeSessionCap(dir);
+}
+
 /** Handle one hook event. Returns the JSON output to print or null; never throws for a missing repo or identity. */
 export function handleControlHook(event, input, env = process.env, now = Date.now()) {
-  if (event !== "SessionStart" && event !== "UserPromptSubmit") return null;
+  if (event !== "SessionStart" && event !== "UserPromptSubmit" && event !== "SessionEnd") return null;
   const repoRoot = repoFor(input);
   if (!repoRoot || !hasSessionId(input?.session_id)) return null;
   const dir = controlSessionDir(repoRoot, input.session_id, env);
-  if (event === "SessionStart") {
-    cleanupControlRetention(env, now);
-    // A fresh startup is a new session: nothing carries over. Resume and compaction keep the mode.
-    const state = loadControlState(dir);
-    if (input.source === "startup" && state.mode === "on") withControlState(dir, (s) => { s.mode = "off"; }, now);
-    const after = loadControlState(dir);
-    return after.mode === "on" ? additionalContext("SessionStart", reminder(after.threshold.value)) : null;
-  }
-  const prompt = typeof input.prompt === "string" ? input.prompt : "";
-  if (COMMAND.test(prompt)) {
-    writeBinding(repoRoot, input.session_id, env, now);
+  const key = sessionKey(input.session_id);
+  if (event === "SessionEnd") {
+    resetSession(dir, now);
     return null;
   }
+  if (event === "SessionStart") {
+    cleanupControlRetention(env, now);
+    // Only a compaction continues the same live session; startup, resume, clear and anything unknown start OFF.
+    if (input.source !== "compact") resetSession(dir, now);
+    const state = loadControlState(dir);
+    return state.mode === "on" ? additionalContext("SessionStart", reminder(state.threshold.value, ensureSessionCap(dir, key))) : null;
+  }
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
   const state = loadControlState(dir);
-  if (state.mode !== "on") return null;
+  if (COMMAND.test(prompt)) {
+    // A mode command is not a new request: the budget keeps counting.
+    return additionalContext("UserPromptSubmit", state.mode === "on" ? reminder(state.threshold.value, ensureSessionCap(dir, key)) : activation(ensureSessionCap(dir, key)));
+  }
+  if (state.mode !== "on") return asksForControl(prompt) ? additionalContext("UserPromptSubmit", activation(ensureSessionCap(dir, key))) : null;
   withControlState(dir, (s) => startRequest(s, now), now);
-  return additionalContext("UserPromptSubmit", reminder(state.threshold.value));
+  return additionalContext("UserPromptSubmit", reminder(state.threshold.value, ensureSessionCap(dir, key)));
 }
 
 /** Combine two hook outputs (control reminder and the flow's output) into one. */
