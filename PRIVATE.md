@@ -71,6 +71,14 @@ Do not use `opencode plugin add 'github:panaalexandrucristian/jev-mcp-private#ma
 
 The plugin preserves an existing OpenCode MCP server or skill named `jev` instead of replacing it.
 
+## Handoff verification
+
+The private plugin also ships `handoff-verify` (`skills/handoff-verify/`, `jev:handoff-verify` in Claude Code). It loads automatically when you ask Claude Code to write, update or check a handoff/handover note, and verifies the note against the session transcript with Jev: lost details (omissions) and wrong facts (decisions, numbers, dead paths, stale state). A finding counts only with a bound Jev result above 0.95; anything Jev cannot settle above that threshold is reported as UNRESOLVED, never as PASS. It never executes code from a handoff and sanitizes text before sending it to Jev. Worked examples are in `skills/handoff-verify/examples/`.
+
+It is Claude Code only: it reads Claude Code session transcripts, and the OpenCode plugin does not register it. It needs `python3` and accepts the Jev tools under either name (`mcp__jev__*` from a direct MCP config, `mcp__plugin_jev_jev__*` from this plugin).
+
+Measured in the sealed final evaluation (7 headless sessions on new synthetic fixtures, Claude Sonnet, 10 notes each): triggered on 7/7 handoff requests and 0/28 unrelated ones; omissions confirmed 8/12 (RO) and 3/9 (EN), the rest UNRESOLVED; fact defects 22/28; 0 false alarms on paraphrases and clean notes; 0 invalid PASS. Blocker omissions (0/7) and stale state (2/7) are the weak spots, because Jev scores them near the threshold. The small sample is synthetic and was not measured on real handoffs. The development history and the evidence are in the separate `handoff-skill-lab` repository (`results/SUMMARY.md`). The plugin-prefix support was added after that evaluation and has unit tests only.
+
 ## Jev flow
 
 The private plugin also ships `jev-flow`, an adaptive coding workflow on top of the eleven existing Jev tools. It adds no MCP tool and does not modify the upstream `jev` skill. The full contract is in [`skills/jev-flow/reference/workflow.md`](skills/jev-flow/reference/workflow.md); the design is in `docs/jev-flow-design.md`.
@@ -153,7 +161,7 @@ By default the Claude Code `Stop` hook only shows a notice when code changed wit
 
 ### Plugin version
 
-`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner, `0.3.0` for the aggregated gate report of round 3, R5/R6, `0.4.0` for the mechanical locator rerank of round 4, R7), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
+`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner, `0.3.0` for the aggregated gate report of round 3, R5/R6, `0.4.0` for the mechanical locator rerank of round 4, R7, `0.5.0` for the opt-in flow, `0.6.0` for the `handoff-verify` skill), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
 
 ### Local state and checks
 

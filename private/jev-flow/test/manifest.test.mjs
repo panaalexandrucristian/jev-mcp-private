@@ -87,7 +87,7 @@ describe("plugin manifests (F5)", () => {
   });
 
   it("the opt-in activation ships as 0.5.0 (round 5)", () => {
-    assert.equal(plugin.version, "0.5.0");
+    assert.equal(plugin.version, "0.6.0");
     const hooks = JSON.parse(readFileSync(join(REPO_ROOT, "hooks", "hooks.json"), "utf8")).hooks;
     assert.match(hooks.PostToolUse[0].matcher, /(^|\|)Agent\|Task(\||$)/);
     assert.equal(hooks.SubagentStop[0].matcher, "jev-locator|jev:jev-locator");
