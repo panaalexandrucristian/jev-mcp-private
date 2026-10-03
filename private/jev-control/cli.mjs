@@ -118,6 +118,9 @@ function print(object) {
   process.stdout.write(`${compactOut(object)}\n`);
 }
 
+// What the model sees right after `on` (R02: two dev sessions switched the mode on and then took no decision and ran no search).
+const NEXT_AFTER_ON = "act only through the helper from now on: several tasks or ways to do one are a decision (decide --file <batch>), a user phrase such as \"choose the order yourself\" hands that choice to Jev, files are found with search, completion is /jev:jev-done";
+
 function resolveSession(repoRoot, flags, env) {
   const id = flags["session-id"] ?? env.CLAUDE_CODE_SESSION_ID;
   let proven = null;
@@ -220,6 +223,7 @@ async function cmdOn(flags, ctx) {
     tool_prefix: check.prefix || null,
     session: ctx.via,
     flow: "jev-flow directives are suppressed while the mode is on",
+    next: NEXT_AFTER_ON,
     ...(threshold.notice ? { notice: threshold.notice } : {}),
     ...(!state.priorities ? { note: "priorities not set: pass --priorities \"<one line from the user's request>\" or put them in each batch" } : {}),
   };

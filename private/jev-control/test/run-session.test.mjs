@@ -4,7 +4,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, updateLock, waitForTermination } from "../run-session.mjs";
+import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, CLAUDEAI_MCP_SERVERS, CONTROL_HEADLESS, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, updateLock, waitForTermination } from "../run-session.mjs";
 import { REPO_ROOT, run, spawnSyncPs, tempDir } from "./helpers.mjs";
 
 const RUN_SESSION = join(REPO_ROOT, "private", "jev-control", "run-session.mjs");
@@ -145,12 +145,29 @@ describe("launch rules", () => {
     assert.deepEqual(launchProblems({ ...base, args: buildArgs({ prompt: "--model" }) }), []);
     assert.deepEqual(configProblems(good), []);
   });
-  it("sessionEnv fixes JEV_PROVIDER and drops JEV_FLOW and every JEV_CONTROL* key, without touching the input", () => {
-    const input = { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_FLOW: "on", JEV_CONTROL: "on", JEV_CONTROL_LIVE: "1", JEV_CONTROL_CACHE: "/c", JEV_PROVIDER: "openai", JEV_OTHER: "x" };
+  it("sessionEnv fixes JEV_PROVIDER (D29), ENABLE_CLAUDEAI_MCP_SERVERS=false (D30) and JEV_CONTROL_HEADLESS=1 (D14), drops JEV_FLOW and every other JEV_CONTROL* key, without touching the input", () => {
+    const input = { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_FLOW: "on", JEV_CONTROL: "on", JEV_CONTROL_LIVE: "1", JEV_CONTROL_CACHE: "/c", JEV_CONTROL_HEADLESS: "0", JEV_PROVIDER: "openai", ENABLE_CLAUDEAI_MCP_SERVERS: "true", JEV_OTHER: "x" };
+    const snapshot = JSON.stringify(input);
     const out = sessionEnv(input);
-    assert.deepEqual(out, { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_PROVIDER: "openrouter", JEV_OTHER: "x" });
-    assert.equal(input.JEV_FLOW, "on");
-    assert.equal(sessionEnv({}).JEV_PROVIDER, "openrouter");
+    assert.deepEqual(out, { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_PROVIDER: "openrouter", ENABLE_CLAUDEAI_MCP_SERVERS: "false", JEV_CONTROL_HEADLESS: "1", JEV_OTHER: "x" });
+    assert.equal(JSON.stringify(input), snapshot, "the input is not modified");
+    assert.deepEqual(sessionEnv({}), { JEV_PROVIDER: "openrouter", ENABLE_CLAUDEAI_MCP_SERVERS: "false", JEV_CONTROL_HEADLESS: "1" });
+    assert.equal(CLAUDEAI_MCP_SERVERS, "false");
+    assert.equal(CONTROL_HEADLESS, "1");
+  });
+  it("only the allowed flags are accepted: an extra configuration flag with or without a value is refused, a prompt that looks like one is text", () => {
+    const base = { wrapper: "w", ledgerPath: emptyLedger(), lockPath: tempLock(), testWrapper: true };
+    const good = baseArgs();
+    const at = good.indexOf("--setting-sources");
+    const before = (...extra) => [...good.slice(0, at), ...extra, ...good.slice(at)];
+    for (const extra of [["--settings", "{}"], ["--mcp-config", "x.json"], ["--strict-mcp-config"], ["--add-dir", "/tmp"], ["--system-prompt", "x"], ["--append-system-prompt", "x"], ["--agents", "{}"], ["--tools", "Bash"], ["--disallowedTools", "Read"], ["--continue"], ["--resume", "id"], ["stray"]]) {
+      assert.match(configProblems(before(...extra)).join(), /outside the allowed flags/, extra.join(" "));
+      assert.match(launchProblems({ ...base, args: before(...extra) }).join(), /outside the allowed flags/, extra.join(" "));
+    }
+    assert.match(configProblems([...good.slice(0, good.indexOf("--allowedTools")), "--settings", "{}", "--allowedTools", ...ALLOWED_TOOLS]).join(), /outside the allowed flags/, "also when written before the list");
+    assert.deepEqual(configProblems(good), []);
+    assert.deepEqual(configProblems(buildArgs({ prompt: "--settings {}" })), []);
+    assert.deepEqual(configProblems(buildArgs({ prompt: "--mcp-config x.json", maxTurns: 5 })), []);
   });
   it("only the authorized budget wrapper may start a live session, and only with JEV_CONTROL_LIVE=1", () => {
     const lockPath = tempLock();
@@ -204,10 +221,12 @@ describe("a simulated session: detached, sequential, confirmed termination", () 
     assert.deepEqual(JSON.parse(readFileSync(argvFile, "utf8").trim()), baseArgs(), "the wrapper received exactly the mandatory configuration");
     const seen = JSON.parse(readFileSync(join(dir, "env.json"), "utf8"));
     assert.equal(seen.JEV_PROVIDER, "openrouter");
-    assert.deepEqual(Object.keys(seen).filter((k) => k === "JEV_FLOW" || k.startsWith("JEV_CONTROL")), [], "no JEV_FLOW or JEV_CONTROL* key reaches the wrapper");
+    assert.equal(seen.ENABLE_CLAUDEAI_MCP_SERVERS, "false", "D30: the connectors stay off");
+    assert.equal(seen.JEV_CONTROL_HEADLESS, "1", "D14: nobody answers in -p");
+    assert.deepEqual(Object.keys(seen).filter((k) => k === "JEV_FLOW" || (k.startsWith("JEV_CONTROL") && k !== "JEV_CONTROL_HEADLESS")), [], "no JEV_FLOW or other JEV_CONTROL* key reaches the wrapper");
     assert.equal(seen.FAKE_MODE, "ok", "the rest of the environment is kept");
     const stored = readFileSync(join(outDir, "launch.json"), "utf8");
-    assert.equal(/JEV_PROVIDER|OPENROUTER|JEV_FLOW|JEV_CONTROL/.test(stored), false, "the environment is never serialized");
+    assert.equal(/JEV_PROVIDER|OPENROUTER|JEV_FLOW|JEV_CONTROL|ENABLE_CLAUDEAI/.test(stored), false, "the environment is never serialized");
     assert.equal(readFileSync(join(outDir, "launch.json"), "utf8").includes("the prompt"), false, "the prompt is not stored");
   });
   it("the worker leads its own session (fully detached: not in this process group)", async () => {

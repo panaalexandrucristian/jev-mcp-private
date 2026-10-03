@@ -32,6 +32,12 @@ describe("activation (D1, D2, D13, D16)", () => {
     assert.equal(r.json.priorities, "fix it with the smallest change");
     assert.equal(r.json.audit, "available");
     assert.match(r.json.server, /fake-jev@9\.9\.9/);
+    // R02: two dev sessions switched the mode on and then decided and searched nothing; the line the model reads next says what to do.
+    assert.match(r.json.next, /decide --file/);
+    assert.match(r.json.next, /choose the order yourself/);
+    assert.match(r.json.next, /search/);
+    assert.match(r.json.next, /\/jev:jev-done/);
+    assert.ok(r.stdout.trim().length < 900, `the line stays compact (${r.stdout.trim().length} characters)`);
     const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
     assert.equal(state.mode, "on");
     assert.equal(state.request.seq, 1);

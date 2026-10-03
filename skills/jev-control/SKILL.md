@@ -22,6 +22,8 @@ Run the helper as `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" <com
 
 Jev decides every choice with **two or more real alternatives**: the approach; the order of tasks; which files to search and read; which commands and tests to run; an edit when several variants exist; delegation and model; whether to ask the user; whether the work is done. This includes subagents you start.
 
+A user phrase that hands a choice over, such as «choose the order yourself», «do what is right» or «as you see fit», is not an instruction about that choice: Jev decides it (the order of several tasks is one `order` decision). Run `on` before anything else, then take the first choice through the helper: finding the files is `cli.mjs search`, not your own `grep`.
+
 Not Jev's: an explicit instruction of the user (it outranks Jev), permission prompts, a step with a single possible variant, and this fixed protocol itself (no meta-decisions: do not ask Jev how to ask Jev). Do not invent alternatives to make an exempt step look like a choice.
 
 ## The decision loop

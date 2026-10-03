@@ -37,7 +37,7 @@ describe("skill and command", () => {
     assert.match(fm.description, /ONLY when the user explicitly asks/);
   });
   it("states the strict threshold, the protocol and accepts both tool-name prefixes", () => {
-    for (const phrase of ["mcp__jev__*", "mcp__plugin_jev_jev__*", "strictly `>`", "0.95", "(0.5, 1)", "Jev unavailable", "Incomplete:", "25", "action_gather_evidence", "At most **2** expansion rounds", "no meta-decisions"]) assert.ok(skill.includes(phrase), phrase);
+    for (const phrase of ["mcp__jev__*", "mcp__plugin_jev_jev__*", "strictly `>`", "0.95", "(0.5, 1)", "Jev unavailable", "Incomplete:", "25", "action_gather_evidence", "At most **2** expansion rounds", "no meta-decisions", "choose the order yourself", "Run `on` before anything else", "not your own `grep`"]) assert.ok(skill.includes(phrase), phrase);
   });
   it("links its references, and they exist", () => {
     for (const ref of ["protocol", "tools", "integration", "evaluation"]) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { DEV_SCENARIOS } from "../fixtures/scenarios.mjs";
 import { asksForControl, handleControlHook, mergeOutputs, reminder } from "../hook.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
 import { HOOK_CLI, controlEnv, makeRepo, run } from "./helpers.mjs";
@@ -111,6 +112,19 @@ describe("the control hook: a reminder only, never a block", () => {
     assert.equal(hook("UserPromptSubmit", { prompt: "please mention Jev in the README" }, { env, cwd: repo }).text.includes("session-cap"), false);
     assert.equal(asksForControl("Jev is a judgment tool"), false);
     assert.equal(asksForControl("/jev:jev-done"), false);
+  });
+  it("the campaign activation text (D31) asks for the mode with each dev scenario prompt; the baseline prompt alone never does", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    for (const scenario of DEV_SCENARIOS.filter((x) => ["s1-bug-several-files", "s2-ordered-tasks"].includes(x.id))) {
+      const dev = `Let Jev control this session.\n\n${scenario.prompt}`;
+      assert.equal(asksForControl(dev), true, scenario.id);
+      assert.equal(asksForControl(scenario.prompt), false, `${scenario.id}: the baseline prompt is not an activation`);
+      const on = hook("UserPromptSubmit", { prompt: dev }, { env, cwd: repo });
+      assert.match(on.text, /--session-cap [0-9a-f]{16}\.[0-9a-f]{32}/, scenario.id);
+    }
+    const other = makeRepo({ "a.txt": "a\n" });
+    assert.equal(hook("UserPromptSubmit", { prompt: DEV_SCENARIOS[0].prompt }, { env, cwd: other }).text.includes("session-cap"), false);
   });
   it("a mode command is not a new request: the budget keeps counting", () => {
     const repo = makeRepo({ "a.txt": "a\n" });

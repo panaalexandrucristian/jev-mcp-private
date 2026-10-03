@@ -61,3 +61,7 @@ Two members found, by import, that the first fix of the id collision was incompl
 ## Limits and unknowns
 
 n = 1 and a single scenario; JEV server version, in-session `JEV_PROVIDER` and hook activity beyond the records above are unknown; S2 not run, so ordered-task behaviour is unmeasured; provider-internal Jev calls are `unknown`; `--plugin-dir` and `--setting-sources` work as flags, but the claude.ai connectors remain (see above).
+
+## Status after D30-D32 (added in R02)
+
+S1 of this round ran with the four claude.ai connectors loaded (95 tools), so it is a **pilot, not comparable for tokens**; its figures are kept as recorded. D30 switches the connectors off for every later session (`ENABLE_CLAUDEAI_MCP_SERVERS=false`, confirmed in the R02 inits: 37 tools, one MCP server); the clean baselines S1 and S2 were run in R02 (ledger lines 2 and 3).

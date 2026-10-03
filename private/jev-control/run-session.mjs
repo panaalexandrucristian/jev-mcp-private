@@ -47,6 +47,9 @@ export const PLUGIN_DIR = "/Users/apana/Dev/jev-mcp";
 export const PERMISSION_MODE = "acceptEdits";
 export const ALLOWED_TOOLS = Object.freeze(["Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent"]);
 export const SESSION_PROVIDER = "openrouter";
+// D30: the claude.ai connectors (Gmail, Drive, ...) stay out of every session; D14: nobody answers in -p, so a control that runs out of rounds stops with `Incomplete:`.
+export const CLAUDEAI_MCP_SERVERS = "false";
+export const CONTROL_HEADLESS = "1";
 
 // The prompt is the argument of -p, so the variadic --allowedTools list that ends the command cannot swallow it.
 export function buildArgs({ prompt, pluginDir = PLUGIN_DIR, maxTurns = LIMITS.maxTurns }) {
@@ -58,13 +61,18 @@ export function buildArgs({ prompt, pluginDir = PLUGIN_DIR, maxTurns = LIMITS.ma
 
 /**
  * The environment of the worker and of the wrapper: the given environment with
- * JEV_PROVIDER fixed, JEV_FLOW and every JEV_CONTROL* key (the launcher's
- * JEV_CONTROL_LIVE included) removed. Never serialized: it may hold credentials.
+ * JEV_PROVIDER (D29), ENABLE_CLAUDEAI_MCP_SERVERS=false (D30) and
+ * JEV_CONTROL_HEADLESS=1 (D14) fixed, JEV_FLOW and every other JEV_CONTROL* key
+ * (the launcher's JEV_CONTROL_LIVE included) removed. The same for baseline and
+ * dev: without an active control the headless flag has no effect. Never
+ * serialized: it may hold credentials.
  */
 export function sessionEnv(env = process.env) {
   const out = {};
   for (const [key, value] of Object.entries(env)) if (key !== "JEV_FLOW" && !key.startsWith("JEV_CONTROL")) out[key] = value;
   out.JEV_PROVIDER = SESSION_PROVIDER;
+  out.ENABLE_CLAUDEAI_MCP_SERVERS = CLAUDEAI_MCP_SERVERS;
+  out.JEV_CONTROL_HEADLESS = CONTROL_HEADLESS;
   return out;
 }
 
@@ -83,6 +91,20 @@ const valueAfter = (args, flag) => {
 const SINGLETON_FLAGS = ["-p", "--model", "--max-turns", "--output-format", "--verbose", "--setting-sources", "--plugin-dir", "--permission-mode", "--allowedTools"];
 const FLAG_SPELLINGS = /^--(?:(?:model|max-turns|output-format|verbose|setting-sources|plugin-dir|permission-mode|allowedTools|allowed-tools|disallowedTools|disallowed-tools)=|allowed-tools$|disallowedTools$|disallowed-tools$)/;
 
+// The only flags a session command may carry: those that take one value, -p (its prompt is removed beforehand), --verbose, and the variadic --allowedTools list that ends the command.
+const VALUE_FLAGS = new Set(["--model", "--max-turns", "--output-format", "--setting-sources", "--plugin-dir", "--permission-mode"]);
+/** The arguments of `flags` (the command without the prompt) that no allowed flag accounts for. */
+function unexpectedArguments(flags) {
+  const extra = [];
+  for (let i = 0; i < flags.length; i++) {
+    const a = flags[i];
+    if (a === "--allowedTools") break;
+    if (VALUE_FLAGS.has(a)) i++;
+    else if (a !== "-p" && a !== "--verbose") extra.push(String(a).slice(0, 24));
+  }
+  return extra;
+}
+
 /** Why `args` do not carry the mandatory D27/D28 configuration (empty when they do); bypassing permissions is always refused. */
 export function configProblems(args) {
   const problems = [];
@@ -92,6 +114,8 @@ export function configProblems(args) {
     const n = flags.filter((a) => a === flag).length;
     if (n > 1) problems.push(`${flag} must appear exactly once, not ${n} times`);
   }
+  const extra = unexpectedArguments(flags);
+  if (extra.length) problems.push(`the session command carries arguments outside the allowed flags: ${extra.join(" ")}`);
   if (flags.some((a) => FLAG_SPELLINGS.test(String(a)))) problems.push("a flag of the session configuration must be written once, as «--flag value», without alias or «=» spelling");
   if (valueAfter(flags, "--permission-mode") !== PERMISSION_MODE) problems.push(`the session must pass --permission-mode ${PERMISSION_MODE}`);
   const tools = flags.indexOf("--allowedTools");
