@@ -4,7 +4,7 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
 
 **Request (synthetic):** "Rename the user field, update the greeting and its test, add a changelog line, and document the field. Decide the order."
 
-**Decision 1: batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Decision 1: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -83,7 +83,7 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
 ```
 
 **Call 1 — jev_noul** (sent by the helper; never in the model's context)
@@ -246,7 +246,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 
 **Action (decision 1):** execute `t_schema`, then `t_changelog`. Afterwards the preconditions changed, so the earlier scores no longer apply to the affected options: a new decision is taken with the new evidence.
 
-**Decision 2 (after t_schema is done: its precondition is now met): batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Decision 2 (after t_schema is done: its precondition is now met): batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -300,7 +300,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
 ```
 
 **Call 2 — jev_noul** (sent by the helper; never in the model's context)

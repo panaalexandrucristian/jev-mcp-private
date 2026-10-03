@@ -4,13 +4,13 @@
 // No session, repository or Jev call is needed; each topic stays well under the 1.5 KB output cap.
 
 const DECIDE = [
-  'decide --file <batch.json|-> [--decision-id <id>]. The batch is one JSON object:',
-  '{"decision":"<the question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<lowercase slug>","text":"<what it is>","evidence":["<1-3 concrete lines>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion rounds only>"}',
+  'decide --file <batch.json|-> [--decision-id <id>]. One JSON object:',
+  '{"decision":"<the question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<lowercase slug>","text":"<text>","evidence":["<1-3 concrete facts>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion rounds only>"}',
   '- 5 to 18 real options; the limit 20 counts action_gather_evidence and action_ask_user, added if missing. "space_small":true only when fewer real alternatives exist.',
-  '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with its arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash only, edit: edit tools only, delegate: Agent only). Other kinds: optional.',
-  '- kind order is for several tasks: one option per task, each with its own action, all in one batch; every eligible one is planned in the order to run. Any other kind runs only the first option.',
-  '- Make the batch file with the Write tool (a heredoc can be refused), delete it after; run the command as is: a pipe after it voids the grant.',
-  '- status: selected/ordered: do exactly the plan items (e = execute). expand: only NEW options or evidence help; add them, set "new_material", rerun with the SAME --decision-id (2 rounds; no --decision-id = a new decision). ask_user: ask the user. incomplete: end with "Incomplete:" and the scores. invalid: fix what "problems" names.',
+  '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with its arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash, edit: edit tools, delegate: Agent only). Others: optional.',
+  '- order = several tasks: one option per task, each with its own action. Often only the next task is cleared: do the plan items, then decide again for the rest; never run an option outside the plan. Other kinds run only the first option.',
+  '- Write the batch to jev-batch.json in the working directory (elsewhere or a heredoc: refused). Run decide alone (a pipe, ; or && after it voids the grant); delete the file in another command.',
+  '- status: selected/ordered: do exactly the plan items. expand: add only NEW options or evidence, set "new_material", rerun with the SAME --decision-id (2 rounds; without it a new decision). ask_user: ask. incomplete: end with "Incomplete:" + the scores. invalid: fix "problems".',
 ].join("\n");
 
 const SEARCH = [

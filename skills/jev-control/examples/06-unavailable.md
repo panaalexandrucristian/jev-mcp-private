@@ -2,7 +2,7 @@
 
 Illustrative — not measured. Threshold `T = 0.95`. A transport failure, a timeout or an invalid response gets **exactly one identical retry**; then the step stops. There is no silent continuation with Claude's own judgment, and no "non-Jev" fallback.
 
-**Round 0: batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Round 0: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -51,7 +51,7 @@ Illustrative — not measured. Threshold `T = 0.95`. A transport failure, a time
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
 ```
 
 **Call 1 — jev_noul** (sent by the helper; never in the model's context)

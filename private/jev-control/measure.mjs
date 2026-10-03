@@ -16,7 +16,11 @@
 // optionally fed by a pipe and/or a here-document; anything else that merely
 // mentions the helper (echo, a chained command, a pipe FROM it, command
 // substitution) is an ordinary Bash ACTION that needs its own grant and whose
-// output never creates a grant (coverage.protocol_compound counts those). A result
+// output never creates a grant (coverage.protocol_compound counts those). The one
+// Write or Edit that is not an edit (R05, coverage.protocol_batch_files): the
+// batch file a later genuine `decide --file` call of the same request reads, when
+// the tracked text of that very path is a batch (decision, kind, options); any
+// other write, whatever its name, is an edit. A result
 // without the shape the real helper prints is opaque, never a grant source; a
 // decide result without a `receipt` creates no grants (grants_without_receipt).
 // Search grants keep path, line range, sha256, rank and the search: a Read covers
@@ -513,6 +517,40 @@ function classify(e) {
   return { cat: "unclassified" };
 }
 
+const isBatchShape = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value) && typeof value.decision === "string" && typeof value.kind === "string" && Array.isArray(value.options);
+function parseBatch(text) {
+  try {
+    const value = JSON.parse(text);
+    return isBatchShape(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The text the protocol's own input file holds after `e`, or null when `e` is not an edit of one (R05). The batch file that a
+ * `decide --file` call reads is helper input, not a change to the repository, but only when ALL of this holds: a Write whose
+ * whole content is a batch (an object with decision, kind and options) or an Edit whose result, applied to the text this
+ * function tracked for that path, is again a batch; the very path is the `--file` of a genuine helper `decide` call of the same
+ * request that comes later. Any other Write or Edit, whatever the file is called, stays an ordinary edit. `texts` maps a
+ * normalized path to the tracked text.
+ */
+function batchEdit(e, decides, texts) {
+  if (e.name !== "Write" && e.name !== "Edit") return null;
+  const target = normalizePath(e.input?.file_path ?? "", e.root);
+  if (!target || !decides.some((d) => d.req === e.req && d.i > e.i && d.path === target)) return null;
+  let text = null;
+  if (e.name === "Write") text = typeof e.input.content === "string" ? e.input.content : null;
+  else if (texts.has(target) && typeof e.input.old_string === "string" && e.input.old_string !== "" && typeof e.input.new_string === "string") {
+    const before = texts.get(target);
+    const hits = before.split(e.input.old_string).length - 1;
+    if (e.input.replace_all === true ? hits > 0 : hits === 1) text = before.split(e.input.old_string).join(e.input.new_string);
+  }
+  if (text === null || !parseBatch(text)) return null;
+  texts.set(target, text);
+  return text;
+}
+
 /** Path-like words of a prompt with surrounding quotes, brackets, mention marks, trailing punctuation and :line suffixes removed. */
 function promptPaths(text) {
   const out = [];
@@ -546,6 +584,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
       mechanical: 0,
       protocol: 0,
       protocol_compound: 0,
+      protocol_batch_files: 0,
       receipt_verified: 0,
       unverified_binding: 0,
       search_whole_file_reads: 0,
@@ -1082,6 +1121,12 @@ export function audit(records, { threshold = 0.95 } = {}) {
     if (!classes.has(e.id)) classes.set(e.id, classify(e));
     return classes.get(e.id);
   };
+  // The `--file` of every genuine helper `decide` call (R05): the batch files of the protocol.
+  const decides = events.flatMap((e) => {
+    const c = classOf(e);
+    return c.cat === "protocol" && c.sub === "decide" && typeof c.flags?.file === "string" && c.flags.file !== "-" ? [{ req: e.req, i: e.i, path: normalizePath(c.flags.file, e.root) }] : [];
+  });
+  const batchTexts = new Map();
 
   for (const { use, e } of timeline) {
     const c = classOf(e);
@@ -1108,8 +1153,11 @@ export function audit(records, { threshold = 0.95 } = {}) {
       else {
         // A command that merely mentions a helper is audited as the action it is.
         if (c.mention) out.coverage.protocol_compound += 1;
-        onAction(e);
-        if (MUTATING.has(e.name)) noteMutation(e);
+        if (batchEdit(e, decides, batchTexts) !== null) out.coverage.protocol_batch_files += 1;
+        else {
+          onAction(e);
+          if (MUTATING.has(e.name)) noteMutation(e);
+        }
       }
     } else if (c.cat === "jev_direct") onDirectResult(e, c);
     else if (c.cat === "protocol") onHelperResult(e, c);
@@ -1201,7 +1249,7 @@ export function toMarkdown(a, label = "session") {
     `# jev-control measurement: ${label}`,
     "",
     `- Coverage: ${a.coverage.numerator}/${a.coverage.denominator} (${a.coverage.share}); unknown ${a.coverage.unknown}; exceptions ${JSON.stringify(a.coverage.exceptions)}; unclassified ${a.coverage.unclassified}; uncovered reasons ${JSON.stringify(a.coverage.uncovered_reasons)}`,
-    `- Binding: ${a.coverage.receipt_verified} receipt-verified, ${a.coverage.unverified_binding} unverified (snapshot and precondition validity not claimed); ${a.coverage.grants.revoked} grants revoked; ${a.coverage.search_whole_file_reads} whole-file search reads; ${a.coverage.protocol_compound} helper mentions audited as actions; ${a.coverage.grants_without_receipt} results without a receipt`,
+    `- Binding: ${a.coverage.receipt_verified} receipt-verified, ${a.coverage.unverified_binding} unverified (snapshot and precondition validity not claimed); ${a.coverage.grants.revoked} grants revoked; ${a.coverage.search_whole_file_reads} whole-file search reads; ${a.coverage.protocol_compound} helper mentions audited as actions; ${a.coverage.protocol_batch_files} batch-file writes of the protocol (not edits); ${a.coverage.grants_without_receipt} results without a receipt`,
     `- Threshold: ${a.threshold.decisions} decisions, ${a.threshold.violations.length} violations, ${a.threshold.actions_while_blocked} actions while blocked, ${a.threshold.approvals_unbound} unbound approvals, ${a.threshold.unknown_scores} unknown scores`,
     `- Ordering: ${a.ordering.plans_descending}/${a.ordering.plans} plans descending or tie-broken; action order ${a.ordering.action_order}: ${a.ordering.order_violations.length} order violations`,
     `- Jev calls: direct ${JSON.stringify(a.jev_calls.direct)}, helper-reported attempts ${a.jev_calls.helper_reported_attempts}, state used ${a.jev_calls.state_used}, reserved direct ${a.jev_calls.reserved_direct}, unreserved direct ${a.jev_calls.unreserved_direct.length}, budget violations ${a.jev_calls.violations.length}, budget approvals bound ${a.budget.approvals_bound} / unbound ${a.budget.approvals_unbound}, reservation source mismatches ${a.jev_calls.reservation_source_mismatch.length}; provider calls unknown`,

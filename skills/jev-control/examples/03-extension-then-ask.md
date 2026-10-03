@@ -4,7 +4,7 @@ Illustrative — not measured. Threshold `T = 0.95`. Nothing is executed below t
 
 **Request (synthetic):** "Load the configuration files. Pick the parser."
 
-**Round 0: batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Round 0: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -54,7 +54,7 @@ Illustrative — not measured. Threshold `T = 0.95`. Nothing is executed below t
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
 ```
 
 **Call 1 — jev_noul** (sent by the helper; never in the model's context)
@@ -183,7 +183,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 
 Round 0 comparison: the best probability is 0.81, not above 0.95. Nothing is eligible, so the helper answers `expand` (2 rounds left). The session gathers evidence (it reads `package.json` and `src/load.mjs`) and calls again with the **same decision id** and a `new_material` note; resubmitting the same options is refused (`no_new_material`).
 
-**Round 1 (expansion 1: new evidence from reading the repository): batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Round 1 (expansion 1: new evidence from reading the repository): batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -214,7 +214,7 @@ Round 0 comparison: the best probability is 0.81, not above 0.95. Nothing is eli
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json --decision-id 3f9c2a71d4e85b06
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json --decision-id 3f9c2a71d4e85b06
 ```
 
 **Call 2 — jev_noul** (sent by the helper; never in the model's context)
@@ -307,7 +307,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-b
 
 Round 1: 0.93 is still not above 0.95 (`expand`, 1 round left).
 
-**Round 2 (expansion 2: a genuinely new option): batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Round 2 (expansion 2: a genuinely new option): batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -338,7 +338,7 @@ Round 1: 0.93 is still not above 0.95 (`expand`, 1 round left).
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json --decision-id 3f9c2a71d4e85b06
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json --decision-id 3f9c2a71d4e85b06
 ```
 
 **Call 3 — jev_noul** (sent by the helper; never in the model's context)

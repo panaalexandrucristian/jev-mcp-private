@@ -1108,6 +1108,64 @@ describe("search grants are bound to the hit's range, freshness and rank", () =>
   });
 });
 
+describe("the batch file of the protocol is helper input, every other write stays an edit (R05)", () => {
+  const BATCH = (extra = {}) => json({ decision: "which first?", kind: "order", options: [{ id: "a", text: "A", evidence: ["e"] }], ...extra });
+  const BP = `${ROOT}/jev-batch.json`;
+  const writeBatch = (content = BATCH(), path = BP) => call(use("Write", { file_path: path, content }), "ok");
+  const editBatch = (old_string, new_string, extra = {}, path = BP) => call(use("Edit", { file_path: path, old_string, new_string, ...extra }), "ok");
+  const decideFile = (out, file = "jev-batch.json", extra = "") => call(helper("decide", `--file ${file}${extra}`), out);
+  const stop = decideOut({ status: "refused", reason: "no_new_material" });
+  const plan = decideOut({ plan: [item("o1", "execute", 0.99, "Edit", "src/a.mjs")], plan_total: 1 });
+  it("a Write of a batch that a later decide --file reads is not an edit, not an uncovered action and not an action while blocked", () => {
+    const a = audit([prompt("go"), ...writeBatch(), ...decideFile(stop), ...editBatch('"which first?"', '"which now?"'), ...decideFile(plan), ...edit("src/a.mjs")]);
+    assert.equal(a.coverage.protocol_batch_files, 2, "the Write and the Edit");
+    assert.equal(a.finalization.edits, 1, "only the repository edit");
+    assert.equal(a.threshold.actions_while_blocked, 0);
+    assert.equal(a.coverage.covered, 1);
+    assert.equal(a.coverage.uncovered, 0);
+    assert.equal(a.eliminators.below_threshold_actions_without_approval, 0);
+  });
+  it("an absolute --file, a relative Write path and a different directory are compared as normalized paths", () => {
+    const a = audit([prompt("go"), ...writeBatch(BATCH(), "jev-batch.json"), ...decideFile(plan, BP), ...edit("src/a.mjs")]);
+    assert.equal(a.coverage.protocol_batch_files, 1);
+    const other = audit([prompt("go"), ...writeBatch(BATCH(), `${ROOT}/sub/jev-batch.json`), ...decideFile(plan, "jev-batch.json"), ...edit("src/a.mjs")]);
+    assert.equal(other.coverage.protocol_batch_files, 0, "a different path is an ordinary write");
+    assert.equal(other.finalization.edits, 2);
+  });
+  it("anything that is not provably a batch for a later genuine decide stays an edit: other content, no later decide, another request, a chained decide, another tool", () => {
+    const edits = (a) => a.finalization.edits;
+    assert.equal(edits(audit([prompt("go"), ...writeBatch("x"), ...decideFile(plan)])), 1, "content that is not a batch");
+    assert.equal(edits(audit([prompt("go"), ...writeBatch(json({ decision: "d", kind: "order" })), ...decideFile(plan)])), 1, "no options");
+    assert.equal(edits(audit([prompt("go"), ...writeBatch()])), 1, "no decide call at all");
+    assert.equal(edits(audit([prompt("go"), ...decideFile(plan), ...writeBatch()])), 1, "the decide call came first");
+    assert.equal(edits(audit([prompt("go"), ...writeBatch(), prompt("and now"), ...decideFile(plan)])), 1, "the decide call belongs to another request");
+    assert.equal(edits(audit([prompt("go"), ...writeBatch(), ...call(bash(`node "${CLI} decide --file jev-batch.json" | head -5`), plan)])), 1, "a decide piped into another command is not a helper call");
+    assert.equal(edits(audit([prompt("go"), ...writeBatch(), ...call(bash(`node "${CLI} decide --file jev-batch.json"; rm -f jev-batch.json`), plan)])), 1, "a chained decide is not a helper call");
+    assert.equal(edits(audit([prompt("go"), ...writeBatch(), ...decideFile(plan, "-")])), 1, "stdin has no file");
+    const notebook = audit([prompt("go"), ...call(use("MultiEdit", { file_path: BP, edits: [] }), "ok"), ...decideFile(plan)]);
+    assert.equal(notebook.finalization.edits, 1, "only Write and Edit qualify");
+  });
+  it("an Edit qualifies only when it applies once to the tracked batch text and leaves a batch", () => {
+    const base = [prompt("go"), ...writeBatch()];
+    const ok = audit([...base, ...editBatch('"a"', '"b"'), ...decideFile(plan)]);
+    assert.equal(ok.coverage.protocol_batch_files, 2);
+    assert.equal(audit([...base, ...editBatch('"id":"a"', '"id":"b"', { replace_all: true }), ...decideFile(plan)]).coverage.protocol_batch_files, 2);
+    for (const [old, now, extra, why] of [["not there", "x", {}, "no such text"], ["e", "f", {}, "text occurs more than once (one-line `e`)"], ['"decision"', "decision", {}, "the result is not JSON"], ['"options"', '"opts"', {}, "the result is no longer a batch"], ["", "x", {}, "empty old_string"]]) {
+      const a = audit([...base, ...editBatch(old, now, extra), ...decideFile(plan)]);
+      assert.equal(a.coverage.protocol_batch_files, 1, why);
+      assert.equal(a.finalization.edits, 1, why);
+    }
+    const untracked = audit([prompt("go"), ...editBatch('"a"', '"b"'), ...decideFile(plan)]);
+    assert.equal(untracked.finalization.edits, 1, "an Edit of a path whose batch text was never written");
+  });
+  it("a real edit stays an action while blocked, a batch edit in the same state does not", () => {
+    const a = audit([prompt("go"), ...writeBatch(), ...decideFile(stop), ...editBatch('"a"', '"b"'), ...edit("src/x.mjs"), ...decideFile(plan)]);
+    assert.equal(a.threshold.actions_while_blocked, 1);
+    assert.deepEqual(a.coverage.uncovered_reasons, { while_blocked: 1 });
+    assert.equal(a.threshold.blocked_samples[0].tool, "Edit");
+  });
+});
+
 describe("only a genuine helper call is a grant source", () => {
   const CLI_W = "/p/private/jev-control/cli.mjs";
   const plan = [item("o1", "execute", 0.99, "Write", "src/new.mjs")];

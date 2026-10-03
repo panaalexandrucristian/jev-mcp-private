@@ -4,7 +4,7 @@ Illustrative — not measured. A synthetic request, threshold `T = 0.95` (the de
 
 **Request (synthetic):** "Reports print one extra, empty page when the number of items is an exact multiple of the page size. Fix it."
 
-**Round 0: batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Round 0: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -54,7 +54,7 @@ Illustrative — not measured. A synthetic request, threshold `T = 0.95` (the de
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
 ```
 
 **Call 1 — jev_noul** (sent by the helper; never in the model's context)

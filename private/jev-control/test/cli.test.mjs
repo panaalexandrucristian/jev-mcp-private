@@ -508,7 +508,7 @@ describe("help without SKILL.md (R04)", () => {
     }
     assert.ok(direct.stdout.includes(KINDS.join("|")), "the kinds are the ones the helper accepts");
     assert.ok(direct.stdout.includes(`${MIN_OPTIONS} to ${MAX_OPTIONS - CONTROL_IDS.length} real options`));
-    assert.match(direct.stdout, /a pipe after it voids the grant/, "R04: `search ... | head -40` was audited as an ordinary action and granted nothing");
+    assert.match(direct.stdout, /a pipe, ; or && after it voids the grant/, "R04: `search ... | head -40` was audited as an ordinary action and granted nothing; R05: so was `decide ...; rm -f jev-batch.json`");
   });
   it("the example batch in `help decide` has the shape the helper accepts", () => {
     const text = cli(["help", "decide"], { env: controlEnv(), cwd: outside() }).stdout;
@@ -556,6 +556,14 @@ describe("help without SKILL.md (R04)", () => {
       assert.equal(h.stdout, direct, args.join(" "));
     }
     assert.match(cli(["--root", "x", "--help"], { env, cwd: outside() }).stdout, /^Usage: cli\.mjs on\|off\|status/);
+  });
+  it("R05: `help decide` says where the batch goes, that decide runs alone, and that only plan items run", () => {
+    const text = cli(["help", "decide"], { env: controlEnv(), cwd: outside() }).stdout;
+    assert.match(text, /Write the batch to jev-batch\.json in the working directory \(elsewhere or a heredoc: refused\)/, "S4: a Write to /tmp was refused");
+    assert.match(text, /Run decide alone \(a pipe, ; or && after it voids the grant\); delete the file in another command/, "S4: `decide ...; rm -f jev-batch.json` five times, never a genuine helper call");
+    assert.match(text, /do the plan items, then decide again for the rest; never run an option outside the plan/, "S2: the changelog edit was not a plan item");
+    assert.match(text, /status: selected\/ordered: do exactly the plan items/);
+    assert.ok(text.length < 1500, `fits the output cap (${text.length})`);
   });
   it("`help search`, `search --help`, the other commands and an unknown topic", () => {
     const search = cli(["help", "search"], { env: controlEnv(), cwd: outside() });

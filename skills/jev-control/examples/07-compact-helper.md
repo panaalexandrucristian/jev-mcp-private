@@ -4,7 +4,7 @@ Illustrative — not measured. Threshold `T = 0.95`. This example shows the *mec
 
 **Request (synthetic):** "After the fix, check it."
 
-**Round 0: batch** (written to `/tmp/jc-batch.json`, outside the repository)
+**Round 0: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
 
 ```json
 {
@@ -74,7 +74,7 @@ Illustrative — not measured. Threshold `T = 0.95`. This example shows the *mec
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file /tmp/jc-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
 ```
 
 **Call 1 — jev_noul** (sent by the helper; never in the model's context)
