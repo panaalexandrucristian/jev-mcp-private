@@ -461,10 +461,12 @@ function scriptRun(command, scriptRe) {
     if (seg.words.some((w) => typeof w !== "string") || !FEEDERS.has(seg.words[0])) return null;
     if (seg.words[0] === "cat" && seg.words.slice(1).some((w) => w.startsWith("-") && w !== "-")) return null;
   }
+  let moved = false;
   for (const seg of kept.slice(0, head)) {
     if (seg.op !== "&&" && seg.op !== ";" && seg.op !== "\n") return null;
     if (seg.words.some((w) => typeof w !== "string")) return null;
-    if (!(seg.words.length === 2 && seg.words[0] === "cd") && !seg.words.every(isAssignment)) return null;
+    if (seg.words.length === 2 && seg.words[0] === "cd") moved = true;
+    else if (!seg.words.every(isAssignment)) return null;
   }
   const body = last.words;
   let k = 0;
@@ -483,7 +485,8 @@ function scriptRun(command, scriptRe) {
     else if (w.redir === "2>" && body[j + 1] === "/dev/null") j += 1;
     else return null;
   }
-  return args;
+  // A leading `cd` moves the working directory: a relative path in the arguments is then not relative to the transcript's root.
+  return Object.assign(args, { moved });
 }
 
 /** The helper invocation in a command: {sub, action, flags}, or null when the command is not a genuine helper run. */
@@ -499,7 +502,7 @@ function helperCall(command) {
     else if (!BOOL_FLAGS.has(a.slice(2)) && k + 1 < args.length && !args[k + 1].startsWith("--")) flags[a.slice(2)] = args[++k];
     else flags[a.slice(2)] = true;
   }
-  return { sub: args[0], action: positional[0] ?? null, flags };
+  return { sub: args[0], action: positional[0] ?? null, flags, moved: args.moved };
 }
 
 /** A command that mentions a jev-control helper script, whether or not it genuinely runs it. */
@@ -531,12 +534,56 @@ function parseBatch(text) {
 }
 
 const HATCH_IDS = new Set(["action_gather_evidence", "action_ask_user"]);
-const READ_ONLY_BASH = /^\s*(?:cat|head|tail|ls|wc|stat|file|grep|rg|diff|shasum|sha256sum)\s[^;&|`$()<>]*$/;
-const SIMPLE_RM = /^\s*rm\s+(?:-f\s+)?(?:"([^"\s$`\\]+)"|'([^'\s]+)'|([^\s"'`$;&|<>()*?[\]{}~\\]+))\s*$/;
-/** The normalized path a command that is exactly `rm [-f] <one plain path>` removes, or null. */
+/**
+ * The only commands, with the only options, that a Bash call may use and still be a plain read of the tree (R05). Everything else
+ * (an unknown command or option, `rg --pre`, `rg -z`, `tail -f`, a path operand that starts with a dash) is not proven read-only.
+ * `value` options take one argument that must be digits.
+ */
+const READ_ONLY = {
+  cat: { flags: ["-n", "-b", "-s", "-v"] },
+  head: { flags: [], value: ["-n", "-c"], count: true },
+  tail: { flags: [], value: ["-n", "-c"], count: true },
+  ls: { flags: ["-l", "-a", "-la", "-al", "-1", "-h", "-R", "-t", "-d", "-lh", "-lah"] },
+  wc: { flags: ["-l", "-w", "-c", "-m"] },
+  stat: { flags: [] },
+  file: { flags: [] },
+  grep: { flags: ["-n", "-i", "-r", "-R", "-l", "-c", "-v", "-w", "-F", "-E", "-H", "-h", "-s", "-q", "-x"] },
+  rg: { flags: ["-n", "-i", "-l", "-c", "-v", "-w", "-F", "-s", "-S", "-H", "--no-heading"] },
+  diff: { flags: ["-u", "-q", "-r", "-c", "-i", "-w", "-b"] },
+  shasum: { flags: [], value: ["-a"] },
+  sha256sum: { flags: [] },
+};
+/** One physical line: no newline, no pipe, `;`, `&`, quote, substitution, redirect, backslash, brace, `!` or `#`. */
+const PLAIN_LINE = /^[^\n\r;&|`$()<>\\"'{}!#]*$/;
+/** True when `command` is exactly one plain read: a listed command with listed options and operands that are not options. */
+function readOnlyBash(command) {
+  const text = String(command ?? "").trim();
+  if (text === "" || !PLAIN_LINE.test(text)) return false;
+  const words = text.split(/[ \t]+/);
+  const spec = READ_ONLY[words[0]];
+  if (!spec) return false;
+  for (let k = 1; k < words.length; k++) {
+    const w = words[k];
+    if (spec.flags.includes(w)) continue;
+    if (spec.value?.includes(w)) {
+      if (!/^\d+$/.test(words[k + 1] ?? "")) return false;
+      k += 1;
+      continue;
+    }
+    if (spec.count && /^-\d+$/.test(w)) continue;
+    if (w.startsWith("-")) return false;
+  }
+  return true;
+}
+const SIMPLE_RM = /^rm[ \t]+(?:-f[ \t]+)?(?:"([^"\s$`\\]+)"|'([^'\s]+)'|([^\s"'`$;&|<>()*?[\]{}~\\]+))$/;
+/**
+ * The normalized path a command that is exactly `rm [-f] <one plain path>` removes, or null. One physical line; a path operand
+ * that starts with a dash is an option for rm, never a proven path (`rm -f -f`, `rm -f "-f"`); `rm -f ./-f` names the file.
+ */
 function simpleRm(command, root) {
-  const m = SIMPLE_RM.exec(String(command ?? ""));
-  return m ? normalizePath(m[1] ?? m[2] ?? m[3], root) : null;
+  const m = SIMPLE_RM.exec(String(command ?? "").trim());
+  const operand = m ? (m[1] ?? m[2] ?? m[3]) : null;
+  return operand === null || operand.startsWith("-") ? null : normalizePath(operand, root);
 }
 
 /**
@@ -546,13 +593,13 @@ function simpleRm(command, root) {
  *   and options); a later Write or Edit of the same context continues it only when its result is a success and the new text (the
  *   content, or the Edit applied once to the tracked text) is again a batch. A refused or unconfirmed call installs no text.
  * - A decide that consumes a version is bound at its tool_use to the version confirmed THEN (not to the latest one at its result):
- *   a genuine `decide --file` of the same request and context on that path, with no write of the path, no foreign write and no call of
+ *   a genuine `decide --file` of the same request and context on that path (no leading `cd`: the path is then not the transcript's), with no write of the path, no foreign write and no call of
  *   unknown effects started or overlapping while it ran. Its result must be a success (not an error), status selected or ordered,
  *   of the batch's kind, with plan items that name only options of that version, and that version must pass normalizeBatch; the shared ids
  *   alone prove nothing about which version was read.
  * - Calls of unknown effects end every chain of their request when they start and forbid a chain from starting or continuing while
- *   they overlap its write: any Bash that is not a plain read or a lone `rm` of one path (node mutate.mjs and node --test may write
- *   files), a delegated agent, an unclassified tool, `done` and the flow helpers; so do a MultiEdit or notebook edit of the path, a
+ *   they overlap its write: any Bash that is not ONE plain read (a listed command, listed options, one line: never `rg --pre`) or a lone
+ *   `rm` of one path that is not an option (node mutate.mjs and node --test may write files), a delegated agent, an unclassified tool, `done` and the flow helpers; so do a MultiEdit or notebook edit of the path, a
  *   write or `rm` of it by another request or context, and a write with no result.
  * - A consumed version is exempt only once the same request and context later removed the file with a lone `rm [-f] <path>` that
  *   succeeded while the chain was intact; a chain that is still alive at the end of the transcript, or ended any other way (a compound
@@ -570,7 +617,7 @@ function auxiliaryBatchFiles(events, classOf) {
     if (e.name === "Agent" || e.name === "Task") return true;
     if (e.name !== "Bash") return false;
     const command = String(e.input.command ?? "");
-    return !(READ_ONLY_BASH.test(command) && !bashChanges(command)) && simpleRm(command, e.root) === null;
+    return !(readOnlyBash(command) && !bashChanges(command)) && simpleRm(command, e.root) === null;
   };
   const span = new Map();
   for (const e of events) {
@@ -614,7 +661,7 @@ function auxiliaryBatchFiles(events, classOf) {
           if (ch.req === e.req && ch.ctx === e.ctx) rmSnap.set(e.id, { chain: ch, epoch: ch.epoch, clean: ch.busy === 0 });
           else chains.delete(k);
         }
-      } else if (c.cat === "protocol" && c.sub === "decide" && typeof c.flags?.file === "string" && c.flags.file !== "-") {
+      } else if (c.cat === "protocol" && c.sub === "decide" && typeof c.flags?.file === "string" && c.flags.file !== "-" && !c.moved) {
         const chain = chains.get(`${e.req}|${e.ctx}|${normalizePath(c.flags.file, e.root)}`);
         if (chain && chain.busy === 0) decideSnap.set(e.id, { chain, epoch: chain.epoch, version: chain.versions[chain.versions.length - 1] });
       }

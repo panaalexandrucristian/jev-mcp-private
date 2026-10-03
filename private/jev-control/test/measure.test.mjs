@@ -1255,6 +1255,59 @@ describe("only a batch file the transcript proves to be helper input is not an e
     const clear = audit([prompt("go"), ...call(m, "ok"), ...writeBatch(), ...decideFile(ordered("o1")), ...remove(), final()]);
     assert.deepEqual(verdict(clear), { files: 1, removals: 1, edits: 0, violations: 0 }, "the call was over before the Write started");
   });
+  it("a command is a plain read only when it is one line, one listed command and listed options: a second line, rg --pre and the like are unknown effects", () => {
+    const run = (...between) => verdict(audit([prompt("go"), ...writeBatch(), ...between, ...decideFile(ordered("o1")), ...remove(), final()]));
+    const CLEAR = { files: 1, removals: 1, edits: 0, violations: 0 };
+    for (const cmd of ["cat jev-batch.json", "cat -n jev-batch.json", "ls", "ls -la", "head -n 5 jev-batch.json", "head -5 jev-batch.json", "grep -n option jev-batch.json", "rg -n needle jev-batch.json", "wc -l jev-batch.json", "diff -u a.json b.json", "shasum -a 256 jev-batch.json"]) assert.deepEqual(run(...call(bash(cmd), "ok")), CLEAR, `a plain read: ${cmd}`);
+    for (const [cmd, why] of [
+      ["cat jev-batch.json\nnode mutate.mjs", "a second line runs a script"],
+      ["ls\nnode mutate.mjs", "a second line after a bare command"],
+      ["cat\nnode x.mjs", "a newline in place of the separator"],
+      ["cat jev-batch.json\r\nnode mutate.mjs", "a carriage return and a newline"],
+      ["rg --pre ./mutate.sh needle jev-batch.json", "rg --pre executes a program on every file"],
+      ["rg --pre=./mutate.sh needle jev-batch.json", "the same with an equals sign"],
+      ["rg -z needle jev-batch.json", "rg -z runs decompressors"],
+      ["rg --hostname-bin ./mutate.sh needle", "rg runs this program"],
+      ["tail -f jev-batch.json", "an option nobody listed"],
+      ["diff --to-file=a b", "an unlisted option"],
+      ["cat -", "a dash operand is not a path"],
+      ["head -n x jev-batch.json", "a count that is not a number"],
+      ["FOO=1 cat jev-batch.json", "an assignment in front"],
+      ["/bin/cat jev-batch.json", "a command by path is not the listed one"],
+      ["cat jev-batch.json | tee x", "a pipeline"],
+      ["cat jev-batch.json > out.json", "a redirect"],
+    ]) assert.deepEqual(run(...call(bash(cmd), "ok")), KEPT(0, 1), `${why}: ${JSON.stringify(cmd)}`);
+    // The unknown command is still running while the Write finishes: a late Write result cannot start a chain.
+    const m = bash("cat jev-batch.json\nnode mutate.mjs");
+    const w = use("Write", { file_path: BP, content: BATCH() });
+    const overlapped = audit([prompt("go"), asst([w]), asst([m]), res(w, created(BP)), res(m, "ok"), ...decideFile(ordered("o1")), ...remove(), final()]);
+    assert.deepEqual(verdict(overlapped), KEPT(0, 1), "a false plain read overlapping the Write");
+    const pg = bash("rg --pre ./mutate.sh needle jev-batch.json");
+    const alongside = audit([prompt("go"), ...writeBatch(), asst([pg]), ...decideFile(ordered("o1")), res(pg, "ok"), ...remove(), final()]);
+    assert.deepEqual(verdict(alongside), KEPT(0, 1), "a false plain read running while the decide ran");
+    const rmLate = audit([prompt("go"), ...writeBatch(), ...decideFile(ordered("o1")), asst([m]), ...remove(), res(m, "ok"), final()]);
+    assert.deepEqual(verdict(rmLate), KEPT(0, 1), "a false plain read still running at the rm");
+  });
+  it("rm names a path only when the operand is not an option: rm -f -f and rm -f \"-f\" prove nothing, rm -f ./-f does", () => {
+    const run = (rm, file = "-f") => audit([prompt("go"), ...writeBatch(BATCH(), { path: `${ROOT}/${file}` }), ...decideFile(ordered("o1"), file), ...call(bash(rm), ""), final()]);
+    assert.deepEqual(verdict(run("rm -f ./-f", "./-f")), { files: 1, removals: 1, edits: 0, violations: 0 }, "./-f names the file");
+    for (const [rm, why] of [["rm -f -f", "the second -f is an option"], ['rm -f "-f"', "quotes do not end the options"], ["rm -f '-f'", "single quotes do not end the options"], ["rm -f", "no operand"], ["rm -- -f", "-- is an option"]]) {
+      const a = run(rm);
+      assert.deepEqual(verdict(a), KEPT(0, 1), `${why}: ${JSON.stringify(rm)}`);
+      assert.equal(a.coverage.uncovered, 2, `${why}: the Write and the rm are both uncovered actions`);
+    }
+    for (const [rm, why] of [["rm\njev-batch.json", "a newline is not a separator: this runs rm with no operand, then a command"], ["rm -f\njev-batch.json", "a newline after -f"], ["rm -f jev-batch.json\nnode mutate.mjs", "a second line"]]) {
+      assert.deepEqual(verdict(run(rm, "jev-batch.json")), KEPT(0, 1), `${why}: ${JSON.stringify(rm)}`);
+    }
+    assert.deepEqual(verdict(audit([prompt("go"), ...writeBatch(), ...decideFile(ordered("o1")), ...remove(), final()])), { files: 1, removals: 1, edits: 0, violations: 0 }, "a plain rm still proves the removal");
+  });
+  it("a decide after a cd read another directory's file: it consumes nothing", () => {
+    const sub = (cmd) => audit([prompt("go"), ...writeBatch(), ...call(bash(cmd), ordered("o1")), ...remove(), final()]);
+    assert.deepEqual(verdict(sub(`cd sub && node "${CLI} decide --file jev-batch.json`)), KEPT(0, 1), "cd sub: the file read is sub/jev-batch.json");
+    assert.deepEqual(verdict(sub(`cd . && node "${CLI} decide --file jev-batch.json`)), KEPT(0, 1), "even a cd to the same directory is not proven");
+    assert.deepEqual(verdict(sub(`node "${CLI} decide --file jev-batch.json`)), { files: 1, removals: 1, edits: 0, violations: 0 }, "no cd: the positive control");
+    assert.deepEqual(verdict(sub(`FOO=1 node "${CLI} decide --file jev-batch.json`)), { files: 1, removals: 1, edits: 0, violations: 0 }, "an assignment does not move");
+  });
   it("what is not a confirmed batch stays an edit: other content, no decide, a decide first, a chained or piped decide, stdin, a Write that did not create", () => {
     const run = (...mid) => verdict(audit([prompt("go"), ...mid, final()]));
     assert.deepEqual(run(...writeBatch("x"), ...decideFile(ordered("o1")), ...remove()), KEPT(0, 1), "content that is not a batch");
