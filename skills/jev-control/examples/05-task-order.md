@@ -4,7 +4,7 @@ Illustrative — not measured. Threshold `T = 0.95`. A dependency is not a score
 
 **Request (synthetic):** "Rename the user field, update the greeting and its test, add a changelog line, and document the field. Decide the order."
 
-**Decision 1: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
+**Decision 1: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, with a lone `rm -f jev-batch.json` in its own command)
 
 ```json
 {
@@ -246,7 +246,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 
 **Action (decision 1):** execute `t_schema`, then `t_changelog`. Afterwards the preconditions changed, so the earlier scores no longer apply to the affected options: a new decision is taken with the new evidence.
 
-**Decision 2 (after t_schema is done: its precondition is now met): batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
+**Decision 2 (after t_schema is done: its precondition is now met): batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, with a lone `rm -f jev-batch.json` in its own command)
 
 ```json
 {

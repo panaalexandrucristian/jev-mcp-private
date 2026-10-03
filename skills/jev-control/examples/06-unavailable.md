@@ -2,7 +2,7 @@
 
 Illustrative — not measured. Threshold `T = 0.95`. A transport failure, a timeout or an invalid response gets **exactly one identical retry**; then the step stops. There is no silent continuation with Claude's own judgment, and no "non-Jev" fallback.
 
-**Round 0: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
+**Round 0: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, with a lone `rm -f jev-batch.json` in its own command)
 
 ```json
 {

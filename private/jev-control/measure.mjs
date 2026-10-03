@@ -19,9 +19,10 @@
 // output never creates a grant (coverage.protocol_compound counts those). The one
 // Write or Edit that is not an edit (R05, coverage.protocol_batch_files): a version of a batch file the transcript proves to be
 // helper input: created by a confirmed Write ("File created successfully"), changed only by confirmed Write or Edit calls whose
-// result is a batch, and read by a later genuine `decide --file` call of the same request and agent context whose result names
-// only options of that very version. A refused call, a non-batch overwrite, an intermediate unsafe mutation (or one by another
-// context) or a result that names no option of the version leaves it an edit; any other write, whatever its name, is an edit. A result
+// result is a batch, bound at the tool_use of a genuine `decide --file` of the same request and agent context whose successful
+// result (selected or ordered, not an error) names only options of that very version, with nothing of unknown effects running
+// meanwhile, and finally removed by a lone `rm [-f] <path>` of that request and context (that removal is then no action either). Any other write, whatever the file is
+// called, a chain that is still alive at the end, an unsafe intermediate mutation or a result that fits another version is an edit. A result
 // without the shape the real helper prints is opaque, never a grant source; a
 // decide result without a `receipt` creates no grants (grants_without_receipt).
 // Search grants keep path, line range, sha256, rank and the search: a Read covers
@@ -65,6 +66,7 @@ import { join } from "node:path";
 import { actionHash, EDIT_TOOLS, normalizePath, observedDescriptor, parsePlanItem, shortHash } from "./actions.mjs";
 import { BUDGET_SCOPE, findAuthorizations, incrementFor, optionScope } from "./authorization.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult, toolBase } from "./contracts.mjs";
+import { normalizeBatch } from "./options.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
 /** Decide statuses that stop the plan (no grants). */
@@ -529,94 +531,145 @@ function parseBatch(text) {
 }
 
 const HATCH_IDS = new Set(["action_gather_evidence", "action_ask_user"]);
-/** The option ids a real helper decide result names: its plan items, its scores and its selection. */
-function resultOptionIds(p) {
-  const ids = new Set();
-  for (const item of Array.isArray(p?.plan) ? p.plan : []) if (typeof item === "string") ids.add(item.split(":")[0]);
-  for (const item of Array.isArray(p?.scores) ? p.scores : []) if (typeof item === "string" && item.includes(":")) ids.add(item.slice(0, item.lastIndexOf(":")));
-  if (typeof p?.selected === "string") ids.add(p.selected);
-  return ids;
-}
 const READ_ONLY_BASH = /^\s*(?:cat|head|tail|ls|wc|stat|file|grep|rg|diff|shasum|sha256sum)\s[^;&|`$()<>]*$/;
+const SIMPLE_RM = /^\s*rm\s+(?:-f\s+)?(?:"([^"\s$`\\]+)"|'([^'\s]+)'|([^\s"'`$;&|<>()*?[\]{}~\\]+))\s*$/;
+/** The normalized path a command that is exactly `rm [-f] <one plain path>` removes, or null. */
+function simpleRm(command, root) {
+  const m = SIMPLE_RM.exec(String(command ?? ""));
+  return m ? normalizePath(m[1] ?? m[2] ?? m[3], root) : null;
+}
 
 /**
- * The ids of the Write and Edit events that are batch files of the protocol, not edits (R05). Proven only from confirmed results,
- * per request and agent context: a chain starts with a Write whose result says the file was CREATED and whose content is a
- * batch (an object with decision, kind and options); a later Write or Edit continues it only when its result is a success and
- * the new text (the content, or the Edit applied once to the tracked text) is again a batch; a version is auxiliary only when a
- * later genuine helper `decide --file` call of the same request and context, on that very path, returned a result that names
- * options and only options of that version (an invalid, refused or opaque result proves nothing about it). Anything else ends
- * the chain: a refused or unconfirmed call never installs text; a non-batch overwrite, a MultiEdit or notebook edit of the path,
- * an overwrite by another request or context, a Bash command that may change the path (it names the path in a command that
- * is not a plain read) or visibly changes the tree, a delegated agent and an unclassified tool end it too. A version that no
- * such decide read, and every write after the chain ended, stays an ordinary edit.
+ * The ids of the Write and Edit events that are batch files of the protocol, not edits (R05). The transcript must PROVE it, per
+ * request, agent context and path, from confirmed results and in time order; anything else stays an ordinary edit.
+ * - A chain starts with a Write whose result says the file was CREATED and whose content is a batch (an object with decision, kind
+ *   and options); a later Write or Edit of the same context continues it only when its result is a success and the new text (the
+ *   content, or the Edit applied once to the tracked text) is again a batch. A refused or unconfirmed call installs no text.
+ * - A decide that consumes a version is bound at its tool_use to the version confirmed THEN (not to the latest one at its result):
+ *   a genuine `decide --file` of the same request and context on that path, with no write of the path, no foreign write and no call of
+ *   unknown effects started or overlapping while it ran. Its result must be a success (not an error), status selected or ordered,
+ *   of the batch's kind, with plan items that name only options of that version, and that version must pass normalizeBatch; the shared ids
+ *   alone prove nothing about which version was read.
+ * - Calls of unknown effects end every chain of their request when they start and forbid a chain from starting or continuing while
+ *   they overlap its write: any Bash that is not a plain read or a lone `rm` of one path (node mutate.mjs and node --test may write
+ *   files), a delegated agent, an unclassified tool, `done` and the flow helpers; so do a MultiEdit or notebook edit of the path, a
+ *   write or `rm` of it by another request or context, and a write with no result.
+ * - A consumed version is exempt only once the same request and context later removed the file with a lone `rm [-f] <path>` that
+ *   succeeded while the chain was intact; a chain that is still alive at the end of the transcript, or ended any other way (a compound
+ *   deletion proves nothing), leaves every one of its versions an ordinary edit, whatever the file is called.
  */
 function auxiliaryBatchFiles(events, classOf) {
   const exempt = new Set();
+  const removals = new Set();
   const chains = new Map();
+  const pathOf = (e) => normalizePath(e.input?.file_path ?? e.input?.notebook_path ?? "", e.root);
+  const effectsUnknown = (e, c) => {
+    if (c.cat === "unclassified") return true;
+    if (c.cat === "protocol") return c.sub === "done" || c.sub === "flow_helper";
+    if (c.cat !== "action") return false;
+    if (e.name === "Agent" || e.name === "Task") return true;
+    if (e.name !== "Bash") return false;
+    const command = String(e.input.command ?? "");
+    return !(READ_ONLY_BASH.test(command) && !bashChanges(command)) && simpleRm(command, e.root) === null;
+  };
+  const span = new Map();
+  for (const e of events) {
+    const c = classOf(e);
+    const rm = e.name === "Bash" && c.cat === "action" ? simpleRm(e.input.command, e.root) : null;
+    span.set(e.id, { lo: e.i, hi: e.result ? e.result.i : Infinity, unknown: effectsUnknown(e, c), path: EDIT_TOOLS.includes(e.name) ? pathOf(e) : rm, rm });
+  }
+  /** Another call that may change `target` ran while [lo, hi] was open. */
+  const overlaps = (e, lo, hi, target) => [...span].some(([id, x]) => id !== e.id && (x.unknown || x.path === target) && x.lo < hi && x.hi > lo);
   const timeline = [];
   for (const e of events) {
     timeline.push({ pos: e.i, use: true, e });
     if (e.result) timeline.push({ pos: e.result.i, use: false, e });
   }
   timeline.sort((x, y) => x.pos - y.pos);
-  const pathOf = (e) => normalizePath(e.input?.file_path ?? e.input?.notebook_path ?? "", e.root);
+  const usedChain = new Map();
+  const decideSnap = new Map();
+  const rmSnap = new Map();
   const endPath = (target) => {
-    for (const k of [...chains.keys()]) if (chains.get(k).path === target) chains.delete(k);
-  };
-  const endRequest = (req) => {
-    for (const k of [...chains.keys()]) if (chains.get(k).req === req) chains.delete(k);
+    for (const [k, ch] of [...chains]) if (ch.path === target) chains.delete(k);
   };
   for (const { use, e } of timeline) {
     const c = classOf(e);
+    const x = span.get(e.id);
     if (use) {
-      if (e.name === "MultiEdit" || e.name === "NotebookEdit") endPath(pathOf(e));
+      if (x.unknown) {
+        for (const [k, ch] of [...chains]) if (ch.req === e.req) chains.delete(k);
+      } else if (e.name === "MultiEdit" || e.name === "NotebookEdit") endPath(pathOf(e));
       else if (e.name === "Write" || e.name === "Edit") {
-        if (!e.result) endPath(pathOf(e));
-      } else if (c.cat === "unclassified" || e.name === "Agent" || e.name === "Task") endRequest(e.req);
-      else if (c.cat === "action" && e.name === "Bash") {
-        const command = String(e.input.command ?? "");
-        const plainRead = READ_ONLY_BASH.test(command) && !bashChanges(command);
-        if (!plainRead) {
-          for (const [k, ch] of [...chains]) if (command.includes(ch.path) || command.includes(ch.path.split("/").pop())) chains.delete(k);
-          if (bashChanges(command)) endRequest(e.req);
+        for (const [k, ch] of [...chains]) {
+          if (ch.path !== x.path) continue;
+          if (ch.req === e.req && ch.ctx === e.ctx && e.result) {
+            ch.busy += 1;
+            ch.epoch += 1;
+            usedChain.set(e.id, ch);
+          } else chains.delete(k);
         }
+      } else if (x.rm !== null) {
+        for (const [k, ch] of [...chains]) {
+          if (ch.path !== x.rm) continue;
+          if (ch.req === e.req && ch.ctx === e.ctx) rmSnap.set(e.id, { chain: ch, epoch: ch.epoch, clean: ch.busy === 0 });
+          else chains.delete(k);
+        }
+      } else if (c.cat === "protocol" && c.sub === "decide" && typeof c.flags?.file === "string" && c.flags.file !== "-") {
+        const chain = chains.get(`${e.req}|${e.ctx}|${normalizePath(c.flags.file, e.root)}`);
+        if (chain && chain.busy === 0) decideSnap.set(e.id, { chain, epoch: chain.epoch, version: chain.versions[chain.versions.length - 1] });
       }
       continue;
     }
-    if (c.cat === "protocol" && c.sub === "decide") {
-      const file = c.flags?.file;
-      if (typeof file !== "string" || file === "-") continue;
-      const chain = chains.get(`${e.req}|${e.ctx}|${normalizePath(file, e.root)}`);
-      const version = chain?.versions[chain.versions.length - 1];
-      if (!version) continue;
-      const ids = resultOptionIds(lastJson(e.result.text));
-      if (ids.size > 0 && [...ids].every((id) => version.options.has(id) || HATCH_IDS.has(id))) exempt.add(version.event);
+    if (rmSnap.has(e.id)) {
+      const { chain, epoch, clean } = rmSnap.get(e.id);
+      if (!e.result.error && clean && chain.busy === 0 && chain.epoch === epoch && chains.get(chain.key) === chain) {
+        for (const id of chain.consumed) exempt.add(id);
+        if (chain.consumed.length > 0) removals.add(e.id);
+        chains.delete(chain.key);
+      }
       continue;
     }
-    if ((e.name !== "Write" && e.name !== "Edit") || e.result.error) continue;
-    const target = pathOf(e);
-    if (!target) continue;
-    const key = `${e.req}|${e.ctx}|${target}`;
+    if (decideSnap.has(e.id)) {
+      const { chain, epoch, version } = decideSnap.get(e.id);
+      if (e.result.error || chain.busy !== 0 || chain.epoch !== epoch || chains.get(chain.key) !== chain) continue;
+      const result = lastJson(e.result.text);
+      const batch = parseBatch(version.text);
+      const items = Array.isArray(result?.plan) ? result.plan.map(parsePlanItem) : [];
+      const named = items.every((item) => item !== null) ? items.map((item) => item.id) : [];
+      if (!batch || !normalizeBatch(batch).ok || !["selected", "ordered"].includes(result?.status) || !nonEmpty(result.decision_id) || result.kind !== batch.kind) continue;
+      if (named.length > 0 && named.every((id) => version.options.has(id) || HATCH_IDS.has(id))) chain.consumed.push(version.event);
+      continue;
+    }
+    if ((e.name !== "Write" && e.name !== "Edit") || !x.path) continue;
+    const held = usedChain.get(e.id);
+    if (held) held.busy = Math.max(0, held.busy - 1);
+    if (held) held.epoch += 1;
+    if (e.result.error) continue;
+    const key = `${e.req}|${e.ctx}|${x.path}`;
     const chain = chains.get(key);
+    if (overlaps(e, x.lo, x.hi, x.path)) {
+      chains.delete(key);
+      continue;
+    }
     let text = null;
     if (e.name === "Write") text = typeof e.input.content === "string" ? e.input.content : null;
-    else if (chain && typeof e.input.old_string === "string" && e.input.old_string !== "" && typeof e.input.new_string === "string") {
+    else if (chain && chain === held && typeof e.input.old_string === "string" && e.input.old_string !== "" && typeof e.input.new_string === "string") {
       const hits = chain.text.split(e.input.old_string).length - 1;
       if (e.input.replace_all === true ? hits > 0 : hits === 1) text = chain.text.split(e.input.old_string).join(e.input.new_string);
     }
     const batch = text === null ? null : parseBatch(text);
     const created = e.name === "Write" && /^File created successfully/.test(e.result.text);
-    // Whatever else tracked this path loses its text: only a chain that continues with a batch survives.
-    for (const [k, ch] of [...chains]) if (ch.path === target && k !== key) chains.delete(k);
     if (!batch || !(chain || created)) {
       chains.delete(key);
       continue;
     }
-    const version = { event: e.id, options: new Set(batch.options.map((o) => o?.id).filter((id) => typeof id === "string")) };
-    chains.set(key, { path: target, req: e.req, text, versions: [...(chain?.versions ?? []), version] });
+    const version = { event: e.id, text, options: new Set(batch.options.map((o) => o?.id).filter((id) => typeof id === "string")) };
+    if (chain && chain === held) {
+      chain.text = text;
+      chain.versions.push(version);
+    } else chains.set(key, { key, path: x.path, req: e.req, ctx: e.ctx, text, versions: [version], consumed: [], busy: 0, epoch: 0 });
   }
-  return exempt;
+  return { files: exempt, removals };
 }
 
 /** Path-like words of a prompt with surrounding quotes, brackets, mention marks, trailing punctuation and :line suffixes removed. */
@@ -653,6 +706,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
       protocol: 0,
       protocol_compound: 0,
       protocol_batch_files: 0,
+      protocol_batch_removals: 0,
       receipt_verified: 0,
       unverified_binding: 0,
       search_whole_file_reads: 0,
@@ -1217,7 +1271,8 @@ export function audit(records, { threshold = 0.95 } = {}) {
       else {
         // A command that merely mentions a helper is audited as the action it is.
         if (c.mention) out.coverage.protocol_compound += 1;
-        if (batchFiles.has(e.id)) out.coverage.protocol_batch_files += 1;
+        if (batchFiles.files.has(e.id)) out.coverage.protocol_batch_files += 1;
+        else if (batchFiles.removals.has(e.id)) out.coverage.protocol_batch_removals += 1;
         else {
           onAction(e);
           if (MUTATING.has(e.name)) noteMutation(e);
@@ -1313,7 +1368,7 @@ export function toMarkdown(a, label = "session") {
     `# jev-control measurement: ${label}`,
     "",
     `- Coverage: ${a.coverage.numerator}/${a.coverage.denominator} (${a.coverage.share}); unknown ${a.coverage.unknown}; exceptions ${JSON.stringify(a.coverage.exceptions)}; unclassified ${a.coverage.unclassified}; uncovered reasons ${JSON.stringify(a.coverage.uncovered_reasons)}`,
-    `- Binding: ${a.coverage.receipt_verified} receipt-verified, ${a.coverage.unverified_binding} unverified (snapshot and precondition validity not claimed); ${a.coverage.grants.revoked} grants revoked; ${a.coverage.search_whole_file_reads} whole-file search reads; ${a.coverage.protocol_compound} helper mentions audited as actions; ${a.coverage.protocol_batch_files} batch-file writes of the protocol (not edits); ${a.coverage.grants_without_receipt} results without a receipt`,
+    `- Binding: ${a.coverage.receipt_verified} receipt-verified, ${a.coverage.unverified_binding} unverified (snapshot and precondition validity not claimed); ${a.coverage.grants.revoked} grants revoked; ${a.coverage.search_whole_file_reads} whole-file search reads; ${a.coverage.protocol_compound} helper mentions audited as actions; ${a.coverage.protocol_batch_files} batch-file writes and ${a.coverage.protocol_batch_removals} removals of the protocol (not edits); ${a.coverage.grants_without_receipt} results without a receipt`,
     `- Threshold: ${a.threshold.decisions} decisions, ${a.threshold.violations.length} violations, ${a.threshold.actions_while_blocked} actions while blocked, ${a.threshold.approvals_unbound} unbound approvals, ${a.threshold.unknown_scores} unknown scores`,
     `- Ordering: ${a.ordering.plans_descending}/${a.ordering.plans} plans descending or tie-broken; action order ${a.ordering.action_order}: ${a.ordering.order_violations.length} order violations`,
     `- Jev calls: direct ${JSON.stringify(a.jev_calls.direct)}, helper-reported attempts ${a.jev_calls.helper_reported_attempts}, state used ${a.jev_calls.state_used}, reserved direct ${a.jev_calls.reserved_direct}, unreserved direct ${a.jev_calls.unreserved_direct.length}, budget violations ${a.jev_calls.violations.length}, budget approvals bound ${a.budget.approvals_bound} / unbound ${a.budget.approvals_unbound}, reservation source mismatches ${a.jev_calls.reservation_source_mismatch.length}; provider calls unknown`,

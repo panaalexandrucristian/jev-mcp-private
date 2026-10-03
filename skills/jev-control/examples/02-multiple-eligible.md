@@ -4,7 +4,7 @@ Illustrative — not measured. Threshold `T = 0.95`; the decision is an **order*
 
 **Request (synthetic):** "Do these four things in the order you find best: rename the field, update the greeting, update its test, add a changelog line."
 
-**Round 0: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
+**Round 0: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, with a lone `rm -f jev-batch.json` in its own command)
 
 ```json
 {
