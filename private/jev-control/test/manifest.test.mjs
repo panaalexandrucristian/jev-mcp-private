@@ -41,14 +41,16 @@ describe("skill and command", () => {
     for (const phrase of ["mcp__jev__*", "mcp__plugin_jev_jev__*", "strictly `>`", "0.95", "(0.5, 1)", "Jev unavailable", "Incomplete:", "25", "action_gather_evidence", "At most **2** expansion rounds", "no meta-decisions", "choose the order yourself", "Run `on` before anything else", "not your own `grep`"]) assert.ok(skill.includes(phrase), phrase);
   });
   it("R05: the batch file goes in the working directory, decide runs alone, and only plan items run", () => {
-    assert.match(skill, /to `jev-batch\.json` in the working directory \(a Write outside it, such as `\/tmp`, is refused in headless runs/);
-    assert.match(skill, /`cli\.mjs decide --file jev-batch\.json \[--decision-id <id>\]` ALONE: a pipe, `;` or `&&` after it makes it an ordinary action that grants nothing/);
+    assert.match(skill, /to a NEW file in the working directory \(for example `jev-batch\.json` when no file has that name; never overwrite a file you did not create for this, and delete only the one you created; a Write outside the working directory, such as `\/tmp`, is refused in headless runs/);
+    assert.match(skill, /that Write created the file, a later `decide --file` of the request on that path read that very version, and nothing else touched it; any other write is an edit/);
+    assert.match(skill, /`cli\.mjs decide --file <that file> \[--decision-id <id>\]` ALONE: a pipe, `;` or `&&` after it makes it an ordinary action that grants nothing/);
     assert.match(skill, /Often only the next task is cleared .*never run it because the order seems obvious/);
     assert.equal(skill.includes("outside the repository"), false, "the old instruction (a /tmp file) is gone");
     for (const f of ["01-single-winner", "02-multiple-eligible", "03-extension-then-ask", "05-task-order", "06-unavailable", "07-compact-helper"]) {
       const text = read("skills", "jev-control", "examples", `${f}.md`);
       assert.equal(text.includes("/tmp/jc-batch.json"), false, f);
       assert.ok(text.includes("--file jev-batch.json"), f);
+      assert.ok(text.includes("a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards"), f);
     }
   });
   it("links its references, and they exist", () => {

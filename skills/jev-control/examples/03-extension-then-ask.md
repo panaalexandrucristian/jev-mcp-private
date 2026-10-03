@@ -4,7 +4,7 @@ Illustrative — not measured. Threshold `T = 0.95`. Nothing is executed below t
 
 **Request (synthetic):** "Load the configuration files. Pick the parser."
 
-**Round 0: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
+**Round 0: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
 
 ```json
 {
@@ -183,7 +183,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 
 Round 0 comparison: the best probability is 0.81, not above 0.95. Nothing is eligible, so the helper answers `expand` (2 rounds left). The session gathers evidence (it reads `package.json` and `src/load.mjs`) and calls again with the **same decision id** and a `new_material` note; resubmitting the same options is refused (`no_new_material`).
 
-**Round 1 (expansion 1: new evidence from reading the repository): batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
+**Round 1 (expansion 1: new evidence from reading the repository): batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
 
 ```json
 {
@@ -307,7 +307,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 
 Round 1: 0.93 is still not above 0.95 (`expand`, 1 round left).
 
-**Round 2 (expansion 2: a genuinely new option): batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
+**Round 2 (expansion 2: a genuinely new option): batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
 
 ```json
 {

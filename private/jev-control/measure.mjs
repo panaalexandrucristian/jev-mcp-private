@@ -17,10 +17,11 @@
 // mentions the helper (echo, a chained command, a pipe FROM it, command
 // substitution) is an ordinary Bash ACTION that needs its own grant and whose
 // output never creates a grant (coverage.protocol_compound counts those). The one
-// Write or Edit that is not an edit (R05, coverage.protocol_batch_files): the
-// batch file a later genuine `decide --file` call of the same request reads, when
-// the tracked text of that very path is a batch (decision, kind, options); any
-// other write, whatever its name, is an edit. A result
+// Write or Edit that is not an edit (R05, coverage.protocol_batch_files): a version of a batch file the transcript proves to be
+// helper input: created by a confirmed Write ("File created successfully"), changed only by confirmed Write or Edit calls whose
+// result is a batch, and read by a later genuine `decide --file` call of the same request and agent context whose result names
+// only options of that very version. A refused call, a non-batch overwrite, an intermediate unsafe mutation (or one by another
+// context) or a result that names no option of the version leaves it an edit; any other write, whatever its name, is an edit. A result
 // without the shape the real helper prints is opaque, never a grant source; a
 // decide result without a `receipt` creates no grants (grants_without_receipt).
 // Search grants keep path, line range, sha256, rank and the search: a Read covers
@@ -527,28 +528,95 @@ function parseBatch(text) {
   }
 }
 
+const HATCH_IDS = new Set(["action_gather_evidence", "action_ask_user"]);
+/** The option ids a real helper decide result names: its plan items, its scores and its selection. */
+function resultOptionIds(p) {
+  const ids = new Set();
+  for (const item of Array.isArray(p?.plan) ? p.plan : []) if (typeof item === "string") ids.add(item.split(":")[0]);
+  for (const item of Array.isArray(p?.scores) ? p.scores : []) if (typeof item === "string" && item.includes(":")) ids.add(item.slice(0, item.lastIndexOf(":")));
+  if (typeof p?.selected === "string") ids.add(p.selected);
+  return ids;
+}
+const READ_ONLY_BASH = /^\s*(?:cat|head|tail|ls|wc|stat|file|grep|rg|diff|shasum|sha256sum)\s[^;&|`$()<>]*$/;
+
 /**
- * The text the protocol's own input file holds after `e`, or null when `e` is not an edit of one (R05). The batch file that a
- * `decide --file` call reads is helper input, not a change to the repository, but only when ALL of this holds: a Write whose
- * whole content is a batch (an object with decision, kind and options) or an Edit whose result, applied to the text this
- * function tracked for that path, is again a batch; the very path is the `--file` of a genuine helper `decide` call of the same
- * request that comes later. Any other Write or Edit, whatever the file is called, stays an ordinary edit. `texts` maps a
- * normalized path to the tracked text.
+ * The ids of the Write and Edit events that are batch files of the protocol, not edits (R05). Proven only from confirmed results,
+ * per request and agent context: a chain starts with a Write whose result says the file was CREATED and whose content is a
+ * batch (an object with decision, kind and options); a later Write or Edit continues it only when its result is a success and
+ * the new text (the content, or the Edit applied once to the tracked text) is again a batch; a version is auxiliary only when a
+ * later genuine helper `decide --file` call of the same request and context, on that very path, returned a result that names
+ * options and only options of that version (an invalid, refused or opaque result proves nothing about it). Anything else ends
+ * the chain: a refused or unconfirmed call never installs text; a non-batch overwrite, a MultiEdit or notebook edit of the path,
+ * an overwrite by another request or context, a Bash command that may change the path (it names the path in a command that
+ * is not a plain read) or visibly changes the tree, a delegated agent and an unclassified tool end it too. A version that no
+ * such decide read, and every write after the chain ended, stays an ordinary edit.
  */
-function batchEdit(e, decides, texts) {
-  if (e.name !== "Write" && e.name !== "Edit") return null;
-  const target = normalizePath(e.input?.file_path ?? "", e.root);
-  if (!target || !decides.some((d) => d.req === e.req && d.i > e.i && d.path === target)) return null;
-  let text = null;
-  if (e.name === "Write") text = typeof e.input.content === "string" ? e.input.content : null;
-  else if (texts.has(target) && typeof e.input.old_string === "string" && e.input.old_string !== "" && typeof e.input.new_string === "string") {
-    const before = texts.get(target);
-    const hits = before.split(e.input.old_string).length - 1;
-    if (e.input.replace_all === true ? hits > 0 : hits === 1) text = before.split(e.input.old_string).join(e.input.new_string);
+function auxiliaryBatchFiles(events, classOf) {
+  const exempt = new Set();
+  const chains = new Map();
+  const timeline = [];
+  for (const e of events) {
+    timeline.push({ pos: e.i, use: true, e });
+    if (e.result) timeline.push({ pos: e.result.i, use: false, e });
   }
-  if (text === null || !parseBatch(text)) return null;
-  texts.set(target, text);
-  return text;
+  timeline.sort((x, y) => x.pos - y.pos);
+  const pathOf = (e) => normalizePath(e.input?.file_path ?? e.input?.notebook_path ?? "", e.root);
+  const endPath = (target) => {
+    for (const k of [...chains.keys()]) if (chains.get(k).path === target) chains.delete(k);
+  };
+  const endRequest = (req) => {
+    for (const k of [...chains.keys()]) if (chains.get(k).req === req) chains.delete(k);
+  };
+  for (const { use, e } of timeline) {
+    const c = classOf(e);
+    if (use) {
+      if (e.name === "MultiEdit" || e.name === "NotebookEdit") endPath(pathOf(e));
+      else if (e.name === "Write" || e.name === "Edit") {
+        if (!e.result) endPath(pathOf(e));
+      } else if (c.cat === "unclassified" || e.name === "Agent" || e.name === "Task") endRequest(e.req);
+      else if (c.cat === "action" && e.name === "Bash") {
+        const command = String(e.input.command ?? "");
+        const plainRead = READ_ONLY_BASH.test(command) && !bashChanges(command);
+        if (!plainRead) {
+          for (const [k, ch] of [...chains]) if (command.includes(ch.path) || command.includes(ch.path.split("/").pop())) chains.delete(k);
+          if (bashChanges(command)) endRequest(e.req);
+        }
+      }
+      continue;
+    }
+    if (c.cat === "protocol" && c.sub === "decide") {
+      const file = c.flags?.file;
+      if (typeof file !== "string" || file === "-") continue;
+      const chain = chains.get(`${e.req}|${e.ctx}|${normalizePath(file, e.root)}`);
+      const version = chain?.versions[chain.versions.length - 1];
+      if (!version) continue;
+      const ids = resultOptionIds(lastJson(e.result.text));
+      if (ids.size > 0 && [...ids].every((id) => version.options.has(id) || HATCH_IDS.has(id))) exempt.add(version.event);
+      continue;
+    }
+    if ((e.name !== "Write" && e.name !== "Edit") || e.result.error) continue;
+    const target = pathOf(e);
+    if (!target) continue;
+    const key = `${e.req}|${e.ctx}|${target}`;
+    const chain = chains.get(key);
+    let text = null;
+    if (e.name === "Write") text = typeof e.input.content === "string" ? e.input.content : null;
+    else if (chain && typeof e.input.old_string === "string" && e.input.old_string !== "" && typeof e.input.new_string === "string") {
+      const hits = chain.text.split(e.input.old_string).length - 1;
+      if (e.input.replace_all === true ? hits > 0 : hits === 1) text = chain.text.split(e.input.old_string).join(e.input.new_string);
+    }
+    const batch = text === null ? null : parseBatch(text);
+    const created = e.name === "Write" && /^File created successfully/.test(e.result.text);
+    // Whatever else tracked this path loses its text: only a chain that continues with a batch survives.
+    for (const [k, ch] of [...chains]) if (ch.path === target && k !== key) chains.delete(k);
+    if (!batch || !(chain || created)) {
+      chains.delete(key);
+      continue;
+    }
+    const version = { event: e.id, options: new Set(batch.options.map((o) => o?.id).filter((id) => typeof id === "string")) };
+    chains.set(key, { path: target, req: e.req, text, versions: [...(chain?.versions ?? []), version] });
+  }
+  return exempt;
 }
 
 /** Path-like words of a prompt with surrounding quotes, brackets, mention marks, trailing punctuation and :line suffixes removed. */
@@ -1121,12 +1189,8 @@ export function audit(records, { threshold = 0.95 } = {}) {
     if (!classes.has(e.id)) classes.set(e.id, classify(e));
     return classes.get(e.id);
   };
-  // The `--file` of every genuine helper `decide` call (R05): the batch files of the protocol.
-  const decides = events.flatMap((e) => {
-    const c = classOf(e);
-    return c.cat === "protocol" && c.sub === "decide" && typeof c.flags?.file === "string" && c.flags.file !== "-" ? [{ req: e.req, i: e.i, path: normalizePath(c.flags.file, e.root) }] : [];
-  });
-  const batchTexts = new Map();
+  // The Write and Edit events that are provably batch files of the protocol (R05), decided from confirmed results before the audit.
+  const batchFiles = auxiliaryBatchFiles(events, classOf);
 
   for (const { use, e } of timeline) {
     const c = classOf(e);
@@ -1153,7 +1217,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
       else {
         // A command that merely mentions a helper is audited as the action it is.
         if (c.mention) out.coverage.protocol_compound += 1;
-        if (batchEdit(e, decides, batchTexts) !== null) out.coverage.protocol_batch_files += 1;
+        if (batchFiles.has(e.id)) out.coverage.protocol_batch_files += 1;
         else {
           onAction(e);
           if (MUTATING.has(e.name)) noteMutation(e);

@@ -4,7 +4,7 @@ Illustrative — not measured. A synthetic request, threshold `T = 0.95` (the de
 
 **Request (synthetic):** "Reports print one extra, empty page when the number of items is an exact multiple of the page size. Fix it."
 
-**Round 0: batch** (written to `jev-batch.json` in the working directory, deleted afterwards in a separate command)
+**Round 0: batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, in a separate command)
 
 ```json
 {
