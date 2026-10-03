@@ -269,7 +269,11 @@ describe("R09: the compact protocol at activation, at SessionStart and in the re
   const REQUIRED = ["decide --file", "search", "strictly above T", "fixed protocol", "ask the user", "Incomplete:", "approve", "/jev:jev-done", "done --claims", "help decide|search|done"];
   it("the shared rules name every rule, exception and the interactive/headless split", () => {
     for (const phrase of REQUIRED) assert.ok(PROTOCOL_RULES.includes(phrase), phrase);
-    for (const phrase of ["explicit user instructions", "exact user-named paths", "permission prompts", "a one-variant step", "rg/glob only list candidates", "at most twice", "headless end with Incomplete:", "only an accepted gate permits it"]) assert.ok(PROTOCOL_RULES.includes(phrase), phrase);
+    for (const phrase of ["explicit user instructions", "exact user-named paths", "permission prompts", "a one-variant step", "rg/glob only list candidates", "at most twice", "only an accepted gate counts", "explicit user approval"]) assert.ok(PROTOCOL_RULES.includes(phrase), phrase);
+    // The audit accepts only a final message that STARTS with `Incomplete:` (measure.mjs /^Incomplete:/): the rules must ask for the start, never for an ending.
+    assert.match(PROTOCOL_RULES, /headless start the final message with Incomplete:/);
+    assert.match(PROTOCOL_RULES, /start[^.]*Incomplete:/);
+    assert.doesNotMatch(PROTOCOL_RULES, /end with Incomplete|ending with Incomplete|finish with Incomplete/);
     assert.ok(Buffer.byteLength(PROTOCOL_RULES) < 900);
   });
   it("activation, natural and slash, carries the rules byte for byte and stays within 1500 bytes with a 120-byte plugin root and a real capability", () => {

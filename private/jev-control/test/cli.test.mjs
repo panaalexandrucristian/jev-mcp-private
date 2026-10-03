@@ -41,6 +41,9 @@ describe("activation (D1, D2, D13, D16)", () => {
     // R09 (D46): it is the compact protocol itself, the same constant as the hook's activation text.
     assert.equal(r.json.next, PROTOCOL_RULES);
     for (const phrase of ["decide --file", "search", "strictly above T", "fixed protocol", "ask the user", "Incomplete:", "cli.mjs approve", "/jev:jev-done", "done --claims", "help decide|search|done"]) assert.ok(r.json.next.includes(phrase), phrase);
+    assert.match(r.json.next, /headless start the final message with Incomplete:/, "the audit accepts only a final message that starts with Incomplete:");
+    assert.match(r.json.next, /start[^.]*Incomplete:/);
+    assert.doesNotMatch(r.json.next, /end with Incomplete/);
     assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500, `the line stays within 1500 bytes (${Buffer.byteLength(r.stdout.trim())})`);
     const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
     assert.equal(state.mode, "on");

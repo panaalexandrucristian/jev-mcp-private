@@ -6,15 +6,27 @@
  "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
  "start_commit": "cb0f52e7213a383c104103010f25825f19080c1c",
  "branch": "jev-control-skill",
- "ledger": {"before": 15, "after": 15, "cap": 20, "lock": false, "reserve_used": 0, "left": 5, "r10": "2 sealed + 3 reserve (the reserve only replaces failed or lost sessions; R09 authorizes no use of it)"},
- "versions": {"node": "v22.23.1", "claude_code": "2.1.288", "plugin": "0.7.0"},
+ "ledger": {
+  "before": 15,
+  "after": 15,
+  "cap": 20,
+  "lock": false,
+  "reserve_used": 0,
+  "left": 5,
+  "r10": "2 sealed + 3 reserve (the reserve only replaces failed or lost sessions; R09 authorizes no use of it)"
+ },
+ "versions": {
+  "node": "v22.23.1",
+  "claude_code": "2.1.288",
+  "plugin": "0.7.0"
+ },
  "answers": {
   "D42": "no forcing mechanism; fix three problems offline in R09, verify in R10 (name conflict, compact protocol at activation, Read of the skill files in headless sessions)",
   "D43": "the command stays exactly /jev:jev-control; the skill is skills/jev-control-mode/ with name jev-control-mode, loaded with Skill jev:jev-control-mode",
   "D44": "PRIVATE.md only in the «Jev control» section and skills/jev-flow/SKILL.md:12 only for the skill name; R01-R08 reports are not rewritten; version stays 0.7.0",
   "D45": "one Read rule restricted to PLUGIN_DIR/skills/jev-control-mode/**, identical for all remaining sessions, no --add-dir, exact-list validator",
   "D46": "the compact protocol appears in the hook activation text and at SessionStart (at most 1500 bytes each) and in the `on` output (1500 bytes); the per-prompt reminder stays one line (at most 400 bytes); wording ratified by the council",
-  "D47": "a confirmed Read of an exact protocol file of the skill directory is not a task action (outside the coverage denominator) and is reported in the skill section"
+  "D47": "a confirmed Read of an exact protocol file of the skill directory is not a task action (outside the coverage denominator, no complete load required) and is reported in the skill section"
  },
  "problems": {
   "name_conflict": "skills/jev-control/ renamed to skills/jev-control-mode/ (git mv); commands/jev-control.md keeps its name and loads the skill with Skill jev:jev-control-mode, falling back to a Read of the exact file; a test refuses any skill name equal to a command name",
@@ -22,29 +34,67 @@
   "headless_read": "run-session.mjs: SKILL_DIR, SKILL_READ_RULE = Read(//Users/apana/Dev/jev-mcp/skills/jev-control-mode/**) as the last element of ALLOWED_TOOLS; configProblems and launchProblems require the exact list and name any other file permission or --add-dir"
  },
  "sizes_bytes": {
-  "rules": 792,
-  "activation_natural_plugin_root_120": 1489,
-  "activation_slash_plugin_root_120": 1209,
-  "session_start_after_compaction_plugin_root_120": 1181,
+  "rules": 793,
+  "activation_natural_plugin_root_120": 1490,
+  "activation_slash_plugin_root_120": 1210,
+  "session_start_after_compaction_plugin_root_120": 1182,
   "prompt_reminder_cap_49_threshold_0.99999": 353,
-  "on_output_typical": 1094,
-  "on_output_maximum_tested": 1497,
-  "limits": {"activation": 1500, "session_start": 1500, "reminder": 400, "on": 1500},
-  "note": "measured with a 120-byte plugin root, a real 49-character capability and the longest accepted priorities (300 characters: ASCII, accented, CJK and emoji) with a 230-character notice; the descriptive echoes of the `on` result yield first (flow, audit, notice, note, then the priorities echo), never the rules, the threshold or the stored priorities"
+  "on_output_typical": 1074,
+  "on_output_maximum_tested": 1481,
+  "limits": {
+   "activation": 1500,
+   "session_start": 1500,
+   "reminder": 400,
+   "on": 1500
+  },
+  "note": "measured with a 120-byte plugin root, a real 49-character capability and the longest accepted priorities (300 characters: ASCII, accented, CJK and emoji) with a 230-character notice; the descriptive echoes of the `on` result yield first (flow, audit, notice, note, then the priorities echo), never the rules, the threshold or the stored priorities; ratification round 1: the first-commit figures (792, 1489, 1209, 1181, on 1094/1497) are replaced; the `on` figures come from a real `on` with the default threshold (typical) and the 12 `compactOut` cases of the test matrix (largest); the real `on` with 300 CJK or 400 ASCII characters printed 1476 and 1477"
  },
  "offline_checks": {
-  "control_tests": {"tests": 549, "suites": 89, "pass": 549, "fail": 0, "before_r09": {"tests": 511, "suites": 85}},
-  "flow_tests": {"tests": 324, "suites": 61, "pass": 324, "fail": 0},
+  "control_tests": {
+   "tests": 553,
+   "suites": 89,
+   "pass": 553,
+   "fail": 0,
+   "first_r09_commit": {
+    "tests": 549,
+    "suites": 89
+   },
+   "before_r09": {
+    "tests": 511,
+    "suites": 85
+   }
+  },
+  "flow_tests": {
+   "tests": 324,
+   "suites": 61,
+   "pass": 324,
+   "fail": 0
+  },
   "claude_plugin_validate": "passed",
   "seal_verify": "ok",
   "git_diff_check": "clean",
   "protected_diff_vs_879c2ba": 0,
-  "mutations": {"first_pass": 38, "killed": 34, "survivors": ["priorities loop guard (weak test, strengthened)", "server echo step (redundant, removed)", "segments guard in the skill path check (redundant with the exact-name pattern, removed)", "prefix check without the trailing slash (weak test, strengthened)"], "after_fix": "the 2 strengthened tests and 2 extra mutants of the path pattern were killed"}
+  "mutations": {
+   "first_pass": 38,
+   "killed": 34,
+   "survivors": [
+    "priorities loop guard (weak test, strengthened)",
+    "server echo step (redundant, removed)",
+    "segments guard in the skill path check (redundant with the exact-name pattern, removed)",
+    "prefix check without the trailing slash (weak test, strengthened)"
+   ],
+   "after_fix": "the 2 strengthened tests and 2 extra mutants of the path pattern were killed"
+  },
+  "mutations_ratification_round_1": {
+   "mutants": 15,
+   "killed": 15,
+   "note": "rules wording (end with, end the final message with, finish with), load state, frontmatter detection, capability redaction, sanitizer, totals behind the cap (reads and calls), omitted counter, full_load, redaction of reasons and typed paths, Read line numbers; a first harness run with an empty NODE_TEST_CONTEXT killed nothing and was discarded"
+  }
  },
  "historical_recalculation": {
   "sessions": 15,
   "different_ignoring_the_new_section": 0,
-  "note": "all 15 transcripts of R01-R08 re-measured with the previous and the new measurer: identical in every field except the new `skill` section and the new coverage.exceptions key, which stays absent without a skill Read; none of them loaded the skill (load not_attempted, 0 Skill calls, 0 Reads below the new skill directory). The Reads that R04 had refused named the old directory skills/jev-control/ and are not skill reads of the new one"
+  "note": "all 15 transcripts of R01-R08 re-measured with the cb0f52e measurer and with the new one (and with the 54b020e one): identical in every field except the new `skill` section and the new coverage.exceptions key, which stays absent without a skill Read; no Skill call and no Read of the new name or directory was identified in them (load not_attempted, 0 Skill calls, 0 Reads below the new skill directory). This is not proof that no skill was ever loaded: the new auditor does not recognize attempts on the old path skills/jev-control/. The Reads that R04 had refused named the old directory and are not skill reads of the new one"
  },
  "metrics_live": {
   "skill_loaded": "unmeasured",
@@ -55,5 +105,30 @@
   "orchestrator_tokens": "unmeasured",
   "provider_calls": "unknown"
  },
- "files_changed_outside_private_jev_control": ["PRIVATE.md (section Jev control only)", "commands/jev-control.md", "commands/jev-locate.md (skill name)", "skills/jev-control-mode/ (renamed from skills/jev-control/)", "skills/jev-flow/SKILL.md (skill name on line 12)"]
+ "files_changed_outside_private_jev_control": [
+  "PRIVATE.md (section Jev control only)",
+  "commands/jev-control.md",
+  "commands/jev-locate.md (skill name)",
+  "skills/jev-control-mode/ (renamed from skills/jev-control/)",
+  "skills/jev-flow/SKILL.md (skill name on line 12)"
+ ],
+ "measurer_skill_section": {
+  "load_states": [
+   "identity_observed",
+   "unknown",
+   "refused",
+   "not_attempted"
+  ],
+  "full_load": "always unknown (completeness is never inferred; full_read_observed removed in ratification round 1)",
+  "identity": "a real frontmatter block (--- / key: value lines with name: jev-control-mode / ---) after the Read line numbers are stripped; prose, fence, code line and unclosed block do not count",
+  "totals": "count every event; the lists keep the first 40 records and report omitted counts; the load is computed from the totals",
+  "free_text": "redacted before the cut: capability-shaped strings and the jev-flow sanitizer; result category and record position stay"
+ },
+ "ratification_round_1": {
+  "commit_fixed": "54b020e",
+  "fixes": [
+   "rules: headless start the final message with Incomplete: + scores (measure.mjs accepts only /^Incomplete:/)",
+   "measure.mjs: full_read_observed removed, full_load unknown, real frontmatter, totals and omitted independent of the 40-record lists, free text redacted"
+  ]
+ }
 }

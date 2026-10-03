@@ -71,6 +71,7 @@ import { consumableClaimsName, splitClaims } from "./claimsfile.mjs";
 import { STATUS_ORDER, VERDICT_ORDER } from "../jev-flow/gate-run.mjs";
 import { normalizeBatch } from "./options.mjs";
 import { SKILL_DIR } from "./run-session.mjs";
+import { sanitizeText } from "../jev-flow/sanitize.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
 /** Decide statuses that stop the plan (no grants). */
@@ -83,20 +84,43 @@ const MECHANICAL = new Set(["TodoWrite", "ToolSearch", "Skill", "TaskOutput", "T
 // D47 (R09): the protocol files of the renamed skill. A Read with a confirmed result of exactly SKILL_DIR/SKILL.md, SKILL_DIR/reference/<name>.md or
 // SKILL_DIR/examples/<name>.md (an absolute path, no `..`, `.` or empty segment) is the protocol being read, not a task action: it stays outside the coverage
 // denominator and is counted under coverage.exceptions.skill_protocol_read. A refused or result-less Read, any other path or extension and every Write or Edit
-// keep the classification they had. Nothing here proves the whole skill reached the model: the `skill` section reports what the transcript shows.
+// keep the classification they had. Nothing here proves the whole skill reached the model: the `skill` section reports what the transcript shows, and a
+// transcript cannot show completeness (a Read result may be cut, a Skill result need not carry the file), so `full_load` stays "unknown".
 const SKILL_FILE = /^(?:SKILL\.md|reference\/[^/]+\.md|examples\/[^/]+\.md)$/;
 const SKILL_NAMES = new Set(["jev:jev-control-mode", "jev-control-mode"]);
-const SKILL_IDENTITY = /(?:^|\s)name:\s*jev-control-mode(?:\s|$)/m;
+// A real frontmatter block: a line `---`, then only `key: value` lines (one of them `name: jev-control-mode`), then `---`; the line numbers a Read result
+// puts before each line are stripped first. The name quoted in prose, in a fence or in a code line is not a frontmatter.
+const FRONTMATTER = /^---[ \t]*\n((?:[A-Za-z][\w-]*:[^\n]*\n)+)---[ \t]*(?:\n|$)/gm;
+const SKILL_NAME_LINE = /^name:\s*["']?jev-control-mode["']?\s*$/m;
+function hasSkillFrontmatter(text) {
+  const plain = String(text ?? "").replace(/\r/g, "").replace(/^[ \t]*\d+[\t→][ ]?/gm, "");
+  for (const m of plain.matchAll(FRONTMATTER)) if (SKILL_NAME_LINE.test(m[1])) return true;
+  return false;
+}
 const SKILL_LIST_MAX = 40;
+/** Free text of the `skill` section: capability-shaped strings and recognizable credentials redacted, suspicious lines omitted, then collapsed and cut. */
+function safeText(text, n) {
+  const noCapability = String(text ?? "").replace(/[0-9a-f]{16}\.[0-9a-f]{32}/gi, "[REDACTED:session_capability]");
+  return String(sanitizeText(noCapability).text).replace(/\s+/g, " ").trim().slice(0, n);
+}
 /** The path of a Read below SKILL_DIR as typed, or null; `rel` is the part after SKILL_DIR/, `exact` whether it is one of the protocol files. */
 function skillReadTarget(e) {
   const raw = e.name === "Read" ? e.input?.file_path : null;
   if (typeof raw !== "string" || !raw.startsWith(`${SKILL_DIR}/`)) return null;
   const rel = raw.slice(SKILL_DIR.length + 1);
   // SKILL_FILE allows no further slash and a name of at least one character before `.md`, so no `..`, `.` or empty segment can pass.
-  return { rel: rel.slice(0, 120), exact: SKILL_FILE.test(rel), partial: e.input.offset !== undefined || e.input.limit !== undefined };
+  return { rel: safeText(rel, 120), exact: SKILL_FILE.test(rel), partial: e.input.offset !== undefined || e.input.limit !== undefined };
 }
-const clip = (text, n) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+/** The `skill` section as it starts: the lists are capped at SKILL_LIST_MAX, the totals count every event. */
+const newSkillSection = () => ({
+  load: "not_attempted",
+  full_load: "unknown",
+  totals: { skill_tool_calls: 0, calls_by_level: { identity_observed: 0, result_without_identity: 0, no_result: 0, error: 0 }, skill_reads: 0, reads_by_result: { granted: 0, refused: 0, no_result: 0 }, skill_md_reads: { identity_observed: 0, result_without_identity: 0, refused: 0, no_result: 0 }, exempt_reads: 0 },
+  omitted: { skill_tool_calls: 0, skill_reads: 0 },
+  skill_tool_calls: [],
+  skill_reads: [],
+  uncovered_skill_reads: 0,
+});
 const ACTIONS = new Set(["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob", "LS", "Agent", "Task", "AskUserQuestion"]);
 const GRANTING = new Set(["decide", "search", "page", "approve"]);
 /** Tools whose calls may change the tree (an unclassified tool counts too): a verification does not survive them. */
@@ -954,7 +978,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
     finalization: { done_calls: 0, last_outcome: null, accepted: false, last_accepted_at: null, edits: 0, incomplete_stops: 0, accepted_without_control: 0, stale_results: 0, per_request: [], unknown: [], violations: [] },
     approvals: { calls: 0, bound: 0, unbound: [], refused: 0 },
     receipts: { receipt_verifications: 0, receipt_refusals: 0, refusals_by_reason: {} },
-    skill: { load: "not_attempted", skill_tool_calls: [], skill_reads: [], uncovered_skill_reads: 0 },
+    skill: newSkillSection(),
   };
   const latency = { jev_direct: [], helper: [] };
   const grants = [];
@@ -1469,16 +1493,31 @@ export function audit(records, { threshold = 0.95 } = {}) {
   function onSkillRead(e) {
     const t = skillReadTarget(e);
     if (!t) return false;
+    const sk = out.skill;
     const result = !e.result ? "no_result" : e.result.error ? "refused" : "granted";
     const exempt = t.exact && result === "granted";
-    const text = result === "granted" ? e.result.text : "";
-    if (out.skill.skill_reads.length < SKILL_LIST_MAX) {
-      out.skill.skill_reads.push({ at: e.i, ctx: e.ctx, request: e.req, path: t.rel, result, partial: t.partial, exempt, ...(result === "refused" ? { reason: clip(e.result.text, 120) } : {}), ...(!t.exact ? { why_not_exempt: "not_an_exact_protocol_file" } : {}), ...(t.rel === "SKILL.md" && result === "granted" ? { identity_observed: SKILL_IDENTITY.test(text) } : {}) });
-    }
+    const identity = result === "granted" && t.rel === "SKILL.md" ? hasSkillFrontmatter(e.result.text) : null;
+    sk.totals.skill_reads += 1;
+    sk.totals.reads_by_result[result] += 1;
+    if (t.rel === "SKILL.md") sk.totals.skill_md_reads[result === "granted" ? (identity ? "identity_observed" : "result_without_identity") : result] += 1;
+    if (sk.skill_reads.length < SKILL_LIST_MAX) {
+      sk.skill_reads.push({ at: e.i, ctx: e.ctx, request: e.req, path: t.rel, result, partial: t.partial, exempt, ...(result === "refused" ? { reason: safeText(e.result.text, 120) } : {}), ...(!t.exact ? { why_not_exempt: "not_an_exact_protocol_file" } : {}), ...(identity !== null ? { identity_observed: identity } : {}) });
+    } else sk.omitted.skill_reads += 1;
     if (!exempt) return false;
+    sk.totals.exempt_reads += 1;
     out.coverage.exceptions.skill_protocol_read = (out.coverage.exceptions.skill_protocol_read ?? 0) + 1;
     ctxStats(e.ctx).exceptions += 1;
     return true;
+  }
+
+  /** Record a Skill tool call naming this skill. */
+  function onSkillCall(e) {
+    const sk = out.skill;
+    const level = !e.result ? "no_result" : e.result.error ? "error" : hasSkillFrontmatter(e.result.text) ? "identity_observed" : "result_without_identity";
+    sk.totals.skill_tool_calls += 1;
+    sk.totals.calls_by_level[level] += 1;
+    if (sk.skill_tool_calls.length < SKILL_LIST_MAX) sk.skill_tool_calls.push({ at: e.i, ctx: e.ctx, request: e.req, skill: String(e.input.skill), level, ...(level === "error" ? { reason: safeText(e.result.text, 120) } : {}) });
+    else sk.omitted.skill_tool_calls += 1;
   }
 
   for (const { use, e } of timeline) {
@@ -1501,11 +1540,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (!e.result && GRANTING.has(c.sub)) scope(e).opaque = true;
       } else if (c.cat === "mechanical") {
         out.coverage.mechanical += 1;
-        if (e.name === "Skill" && SKILL_NAMES.has(String(e.input?.skill ?? ""))) {
-          const text = e.result && !e.result.error ? e.result.text : "";
-          const level = !e.result ? "no_result" : e.result.error ? "error" : SKILL_IDENTITY.test(text) ? "identity_observed" : "result_without_identity";
-          if (out.skill.skill_tool_calls.length < SKILL_LIST_MAX) out.skill.skill_tool_calls.push({ at: e.i, ctx: e.ctx, request: e.req, skill: String(e.input.skill), level, ...(level === "error" ? { reason: clip(e.result.text, 120) } : {}) });
-        }
+        if (e.name === "Skill" && SKILL_NAMES.has(String(e.input?.skill ?? ""))) onSkillCall(e);
       } else if (c.cat === "unclassified") {
         out.coverage.unclassified += 1;
         noteMutation(e);
@@ -1581,16 +1616,16 @@ export function audit(records, { threshold = 0.95 } = {}) {
   fin.accepted = tail?.accepted ?? false;
   fin.last_accepted_at = tail?.accepted_at ?? null;
 
-  // What the transcript shows about loading the skill; the identity of the frontmatter is not the delivery of the whole skill.
+  // What the transcript shows about loading the skill, from the totals of every event (the lists are capped). The frontmatter identity is not the delivery
+  // of the whole skill: `full_load` is never anything but "unknown".
   {
-    const calls = out.skill.skill_tool_calls;
-    const reads = out.skill.skill_reads.filter((r) => r.path === "SKILL.md");
     const sk = out.skill;
-    if (reads.some((r) => r.result === "granted" && !r.partial && r.identity_observed)) sk.load = "full_read_observed";
-    else if (calls.some((c) => c.level === "identity_observed")) sk.load = "identity_observed";
-    else if (calls.some((c) => c.level === "result_without_identity" || c.level === "no_result") || reads.some((r) => r.result !== "refused")) sk.load = "unknown";
-    else if (calls.length || reads.length) sk.load = "refused";
-    sk.note = "load: full_read_observed = a whole-file Read of SKILL.md returned its frontmatter; identity_observed = a Skill result with the frontmatter name only (not proof that the whole skill reached the model); unknown = a call or Read without evidence; refused = every attempt errored; not_attempted = none. uncovered_skill_reads counts Reads below the skill directory that stayed uncovered (refused, result-less or not an exact protocol file)";
+    const { calls_by_level: c, skill_md_reads: r } = sk.totals;
+    const attempts = sk.totals.skill_tool_calls + r.identity_observed + r.result_without_identity + r.refused + r.no_result;
+    if (c.identity_observed + r.identity_observed > 0) sk.load = "identity_observed";
+    else if (c.result_without_identity + c.no_result + r.result_without_identity + r.no_result > 0) sk.load = "unknown";
+    else if (attempts > 0) sk.load = "refused";
+    sk.note = `load: identity_observed = a Skill result or a Read of SKILL.md showed the real frontmatter (name: jev-control-mode); this does not prove the whole skill reached the model, so full_load is always unknown; unknown = a call or Read without evidence; refused = every attempt errored; not_attempted = none. totals count every event, the lists keep the first ${SKILL_LIST_MAX} (omitted counts the rest). Free text is redacted. uncovered_skill_reads counts Reads below the skill directory that stayed uncovered (refused, result-less or not an exact protocol file)`;
   }
 
   const cov = out.coverage;
@@ -1630,7 +1665,7 @@ export function toMarkdown(a, label = "session") {
     `- Ordering: ${a.ordering.plans_descending}/${a.ordering.plans} plans descending or tie-broken; action order ${a.ordering.action_order}: ${a.ordering.order_violations.length} order violations`,
     `- Jev calls: direct ${JSON.stringify(a.jev_calls.direct)}, helper-reported attempts ${a.jev_calls.helper_reported_attempts}, state used ${a.jev_calls.state_used}, reserved direct ${a.jev_calls.reserved_direct}, unreserved direct ${a.jev_calls.unreserved_direct.length}, budget violations ${a.jev_calls.violations.length}, budget approvals bound ${a.budget.approvals_bound} / unbound ${a.budget.approvals_unbound}, reservation source mismatches ${a.jev_calls.reservation_source_mismatch.length}; provider calls unknown`,
     `- Finalization: ${a.finalization.done_calls} done calls, last outcome ${a.finalization.last_outcome ?? "none"}, accepted ${a.finalization.accepted}, ${a.finalization.incomplete_stops} incomplete stops, ${a.finalization.unknown.length} unknown, ${a.finalization.violations.length} violations`,
-    `- Skill: load ${a.skill?.load ?? "unknown"}; ${a.skill?.skill_tool_calls.length ?? 0} Skill calls, ${a.skill?.skill_reads.length ?? 0} Reads below the skill directory (${a.coverage.exceptions.skill_protocol_read ?? 0} exempt from coverage, ${a.skill?.uncovered_skill_reads ?? 0} uncovered)`,
+    `- Skill: load ${a.skill?.load ?? "unknown"} (full delivery ${a.skill?.full_load ?? "unknown"}); ${a.skill?.totals.skill_tool_calls ?? 0} Skill calls ${JSON.stringify(a.skill?.totals.calls_by_level ?? {})}, ${a.skill?.totals.skill_reads ?? 0} Reads below the skill directory ${JSON.stringify(a.skill?.totals.reads_by_result ?? {})} (${a.coverage.exceptions.skill_protocol_read ?? 0} exempt from coverage, ${a.skill?.uncovered_skill_reads ?? 0} uncovered); listed ${a.skill?.skill_tool_calls.length ?? 0} calls and ${a.skill?.skill_reads.length ?? 0} reads, omitted ${a.skill?.omitted.skill_tool_calls ?? 0} and ${a.skill?.omitted.skill_reads ?? 0}`,
     `- Latency (ms, median): direct ${a.latency_ms.jev_direct_median}, helper ${a.latency_ms.helper_median}`,
     `- Parent tokens: ${tokens(u.parent)} (${u.parent.messages} messages)`,
     `- Subagent tokens: ${tokens(u.subagent)} (${u.subagent.messages} messages)`,

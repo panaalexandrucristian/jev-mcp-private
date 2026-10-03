@@ -1861,8 +1861,10 @@ describe("R09 (D47): the skill's protocol files and the Skill tool", () => {
     assert.equal(a.skill.skill_reads.length, 3);
     assert.deepEqual(a.skill.skill_reads.map((r) => [r.path, r.result, r.exempt]), [["SKILL.md", "granted", true], ["reference/protocol.md", "granted", true], ["examples/01-single-winner.md", "granted", true]]);
     assert.equal(a.skill.uncovered_skill_reads, 0);
-    assert.equal(a.skill.load, "full_read_observed");
-    assert.match(toMarkdown(a, "x"), /- Skill: load full_read_observed; 0 Skill calls, 3 Reads below the skill directory \(3 exempt from coverage, 0 uncovered\)/);
+    assert.equal(a.skill.load, "identity_observed", "a Read that returned the frontmatter proves the identity, not the whole file");
+    assert.equal(a.skill.full_load, "unknown");
+    assert.deepEqual([a.skill.totals.skill_reads, a.skill.totals.exempt_reads, a.skill.totals.reads_by_result], [3, 3, { granted: 3, refused: 0, no_result: 0 }]);
+    assert.match(toMarkdown(a, "x"), /- Skill: load identity_observed \(full delivery unknown\); 0 Skill calls .*, 3 Reads below the skill directory .*\(3 exempt from coverage, 0 uncovered\); listed 0 calls and 3 reads, omitted 0 and 0/);
   });
   it("without a skill read the output keeps its old shape: no skill_protocol_read key", () => {
     const a = audit([prompt("go"), ...write("src/new.mjs")]);
@@ -1914,14 +1916,39 @@ describe("R09 (D47): the skill's protocol files and the Skill tool", () => {
     assert.equal(a.finalization.edits, 2);
     assert.equal(a.skill.skill_reads.length, 0);
   });
-  it("a partial Read is exempt like any confirmed Read but is never counted as a full load", () => {
+  it("a partial Read is exempt like any confirmed Read; the frontmatter it returns is an identity, never a full load", () => {
     const a = audit([prompt("go"), ...skillRead("SKILL.md", {}, { offset: 1, limit: 20 })]);
     assert.equal(a.coverage.exceptions.skill_protocol_read, 1);
     assert.deepEqual([a.skill.skill_reads[0].partial, a.skill.skill_reads[0].identity_observed], [true, true]);
-    assert.equal(a.skill.load, "unknown", "a partial Read does not prove the whole skill");
+    assert.deepEqual([a.skill.load, a.skill.full_load], ["identity_observed", "unknown"]);
     const noFront = audit([prompt("go"), ...skillRead("SKILL.md", { text: "something else" })]);
     assert.equal(noFront.skill.skill_reads[0].identity_observed, false);
     assert.equal(noFront.skill.load, "unknown");
+  });
+  it("what is not the real frontmatter is no identity: an isolated block is an identity only (no full load), a truncated result, a mention in prose, in a fence or in code, a wrong name or a body without the `---` block are not", () => {
+    const loads = (text) => audit([prompt("go"), ...skillRead("SKILL.md", { text })]).skill;
+    // An isolated frontmatter, with the line numbers of a Read result in front of each line: the identity, and full_load stays unknown.
+    const isolated = loads("     1\u2192---\n     2\u2192name: jev-control-mode\n     3\u2192description: x\n     4\u2192---");
+    assert.deepEqual([isolated.load, isolated.full_load, isolated.skill_reads[0].identity_observed, isolated.skill_reads[0].partial], ["identity_observed", "unknown", true, false]);
+    // A result the tool cut short, without offset or limit: still only the identity; no completeness is read into the missing offset/limit.
+    const cut = loads(`${FRONT}\n[... output truncated: 1200 more lines ...]`);
+    assert.deepEqual([cut.load, cut.full_load, cut.skill_reads[0].partial], ["identity_observed", "unknown", false]);
+    for (const [why, text] of [
+      ["prose", "The skill is called name: jev-control-mode and does things."],
+      ["a line of prose in front of the key", "Use the skill\nname: jev-control-mode"],
+      ["an indented code line", "```\n---\n  name: jev-control-mode\n---\n```"],
+      ["a fence around the block", "```yaml\nname: jev-control-mode\n```"],
+      ["a wrong name", "---\nname: jev-control-modes\ndescription: x\n---\n"],
+      ["another skill", "---\nname: jev-control\ndescription: x\n---\n"],
+      ["an unclosed block", "---\nname: jev-control-mode\ndescription: x\n"],
+      ["a prose line inside the block", "---\nname: jev-control-mode\nthis is prose, not a key\n---\n"],
+    ]) {
+      const sk = loads(text);
+      assert.equal(sk.skill_reads[0].identity_observed, false, why);
+      assert.equal(sk.load, "unknown", why);
+    }
+    const call = audit([prompt("go"), ...skillCall("The skill name: jev-control-mode was loaded.")]).skill;
+    assert.deepEqual([call.skill_tool_calls[0].level, call.load], ["result_without_identity", "unknown"], "a Skill result that only names it proves nothing");
   });
   it("a protocol Read does not disturb the audit of the task: a covered edit stays covered, and a skill Read after a stop is not an action while blocked", () => {
     const plan = [item("o1", "execute", 0.98, "Edit", "src/a.mjs")];
@@ -1945,7 +1972,7 @@ describe("R09 (D47): the skill's protocol files and the Skill tool", () => {
     ]);
     assert.deepEqual(a.skill.skill_tool_calls.map((c) => c.level), ["identity_observed", "result_without_identity", "result_without_identity", "error", "no_result", "identity_observed"]);
     assert.equal(a.skill.skill_tool_calls[3].reason, "Unknown skill");
-    assert.equal(a.skill.load, "identity_observed", "the frontmatter identity is not a full read");
+    assert.deepEqual([a.skill.load, a.skill.full_load], ["identity_observed", "unknown"], "the frontmatter identity is not a full read");
     assert.equal(a.coverage.mechanical, 8, "Skill stays mechanical for coverage");
     assert.equal(a.coverage.denominator, 0);
   });
@@ -1959,13 +1986,78 @@ describe("R09 (D47): the skill's protocol files and the Skill tool", () => {
     const missing = audit([prompt("go"), asst([use("Skill", { skill: "jev:jev-control-mode" })])]);
     assert.equal(missing.skill.load, "unknown");
     const both = audit([prompt("go"), ...skillCall("Unknown skill", { error: true }), ...skillRead("SKILL.md")]);
-    assert.equal(both.skill.load, "full_read_observed", "the fallback Read after a failed Skill call is a full read");
+    assert.equal(both.skill.load, "identity_observed", "the fallback Read after a failed Skill call shows the identity");
+    assert.equal(both.skill.full_load, "unknown");
   });
   it("a subagent's Skill call and Read are attributed to that subagent", () => {
     const a = audit([prompt("go"), ...skillCall(FRONT, { agent: "sub1" }), ...skillRead("SKILL.md", { agent: "sub1" })]);
     assert.equal(a.skill.skill_tool_calls[0].ctx, "sub1");
     assert.equal(a.skill.skill_reads[0].ctx, "sub1");
     assert.equal(a.coverage.by_context.sub1.exceptions, 1);
+  });
+  it("the totals and the load count every event: the 41st event cannot turn an observed attempt into not_attempted, and the lists say what they omit", () => {
+    // 40 Reads of references followed by the SKILL.md Read: the list is full, the Read still counts.
+    const refs = [];
+    for (let k = 0; k < 40; k++) refs.push(...skillRead(`reference/r${k}.md`, { text: "p" }));
+    const a = audit([prompt("go"), ...refs, ...skillRead("SKILL.md")]);
+    assert.equal(a.skill.skill_reads.length, 40);
+    assert.equal(a.skill.totals.skill_reads, 41);
+    assert.equal(a.skill.omitted.skill_reads, 1);
+    assert.deepEqual(a.skill.totals.skill_md_reads, { identity_observed: 1, result_without_identity: 0, refused: 0, no_result: 0 });
+    assert.equal(a.skill.load, "identity_observed", "the Read behind the cap decides the load");
+    assert.equal(a.coverage.exceptions.skill_protocol_read, 41, "the exemption does not depend on the list");
+    assert.equal(a.skill.totals.exempt_reads, 41);
+    const md = toMarkdown(a, "x");
+    assert.match(md, /41 Reads below the skill directory .*"granted":41.*\(41 exempt from coverage, 0 uncovered\); listed 0 calls and 40 reads, omitted 0 and 1/);
+    // 40 Skill calls without evidence followed by one with the identity.
+    const calls = [];
+    for (let k = 0; k < 40; k++) calls.push(...skillCall("Launching skill: jev:jev-control-mode"));
+    const b = audit([prompt("go"), ...calls, ...skillCall(FRONT)]);
+    assert.equal(b.skill.skill_tool_calls.length, 40);
+    assert.equal(b.skill.totals.skill_tool_calls, 41);
+    assert.deepEqual(b.skill.totals.calls_by_level, { identity_observed: 1, result_without_identity: 40, no_result: 0, error: 0 });
+    assert.equal(b.skill.omitted.skill_tool_calls, 1);
+    assert.equal(b.skill.load, "identity_observed");
+    // 40 refused attempts and then a Read without evidence behind the cap: unknown, not refused.
+    const refused = [];
+    for (let k = 0; k < 40; k++) refused.push(...skillRead("SKILL.md", { error: true, text: "denied" }));
+    const c = audit([prompt("go"), ...refused, ...skillRead("SKILL.md", { text: "something else" })]);
+    assert.deepEqual([c.skill.totals.skill_reads, c.skill.omitted.skill_reads, c.skill.load], [41, 1, "unknown"]);
+    // 41 refused attempts are refused, and a mix of 41 uncovered counts all of them.
+    const d = audit([prompt("go"), ...refused, ...skillRead("SKILL.md", { error: true, text: "denied" })]);
+    assert.deepEqual([d.skill.load, d.skill.totals.reads_by_result.refused, d.skill.uncovered_skill_reads], ["refused", 41, 41]);
+  });
+  it("a repeated Skill call or Read counts once in the totals, and parent and subagent contexts are each counted in them", () => {
+    const sk = use("Skill", { skill: "jev:jev-control-mode" });
+    const rd = use("Read", { file_path: `${SKILL_DIR}/SKILL.md` });
+    const a = audit([prompt("go"), asst([sk]), asst([sk]), res(sk, FRONT), asst([rd]), asst([rd]), res(rd, FRONT), ...skillCall(FRONT, { agent: "sub1" }), ...skillRead("SKILL.md", { agent: "sub1" })]);
+    assert.equal(a.skill.totals.skill_tool_calls, 2);
+    assert.equal(a.skill.totals.skill_reads, 2);
+    assert.equal(a.skill.totals.exempt_reads, 2);
+    assert.deepEqual(a.skill.skill_tool_calls.map((c) => c.ctx).sort(), ["main", "sub1"].sort());
+    assert.equal(a.coverage.exceptions.skill_protocol_read, 2);
+    assert.equal(a.skill.load, "identity_observed");
+  });
+  it("the free text of the section is redacted: a session capability or a credential in a refusal reason, a Skill error or a typed path never appears in the JSON or the Markdown", () => {
+    const CAP = "0123456789abcdef.fedcba9876543210fedcba9876543210";
+    const KEY = "sk-ant-api03-" + "Zq7".repeat(10);
+    const GH = "ghp_" + "A1b2C3d4E5".repeat(4);
+    const refused = audit([prompt("go"), ...skillRead("SKILL.md", { error: true, text: `Permission denied for --session-cap ${CAP} and ${KEY} and token=${GH}` })]);
+    const skillErr = audit([prompt("go"), ...skillCall(`Unknown skill, session capability ${CAP} ${KEY}`, { error: true })]);
+    const pathy = audit([prompt("go"), ...call(use("Read", { file_path: `${SKILL_DIR}/reference/${CAP}/${KEY}.txt` }), "content")]);
+    for (const [why, a] of [["read reason", refused], ["skill error", skillErr], ["typed path", pathy]]) {
+      const text = JSON.stringify(a) + "\n" + toMarkdown(a, "x");
+      for (const secret of [CAP, KEY, GH, CAP.split(".")[1]]) assert.ok(!text.includes(secret), `${why}: ${secret.slice(0, 8)}…`);
+    }
+    // The category and the position evidence stay.
+    assert.deepEqual([refused.skill.skill_reads[0].result, refused.skill.skill_reads[0].at, refused.skill.load], ["refused", 1, "refused"]);
+    assert.match(refused.skill.skill_reads[0].reason, /Permission denied for --session-cap \[REDACTED:session_capability\]/);
+    assert.deepEqual([skillErr.skill.skill_tool_calls[0].level, skillErr.skill.skill_tool_calls[0].at], ["error", 1]);
+    assert.match(skillErr.skill.skill_tool_calls[0].reason, /^Unknown skill, session capability \[REDACTED:session_capability\]/);
+    assert.deepEqual([pathy.skill.skill_reads[0].exempt, pathy.skill.skill_reads[0].why_not_exempt, pathy.skill.uncovered_skill_reads], [false, "not_an_exact_protocol_file", 1]);
+    // A capability cut by the 120-character limit would leave a recognizable prefix: the redaction runs before the cut.
+    const long = audit([prompt("go"), ...skillRead("SKILL.md", { error: true, text: `${"x".repeat(100)} ${CAP}` })]);
+    assert.ok(!JSON.stringify(long).includes("0123456789abcdef"), "no prefix of the capability");
   });
   it("a repeated tool_use id counts once", () => {
     const block = use("Read", { file_path: `${SKILL_DIR}/SKILL.md` });
