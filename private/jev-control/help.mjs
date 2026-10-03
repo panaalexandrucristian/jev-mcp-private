@@ -28,8 +28,16 @@ const LINES = {
   approve: "approve --decision <id> --option <id> --message \"<the user's own words naming the option>\" [--question \"<the question a short answer answers>\"]: record a user approval of a below-threshold option.",
   budget: "budget status | reserve --tool <name> [--source main|subagent] | confirm --id <id> | release --id <id> | approve --message \"<the user's words>\": the 25 tools/call attempts per request.",
   receipt: "receipt verify --id <receipt> --option <id> (--action-file <file|-> | --tool T --target t) [--dry-run]: check an option's action right before running it.",
-  done: "done --claims <file|-> [--check '[\"cmd\",\"arg\"]']...: the completion gate; normally run through /jev:jev-done.",
 };
+
+// R07: the completion gate in a headless run, where /tmp, a heredoc and an inline JSON are refused and a claims file left in the repository is part of the diff.
+const DONE = [
+  'done --claims jev-claims.json [--check \'["cmd","arg"]\']...: the completion gate (also /jev:jev-done). Headless: no /tmp, heredoc or inline JSON.',
+  '- Write a NEW file jev-claims.json in the repository root (never overwrite another file): {"request":"<the user\'s request, verbatim>","claims":[{"text":"<one concrete claim>","evidence":["file:<path>","cmd-1"]}],"checks":[["node","--test"]]}',
+  '- evidence: file:<path> (the changed hunks of that file; every changed or new file must be cited), an excerpt id, or cmd-N (the Nth check, run by the gate itself; cite it for any claim about tests).',
+  '- Edit nothing more, then run done --claims jev-claims.json ALONE (a pipe, ; or && voids the grant). The helper reads the file, removes it before the snapshot and prints claims_removed: do not remove it yourself.',
+  '- outcome accepted = done, for that tree only. Otherwise fix, rewrite the WHOLE file and run once more, or end with "Incomplete:" and the outcome. Never rerun for a better verdict.',
+].join("\n");
 
 const OVERVIEW = [
   "Usage: cli.mjs on|off|status|threshold <x>|decide|search|approve|budget|receipt|done  (see the header of cli.mjs)",
@@ -40,6 +48,7 @@ const OVERVIEW = [
 export function helpText(topic) {
   if (topic === "decide") return DECIDE;
   if (topic === "search") return SEARCH;
+  if (topic === "done") return DONE;
   if (typeof topic === "string" && Object.hasOwn(LINES, topic)) return LINES[topic];
   return OVERVIEW;
 }

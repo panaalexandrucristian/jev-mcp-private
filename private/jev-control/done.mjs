@@ -57,6 +57,8 @@ export async function runControlDone(args, ctx) {
     throw error;
   }
   const { code, summary } = result;
+  // R07: the claims file the helper consumed (its name and the sha256 of the bytes it read), whatever the outcome; removal is not acceptance.
+  if (args.extra) Object.assign(summary, args.extra);
   withControlState(ctx.dir, (state) => {
     state.decisions.push({
       id: String(summary.receipt ?? "no-receipt").slice(0, 40),

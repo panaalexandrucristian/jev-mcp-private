@@ -61,11 +61,13 @@
 // unattributed kept apart; a total with missing messages is "unknown" (the
 // observed subtotal is separate).
 // Choices made internally and never visible in the transcript are unmeasurable.
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { actionHash, EDIT_TOOLS, normalizePath, observedDescriptor, parsePlanItem, shortHash } from "./actions.mjs";
 import { BUDGET_SCOPE, findAuthorizations, incrementFor, optionScope } from "./authorization.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult, toolBase } from "./contracts.mjs";
+import { consumableClaimsName, splitClaims } from "./claimsfile.mjs";
 import { normalizeBatch } from "./options.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
@@ -723,6 +725,78 @@ function auxiliaryBatchFiles(events, classOf) {
   return { files: exempt, removals };
 }
 
+/**
+ * The Write events that are claims files of the completion protocol, not edits (R07), and the `done` calls that consumed them. The
+ * helper reads `jev-claims*.json` from the repository root and removes it before the snapshot, so the file is never part of the diff.
+ * The transcript must PROVE it, per request, agent context and path, from confirmed results:
+ * - the Write is confirmed as a creation ("File created successfully"), names a plain `jev-claims*.json` in the session root, and its
+ *   content is a claims object the helper accepts (the runner's schema, optional `checks`); the version is bound at the tool_use (the content);
+ * - a genuine `done --claims <that path>` of the same request and context (alone: no `cd`, pipe, `;` or `&&`) follows, and its result
+ *   is the real helper's summary naming `claims_removed` equal to the file and `claims_sha256` equal to the sha256 of that very
+ *   content (printed only after the removal; a refusal or another version has neither). The verdict does not matter: removal is not acceptance;
+ * - nothing of unknown effects (a Bash that is not one plain read or a lone `rm` of another path, a delegated agent, an unclassified
+ *   tool, another `done` or a flow helper) and no other write, edit or `rm` of the path, by any request or context, ran or overlapped
+ *   between the Write's result and the done's result, or while the Write ran. A `done` of the same path that did not remove the file is not a barrier.
+ * Otherwise the Write is an ordinary edit.
+ */
+function auxiliaryClaimsFiles(events, classOf) {
+  const files = new Set();
+  const removals = new Set();
+  const pathOf = (e) => normalizePath(e.input?.file_path ?? e.input?.notebook_path ?? "", e.root);
+  const hi = (e) => (e.result ? e.result.i : Infinity);
+  const sameDone = (e, target) => {
+    const c = classOf(e);
+    return c.cat === "protocol" && c.sub === "done" && typeof c.flags?.claims === "string" && !c.moved && normalizePath(c.flags.claims, e.root) === target;
+  };
+  const unknownEffects = (e) => {
+    const c = classOf(e);
+    if (c.cat === "unclassified") return true;
+    if (c.cat === "protocol") return c.sub === "done" || c.sub === "flow_helper";
+    if (c.cat !== "action") return false;
+    if (e.name === "Agent" || e.name === "Task") return true;
+    if (e.name !== "Bash") return false;
+    const command = String(e.input.command ?? "");
+    return !(readOnlyBash(command) && !bashChanges(command)) && simpleRm(command, e.root) === null;
+  };
+  const touches = (e, target) => {
+    if (EDIT_TOOLS.includes(e.name) && pathOf(e) === target) return true;
+    return e.name === "Bash" && classOf(e).cat === "action" && simpleRm(e.input.command, e.root) === target;
+  };
+  for (const w of events) {
+    if (w.name !== "Write" || !w.result || w.result.error || !/^File created successfully/.test(w.result.text)) continue;
+    const target = pathOf(w);
+    const name = basename(target);
+    if (!w.root || !consumableClaimsName(name) || target !== normalizePath(name, w.root) || typeof w.input.content !== "string") continue;
+    try {
+      splitClaims(JSON.parse(w.input.content));
+    } catch {
+      continue;
+    }
+    const digest = createHash("sha256").update(w.input.content).digest("hex");
+    // A `done` of the same path whose real result removed nothing (a refusal) changed nothing: not a barrier.
+    const harmless = (x) => {
+      if (!sameDone(x, target) || !x.result) return false;
+      const p = lastJson(x.result.text);
+      return Boolean(p) && typeof p === "object" && !("claims_removed" in p) && (p.jev_flow_gate_run === 1 || p.status === "invalid" || p.status === "refused");
+    };
+    const blocked = (lo, hiPos, except) => events.some((x) => !except.includes(x.id) && x.i <= hiPos && hi(x) >= lo && (touches(x, target) || (unknownEffects(x) && !harmless(x))));
+    if (blocked(w.i, w.result.i, [w.id])) continue;
+    for (const d of events) {
+      if (d.i <= w.result.i || d.req !== w.req || d.ctx !== w.ctx || !sameDone(d, target)) continue;
+      const p = d.result ? lastJson(d.result.text) : null;
+      const confirmed = p?.jev_flow_gate_run === 1 && p.claims_removed === name && p.claims_sha256 === digest;
+      if (confirmed) {
+        if (!blocked(w.result.i, d.result.i, [w.id, d.id])) {
+          files.add(w.id);
+          removals.add(d.id);
+        }
+        break;
+      }
+    }
+  }
+  return { files, removals };
+}
+
 /** Path-like words of a prompt with surrounding quotes, brackets, mention marks, trailing punctuation and :line suffixes removed. */
 function promptPaths(text) {
   const out = [];
@@ -758,6 +832,8 @@ export function audit(records, { threshold = 0.95 } = {}) {
       protocol_compound: 0,
       protocol_batch_files: 0,
       protocol_batch_removals: 0,
+      protocol_claims_files: 0,
+      protocol_claims_removals: 0,
       receipt_verified: 0,
       unverified_binding: 0,
       search_whole_file_reads: 0,
@@ -1296,6 +1372,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
   };
   // The Write and Edit events that are provably batch files of the protocol (R05), decided from confirmed results before the audit.
   const batchFiles = auxiliaryBatchFiles(events, classOf);
+  const claimFiles = auxiliaryClaimsFiles(events, classOf);
 
   for (const { use, e } of timeline) {
     const c = classOf(e);
@@ -1306,6 +1383,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (Number.isFinite(ms)) latency.jev_direct.push(ms);
       } else if (c.cat === "protocol") {
         out.coverage.protocol += 1;
+        if (claimFiles.removals.has(e.id)) out.coverage.protocol_claims_removals += 1;
         if (Number.isFinite(ms)) latency.helper.push(ms);
         if (c.sub === "done") {
           // Every done call replaces the request's finalization state, a missing result included.
@@ -1324,6 +1402,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (c.mention) out.coverage.protocol_compound += 1;
         if (batchFiles.files.has(e.id)) out.coverage.protocol_batch_files += 1;
         else if (batchFiles.removals.has(e.id)) out.coverage.protocol_batch_removals += 1;
+        else if (claimFiles.files.has(e.id)) out.coverage.protocol_claims_files += 1;
         else {
           onAction(e);
           if (MUTATING.has(e.name)) noteMutation(e);

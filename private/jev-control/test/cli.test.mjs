@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { S3 } from "../fixtures/scenarios.mjs";
@@ -7,6 +8,7 @@ import { materialize } from "../fixtures/lib.mjs";
 import { ASK_ID, CONTROL_IDS, GATHER_ID, KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { cleanupLine, compactOut } from "../cli.mjs";
+import { classifyClaimsSource, ClaimsRefused, consumableClaimsName, loadClaims, splitClaims } from "../claimsfile.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
 import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
 
@@ -664,6 +666,26 @@ describe("help without SKILL.md (R04)", () => {
     assert.match(text, /status: selected\/ordered: do exactly the plan items/);
     assert.ok(text.length < 1500, `fits the output cap (${text.length})`);
   });
+  it("R07: `help done` is the headless completion recipe: a new jev-claims.json, done alone, the helper removes it; its example is a claims object the helper accepts", () => {
+    const text = cli(["help", "done"], { env: controlEnv(), cwd: outside() }).stdout;
+    assert.equal(cli(["done", "--help"], { env: controlEnv(), cwd: outside() }).stdout, text);
+    assert.ok(text.length < 1500, `fits the output cap (${text.length})`);
+    assert.ok(text.startsWith("done --claims jev-claims.json"));
+    assert.match(text, /Write a NEW file jev-claims\.json in the repository root \(never overwrite another file\)/);
+    assert.match(text, /run done --claims jev-claims\.json ALONE \(a pipe, ; or && voids the grant\)/);
+    assert.match(text, /removes it before the snapshot and prints claims_removed: do not remove it yourself/);
+    assert.match(text, /outcome accepted = done, for that tree only/);
+    assert.match(text, /end with "Incomplete:"/);
+    const line = text.split("\n").find((l) => l.includes('{"request"'));
+    const example = JSON.parse(line.slice(line.indexOf("{")).replace("<the user's request, verbatim>", "fix it"));
+    const { claims, fileChecks } = splitClaims(example);
+    assert.deepEqual(fileChecks, [["node", "--test"]]);
+    assert.equal(claims.claims.length, 1);
+    assert.equal(consumableClaimsName("jev-claims.json"), true);
+    const on = cli(["on", ...SID], { env: controlEnv(), cwd: makeRepo({ "a.txt": "a\n" }) });
+    assert.match(on.json.next, /completion is \/jev:jev-done or, headless, `help done`/);
+    assert.ok(on.stdout.trim().length < 900);
+  });
   it("`help search`, `search --help`, the other commands and an unknown topic", () => {
     const search = cli(["help", "search"], { env: controlEnv(), cwd: outside() });
     assert.equal(search.code, 0);
@@ -724,6 +746,239 @@ describe("subagents and completion through the CLI", () => {
     assert.equal(r.json.control.threshold, 0.9);
     assert.equal(serverLog(env).filter((l) => l.name === "jev_gate")[0].args.auto_accept, 0.9);
     assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.by_source.gate, 1);
+  });
+});
+
+describe("done consumes a claims file written in the repository root (R07)", () => {
+  const CLAIMS = ["a.js exports a = 2", "b.js is a new file exporting b = 3"];
+  const NAME = "jev-claims.json";
+  const claimsOf = (extra = {}) => ({ request: "set a to 2 and add b", claims: [{ text: CLAIMS[0], evidence: ["file:a.js"] }, { text: CLAIMS[1], evidence: ["file:b.js", "cmd-1"] }], ...extra });
+  const setup = (conf = 0.95, { files = {} } = {}) => {
+    const repo = makeRepo({ "a.js": "export const a = 1;\n", ...files });
+    const env = controlEnv({ script: { gate: [{ result: gateAnswer(0.9, { conf }, CLAIMS) }] } });
+    on(repo, env, ["--threshold", "0.9"]);
+    writeFiles(repo, { "a.js": "export const a = 2;\n", "b.js": "export const b = 3;\n" });
+    return { repo, env };
+  };
+  const write = (repo, obj, name = NAME) => writeFileSync(join(repo, name), typeof obj === "string" ? obj : JSON.stringify(obj));
+  const gateCalls = (env) => serverLog(env).filter((l) => l.name === "jev_gate");
+  const refusedUntouched = (r, repo, env, name = NAME, why = /./) => {
+    assert.equal(r.code, 4, r.stdout);
+    assert.equal(r.json.status, "invalid");
+    assert.match(r.json.message, why);
+    assert.equal(existsSync(join(repo, name)), true, "a refused file is never removed");
+    assert.equal(gateCalls(env).length, 0, "no gate call after a refusal");
+    assert.equal(Object.hasOwn(r.json, "claims_removed"), false);
+  };
+  it("reads the file, removes it before the snapshot, runs its checks and reports the name and sha256", () => {
+    const { repo, env } = setup();
+    const body = JSON.stringify(claimsOf({ checks: [["node", "-e", "process.exit(0)"]] }));
+    write(repo, body);
+    const r = cli(["done", ...SID, "--claims", NAME], { env, cwd: repo });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(r.json.outcome, "accepted");
+    assert.equal(r.json.claims_removed, NAME);
+    assert.equal(r.json.claims_sha256, createHash("sha256").update(body).digest("hex"));
+    assert.equal(existsSync(join(repo, NAME)), false);
+    assert.equal(r.json.checks.length, 1);
+    assert.equal(r.json.checks[0].exit, 0);
+    const sent = gateCalls(env);
+    assert.equal(sent.length, 1);
+    assert.equal(JSON.stringify(sent[0].args).includes(NAME), false, "the claims file is not part of the diff the gate judged");
+    assert.equal(r.json.control.threshold, 0.9);
+    assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.by_source.gate, 1);
+  });
+  it("checks of the file run after the --check flags, in order, and never reach the runner as a claims key", () => {
+    const { repo, env } = setup();
+    write(repo, claimsOf({ checks: [["node", "-e", "process.exit(0)"], ["node", "-e", "process.exit(0)"]] }));
+    const r = cli(["done", ...SID, "--claims", NAME, "--check", '["node","-e","process.exit(0)"]'], { env, cwd: repo });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(r.json.checks.length, 3);
+    assert.equal(Object.hasOwn(r.json, "problems"), false);
+  });
+  it("the name and the hash stay in the result when the gate does not accept (removal is not acceptance)", () => {
+    const { repo, env } = setup(0.5);
+    write(repo, claimsOf());
+    const r = cli(["done", ...SID, "--claims", NAME], { env, cwd: repo });
+    assert.notEqual(r.json.outcome, "accepted", r.stdout);
+    assert.equal(r.json.claims_removed, NAME);
+    assert.match(r.json.claims_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(existsSync(join(repo, NAME)), false);
+  });
+  it("a file outside the work tree and stdin are read as before and never removed", () => {
+    const { repo, env } = setup();
+    const file = join(tempDir(), NAME);
+    writeFileSync(file, JSON.stringify(claimsOf({ checks: [["node", "-e", "process.exit(0)"]] })));
+    const r = cli(["done", ...SID, "--claims", file], { env, cwd: repo });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(existsSync(file), true);
+    assert.equal(Object.hasOwn(r.json, "claims_removed"), false);
+    const { repo: repo2, env: env2 } = setup();
+    const viaStdin = cli(["done", ...SID, "--claims", "-"], { env: env2, cwd: repo2, input: JSON.stringify(claimsOf({ checks: [["node", "-e", "process.exit(0)"]] })) });
+    assert.equal(viaStdin.code, 0, viaStdin.stdout);
+    assert.equal(Object.hasOwn(viaStdin.json, "claims_removed"), false);
+  });
+  it("a tracked, an ignored file, a symlink and a directory are refused and left alone", () => {
+    const tracked = setup(0.95, { files: { [NAME]: JSON.stringify(claimsOf()) } });
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: tracked.env, cwd: tracked.repo }), tracked.repo, tracked.env, NAME, /is tracked by git/);
+    const ignored = setup();
+    writeFiles(ignored.repo, { ".gitignore": `${NAME}\n` });
+    write(ignored.repo, claimsOf());
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: ignored.env, cwd: ignored.repo }), ignored.repo, ignored.env, NAME, /ignored/);
+    const link = setup();
+    const real = join(tempDir(), "real.json");
+    writeFileSync(real, JSON.stringify(claimsOf()));
+    symlinkSync(real, join(link.repo, NAME));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: link.env, cwd: link.repo }), link.repo, link.env, NAME, /regular file/);
+    assert.equal(existsSync(real), true);
+    const dir = setup();
+    mkdirSync(join(dir.repo, NAME));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: dir.env, cwd: dir.repo }), dir.repo, dir.env, NAME, /regular file/);
+  });
+  it("another name, a subdirectory, an absolute path inside the tree and a run from a subdirectory are refused and left alone", () => {
+    const a = setup();
+    write(a.repo, claimsOf(), "claims.json");
+    refusedUntouched(cli(["done", ...SID, "--claims", "claims.json"], { env: a.env, cwd: a.repo }), a.repo, a.env, "claims.json", /jev-claims/);
+    const b = setup();
+    mkdirSync(join(b.repo, "sub"));
+    write(b.repo, claimsOf(), `sub/${NAME}`);
+    refusedUntouched(cli(["done", ...SID, "--claims", `sub/${NAME}`], { env: b.env, cwd: b.repo }), b.repo, b.env, `sub/${NAME}`, /jev-claims/);
+    const c = setup();
+    write(c.repo, claimsOf());
+    refusedUntouched(cli(["done", ...SID, "--claims", join(c.repo, NAME)], { env: c.env, cwd: c.repo }), c.repo, c.env, NAME, /absolute/);
+    const d = setup();
+    mkdirSync(join(d.repo, "sub"));
+    write(d.repo, claimsOf());
+    refusedUntouched(cli(["done", ...SID, "--claims", `../${NAME}`], { env: d.env, cwd: join(d.repo, "sub") }), d.repo, d.env, NAME, /repository root/);
+    const e = setup();
+    write(e.repo, claimsOf(), `jev-claims${"x".repeat(120)}.json`);
+    refusedUntouched(cli(["done", ...SID, "--claims", `jev-claims${"x".repeat(120)}.json`], { env: e.env, cwd: e.repo }), e.repo, e.env, `jev-claims${"x".repeat(120)}.json`, /jev-claims/);
+  });
+  it("invalid JSON, an invalid schema and invalid checks are refused before anything is removed or sent", () => {
+    const a = setup();
+    write(a.repo, "{not json");
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: a.env, cwd: a.repo }), a.repo, a.env, NAME, /not valid JSON/);
+    const b = setup();
+    write(b.repo, { request: "x", claims: [] });
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: b.env, cwd: b.repo }), b.repo, b.env, NAME, /invalid claims/);
+    const c = setup();
+    write(c.repo, claimsOf({ checks: "npm test" }));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: c.env, cwd: c.repo }), c.repo, c.env, NAME, /checks/);
+    const d = setup();
+    write(d.repo, claimsOf({ checks: [["node", ""]] }));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: d.env, cwd: d.repo }), d.repo, d.env, NAME, /argv/);
+    const e = setup();
+    write(e.repo, claimsOf({ checks: Array.from({ length: 9 }, () => ["node", "-v"]) }));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env: e.env, cwd: e.repo }), e.repo, e.env, NAME, /at most/);
+    const f = setup();
+    write(f.repo, claimsOf({ diff: "x" }));
+    const r = cli(["done", ...SID, "--claims", NAME], { env: f.env, cwd: f.repo });
+    refusedUntouched(r, f.repo, f.env, NAME, /invalid claims/);
+    assert.equal(r.stdout.includes("export const a"), false, "an error never echoes the file");
+  });
+  it("a removal that fails stops before the gate", () => {
+    const { repo, env } = setup();
+    write(repo, claimsOf());
+    chmodSync(repo, 0o555);
+    try {
+      const r = cli(["done", ...SID, "--claims", NAME], { env, cwd: repo });
+      assert.equal(r.code, 4, r.stdout);
+      assert.match(r.json.message, /could not be removed/);
+      assert.equal(gateCalls(env).length, 0);
+    } finally {
+      chmodSync(repo, 0o755);
+    }
+    assert.equal(existsSync(join(repo, NAME)), true);
+  });
+  it("an input over 1 MiB and a work tree git cannot read are refused and left alone", () => {
+    const { repo, env } = setup();
+    write(repo, JSON.stringify(claimsOf({ pad: "x".repeat(1024 * 1024) })));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env, cwd: repo }), repo, env, NAME, /1 MiB/);
+    const plain = tempDir();
+    writeFileSync(join(plain, NAME), JSON.stringify(claimsOf()));
+    return assert.rejects(loadClaims(NAME, { cwd: plain, repoRoot: plain, readExternal: () => null }), (e) => e instanceof ClaimsRefused && /git could not say/.test(e.message)).then(() => assert.equal(existsSync(join(plain, NAME)), true));
+  });
+  it("a plain name in a subdirectory is not the root's file: nothing is consumed, either file stays", () => {
+    const { repo, env } = setup();
+    mkdirSync(join(repo, "sub"));
+    write(repo, claimsOf());
+    write(repo, claimsOf(), `sub/${NAME}`);
+    const r = cli(["done", ...SID, "--claims", NAME], { env, cwd: join(repo, "sub") });
+    refusedUntouched(r, repo, env, NAME, /repository root/);
+    assert.equal(existsSync(join(repo, "sub", NAME)), true);
+  });
+  it("a change between the read and the removal is caught whatever its shape: same size and same inode (only the bytes differ), or a replaced file with the same bytes", async () => {
+    const repo = makeRepo({ "a.js": "x\n" });
+    const path = join(repo, NAME);
+    const body = JSON.stringify(claimsOf());
+    const opts = (beforeRemove) => ({ cwd: repo, repoRoot: repo, readExternal: () => null, beforeRemove });
+    writeFileSync(path, body);
+    const sameShape = body.replace("fix", "mix").length === body.length ? body.replace("set a to 2", "set a to 3") : body;
+    assert.equal(sameShape.length, body.length);
+    assert.notEqual(sameShape, body);
+    await assert.rejects(loadClaims(NAME, opts(() => writeFileSync(path, sameShape))), (e) => e instanceof ClaimsRefused && /changed/.test(e.message));
+    assert.equal(existsSync(path), true);
+    writeFileSync(path, body);
+    await assert.rejects(loadClaims(NAME, opts(() => { unlinkSync(path); writeFileSync(path, body); })), (e) => e instanceof ClaimsRefused && /changed/.test(e.message));
+    assert.equal(existsSync(path), true);
+    writeFileSync(path, body);
+    assert.equal((await loadClaims(NAME, opts(undefined))).removed, NAME, "untouched, it is consumed");
+  });
+  it("a git probe that fails is a refusal, whichever probe it is, and an ignored or tracked file says so", async () => {
+    const repo = makeRepo({ "a.js": "x\n" });
+    const path = join(repo, NAME);
+    writeFileSync(path, JSON.stringify(claimsOf()));
+    const ok = { status: 0, stdout: "" };
+    const probe = (tracked, ignored) => (root, args) => (args[0] === "ls-files" ? tracked : ignored);
+    const refused = (git, why) => assert.rejects(loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null, git }), (e) => e instanceof ClaimsRefused && why.test(e.message));
+    await refused(probe({ status: 128, stdout: "" }, { status: 1 }), /whether the claims file is tracked/);
+    await refused(probe({ error: new Error("x"), stdout: "" }, { status: 1 }), /whether the claims file is tracked/);
+    await refused(probe({ status: 0, stdout: `${NAME}\0` }, { status: 1 }), /is tracked by git/);
+    await refused(probe(ok, { status: 128 }), /whether the claims file is ignored/);
+    await refused(probe(ok, { error: new Error("x") }), /whether the claims file is ignored/);
+    await refused(probe(ok, { status: 0 }), /is ignored by git/);
+    assert.equal(existsSync(path), true);
+    assert.equal((await loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null, git: probe(ok, { status: 1 }) })).removed, NAME);
+  });
+  it("with the mode off nothing is read or removed", () => {
+    const repo = makeRepo({ "a.js": "export const a = 1;\n" });
+    const env = controlEnv();
+    write(repo, claimsOf());
+    const r = cli(["done", ...SID, "--claims", NAME], { env, cwd: repo });
+    assert.equal(r.json.status, "refused");
+    assert.equal(existsSync(join(repo, NAME)), true);
+  });
+  it("a file that changes between the read and the removal is not consumed (loadClaims, in process)", async () => {
+    const repo = makeRepo({ "a.js": "x\n" });
+    write(repo, claimsOf());
+    const path = join(repo, NAME);
+    const original = process.cwd();
+    process.chdir(repo);
+    try {
+      const ok = await loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null });
+      assert.equal(ok.removed, NAME);
+      write(repo, claimsOf());
+      await assert.rejects(loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null, beforeRemove: () => writeFileSync(path, JSON.stringify(claimsOf({ request: "another request" }))) }), (e) => e instanceof ClaimsRefused && /changed/.test(e.message));
+      assert.equal(existsSync(path), true);
+    } finally {
+      process.chdir(original);
+    }
+  });
+  it("the name rule and the classification (a symlink pointing in is not an external file)", () => {
+    assert.equal(consumableClaimsName("jev-claims.json"), true);
+    assert.equal(consumableClaimsName("jev-claims-2.json"), true);
+    assert.equal(consumableClaimsName(`jev-claims${"a".repeat(106)}.json`), false, "121 bytes");
+    assert.equal(consumableClaimsName(`jev-claims${"a".repeat(105)}.json`), true, "120 bytes");
+    for (const bad of ["claims.json", "jev-claims.txt", "sub/jev-claims.json", "../jev-claims.json", "jev-claims json", "jev-claims.json/", "Jev-claims.json", "", undefined, 5]) assert.equal(consumableClaimsName(bad), false, String(bad));
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const outside = tempDir();
+    writeFileSync(join(outside, "x.json"), "{}");
+    assert.equal(classifyClaimsSource("-", { cwd: repo, repoRoot: repo }).internal, false);
+    assert.equal(classifyClaimsSource(join(outside, "x.json"), { cwd: repo, repoRoot: repo }).internal, false);
+    symlinkSync(repo, join(outside, "pointing-in"));
+    assert.equal(classifyClaimsSource(join(outside, "pointing-in", NAME), { cwd: repo, repoRoot: repo }).internal, true);
+    assert.equal(classifyClaimsSource(NAME, { cwd: repo, repoRoot: repo }).internal, true, "a file that does not exist yet is judged by where it would be");
+    assert.equal(splitClaims(claimsOf({ checks: [["node", "-v"]] })).fileChecks.length, 1);
   });
 });
 

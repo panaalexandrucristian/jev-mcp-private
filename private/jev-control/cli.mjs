@@ -11,7 +11,7 @@
 //   cli.mjs approve --decision id --option id --message "<the user's words naming the option>" [--question "<the question a short answer answers>"]
 //   cli.mjs budget status|reserve --tool noul [--source main|subagent]|confirm --id x [--ok 0|1] [--ms n]|release --id x|approve --message "<the user's words about the budget>" [--question "<the question a short answer answers>"] [--n 25]
 //   cli.mjs receipt verify --id x --option id (--action-file <file|-> | --tool T --target t) [--dry-run]
-//   cli.mjs done --claims <file|-> [--check '["cmd","arg"]']... [--check-timeout s]
+//   cli.mjs done --claims <file|-> [--check '["cmd","arg"]']... [--check-timeout s]   (a jev-claims*.json in the repository root is consumed: read, checked, removed before the snapshot; `checks` may stand in the file)
 // Common: [--root <repo>] [--session-id <id>] [--session-cap <capability>]. The
 // session is the one in an explicit --session-id (operators and tests), in
 // CLAUDE_CODE_SESSION_ID, or the one proven by the per-session capability the hook
@@ -31,6 +31,7 @@ import { optionScope, readMessage } from "./authorization.mjs";
 import { approveMore, budgetView, confirm, release, reserve, startRequest } from "./budget.mjs";
 import { BudgetedCaller } from "./client.mjs";
 import { checkTools } from "./contracts.mjs";
+import { ClaimsRefused, loadClaims } from "./claimsfile.mjs";
 import { runControlDone } from "./done.mjs";
 import { helpText } from "./help.mjs";
 import { normalizeBatch } from "./options.mjs";
@@ -135,7 +136,7 @@ function print(object) {
 }
 
 // What the model sees right after `on` (R02: two dev sessions switched the mode on and then took no decision and ran no search).
-const NEXT_AFTER_ON = "act only through the helper from now on: several tasks or ways to do one are a decision (decide --file <batch>), a user phrase such as \"choose the order yourself\" hands that choice to Jev, files are found with search, completion is /jev:jev-done; the batch format is in `help decide`, the search form in `help search` (SKILL.md may be unreadable)";
+const NEXT_AFTER_ON = "act only through the helper from now on: several tasks or ways to do one are a decision (decide --file <batch>), a user phrase such as \"choose the order yourself\" hands that choice to Jev, files are found with search, completion is /jev:jev-done or, headless, `help done`; the batch format is in `help decide`, the search form in `help search` (SKILL.md may be unreadable)";
 
 function resolveSession(repoRoot, flags, env) {
   const id = flags["session-id"] ?? env.CLAUDE_CODE_SESSION_ID;
@@ -487,10 +488,19 @@ async function cmdDone(flags, ctx) {
   const state = modeOn(ctx.dir);
   if (!state) return OFF;
   if (!flags.claims) throw new UsageError("--claims is required");
-  const claims = await readJson(flags.claims);
+  // R07: a `jev-claims*.json` written in the repository root is consumed (read, checked, removed) before the snapshot.
+  let loaded;
+  try {
+    loaded = await loadClaims(flags.claims, { cwd: process.cwd(), repoRoot: ctx.repoRoot, readExternal: readJson });
+  } catch (error) {
+    if (error instanceof ClaimsRefused) throw new UsageError(error.message);
+    throw error;
+  }
   const caller = new BudgetedCaller({ dir: ctx.dir, env: ctx.env, source: "gate" });
   const checkTimeoutMs = flags["check-timeout"] ? Number(flags["check-timeout"]) * 1000 : undefined;
-  const { code, text } = await runControlDone({ root: ctx.repoRoot, claims, checks: flags.check ?? [], checkTimeoutMs }, { T: state.threshold.value, caller, dir: ctx.dir, sessionKey: ctx.key, env: ctx.env });
+  const checks = [...(flags.check ?? []), ...loaded.checks.map((argv) => JSON.stringify(argv))];
+  const extra = loaded.removed ? { claims_removed: loaded.removed, claims_sha256: loaded.sha256 } : {};
+  const { code, text } = await runControlDone({ root: ctx.repoRoot, claims: loaded.claims, checks, checkTimeoutMs, extra }, { T: state.threshold.value, caller, dir: ctx.dir, sessionKey: ctx.key, env: ctx.env });
   process.stdout.write(`${text}\n`);
   return { raw: true, code };
 }

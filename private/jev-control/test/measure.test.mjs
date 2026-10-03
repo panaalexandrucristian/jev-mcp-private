@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -664,6 +665,129 @@ describe("Jev calls and budget", () => {
       assert.equal(wrongMain.jev_calls.reservation_source_mismatch[0].declared, "main");
       assert.equal(wrongMain.jev_calls.reserved_direct, 0);
     });
+  });
+});
+
+describe("only a claims file the transcript proves the helper consumed is not an edit (R07)", () => {
+  const CP = `${ROOT}/jev-claims.json`;
+  const CLAIMS = json({ request: "fix it", claims: [{ text: "pageCount rounds up", evidence: ["file:src/a.mjs", "cmd-1"] }], checks: [["node", "--test"]] });
+  const sha = (text) => createHash("sha256").update(text).digest("hex");
+  const created = (path) => `File created successfully at: ${path} (file state is current in your context)`;
+  const writeClaims = (content = CLAIMS, { path = CP, text = created(path), ...opts } = {}) => call(use("Write", { file_path: path, content }), text, opts);
+  const doneOut = (extra = {}, outcome = "accepted") => json({ jev_flow_gate_run: 1, outcome, verdict: outcome, status: "ok", exit: outcome === "accepted" ? 0 : 2, receipt: "x", jev_calls: 1, snapshot: "abc", control: { threshold: 0.95, accepted_strictly_above: true }, claims_removed: "jev-claims.json", claims_sha256: sha(CLAIMS), ...extra });
+  const doneClaims = (out = doneOut(), file = "jev-claims.json", opts = {}) => call(helper("done", `--claims ${file}`), out, opts);
+  const final = () => asst([{ type: "text", text: "Done." }]);
+  const verdict = (a) => ({ files: a.coverage.protocol_claims_files, removals: a.coverage.protocol_claims_removals, edits: a.finalization.edits, violations: a.finalization.violations.length });
+  const plan = [item("o1", "execute", 0.99, "Edit", "src/a.mjs")];
+  const editing = [...call(helper("decide", "--file /tmp/b.json"), json({ status: "selected", decision_id: "d1", kind: "edit", threshold: 0.95, round: 1, calls: 1, tiebreaks: 0, receipt: "r1", plan, plan_total: 1 })), ...edit("src/a.mjs")];
+  const seen = (...tail) => audit([prompt("go"), ...editing, ...tail, final()]);
+  it("a created claims file and the done that removed it are helper input; the repository edit is still the only edit and the completion stands", () => {
+    const a = seen(...writeClaims(), ...doneClaims());
+    assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 1, violations: 0 });
+    assert.equal(a.finalization.accepted, true);
+    assert.equal(a.coverage.uncovered, 0);
+  });
+  it("the verdict does not matter: a removal that preceded a review (exit 2, an error result) is still a removal", () => {
+    const a = seen(...writeClaims(), ...doneClaims(`Exit code 2\n${doneOut({}, "needs_evidence")}`, "jev-claims.json", { error: true }));
+    assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 1, violations: 1 });
+    assert.equal(a.finalization.accepted, false);
+  });
+  it("a refusal that removed nothing is no barrier: the next done that consumed the same version proves it", () => {
+    const refusal = json({ status: "invalid", message: "invalid checks" });
+    const a = seen(...writeClaims(), ...doneClaims(refusal, "jev-claims.json", { error: true }), ...doneClaims());
+    assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 1, violations: 0 });
+    assert.equal(seen(...writeClaims(), ...doneClaims(refusal, "jev-claims.json", { error: true })).coverage.protocol_claims_files, 0, "no removal is ever shown");
+  });
+  it("without the confirmation of THIS version the Write is an edit: no done, a refusal, another hash or no hash, a missing result", () => {
+    for (const [why, tail] of [
+      ["no done", []],
+      ["a refusal only", doneClaims(json({ status: "invalid", message: "x" }))],
+      ["another version", doneClaims(doneOut({ claims_sha256: sha("other") }))],
+      ["no hash", doneClaims(doneOut({ claims_sha256: undefined }))],
+      ["another name", doneClaims(doneOut({ claims_removed: "jev-claims-2.json" }))],
+      ["not the helper's summary", doneClaims(json({ outcome: "accepted", claims_removed: "jev-claims.json", claims_sha256: sha(CLAIMS) }))],
+      ["a done with no result", [asst([helper("done", "--claims jev-claims.json")])]],
+    ]) {
+      const a = seen(...writeClaims(), ...tail);
+      assert.equal(a.coverage.protocol_claims_files, 0, why);
+      assert.equal(a.finalization.edits, 2, why);
+    }
+  });
+  it("the write must be a creation of a plain jev-claims*.json in the session root with a claims object", () => {
+    const named = (path, content = CLAIMS, text) => seen(...writeClaims(content, { path, ...(text ? { text } : {}) }), ...doneClaims(doneOut(), path.replace(`${ROOT}/`, "")));
+    assert.equal(named(CP).coverage.protocol_claims_files, 1);
+    assert.equal(named(`${ROOT}/jev-claims-2.json`).coverage.protocol_claims_files, 0, "the done confirms jev-claims.json, not this file");
+    assert.equal(named(`${ROOT}/claims.json`).coverage.protocol_claims_files, 0, "another name");
+    assert.equal(named(`${ROOT}/sub/jev-claims.json`).coverage.protocol_claims_files, 0, "a subdirectory");
+    assert.equal(named(CP, CLAIMS, `The file ${CP} has been updated successfully.`).coverage.protocol_claims_files, 0, "an overwrite is not a creation");
+    assert.equal(named(CP, json({ claims: [] })).coverage.protocol_claims_files, 0, "not a claims object the helper accepts");
+    assert.equal(named(CP, "not json").coverage.protocol_claims_files, 0);
+    assert.equal(named("/elsewhere/jev-claims.json").coverage.protocol_claims_files, 0, "outside the session root");
+  });
+  it("only a lone done of the same path, request and context counts", () => {
+    const wrong = (...tail) => seen(...writeClaims(), ...tail).coverage.protocol_claims_files;
+    assert.equal(wrong(...doneClaims(doneOut(), "jev-claims-2.json")), 0, "another path");
+    assert.equal(wrong(...call(bash(`node "${CLI} done --claims jev-claims.json && echo ok`), doneOut())), 0, "a compound command is an ordinary action");
+    assert.equal(wrong(...call(bash(`node "${CLI} done --claims jev-claims.json | head -5`), doneOut())), 0, "a pipe from it");
+    assert.equal(wrong(...call(bash(`cd sub && node "${CLI} done --claims jev-claims.json`), doneOut())), 0, "a cd: the path is not the transcript's");
+    assert.equal(wrong(...doneClaims(doneOut(), "jev-claims.json", { agent: "agent-1" })), 0, "another agent context");
+    assert.equal(seen(...writeClaims(), ...doneClaims(doneOut(), `${ROOT}/jev-claims.json`)).coverage.protocol_claims_files, 1, "the absolute spelling names the same path");
+  });
+  it("another write, edit or rm of the path, or a call of unknown effects, between the write and the done leaves an edit", () => {
+    const barrier = (...mid) => seen(...writeClaims(), ...mid, ...doneClaims()).coverage.protocol_claims_files;
+    assert.equal(barrier(), 1);
+    assert.equal(barrier(...call(use("Edit", { file_path: CP, old_string: "fix", new_string: "mend" }), "ok")), 0, "an edit of the file");
+    assert.equal(barrier(...call(use("Write", { file_path: CP, content: CLAIMS }), `The file ${CP} has been updated successfully.`)), 0, "a rewrite");
+    assert.equal(barrier(...call(bash("rm -f jev-claims.json"), "")), 0, "a removal of the file");
+    assert.equal(barrier(...call(bash("node --test"), "ok")), 0, "node --test may write files");
+    assert.equal(barrier(...call(use("Agent", { prompt: "go" }), "ok")), 0, "a delegate");
+    assert.equal(barrier(...call(use("Edit", { file_path: `${ROOT}/src/b.mjs`, old_string: "a", new_string: "b" }), "ok")), 1, "an edit of another file does not touch this one");
+    assert.equal(barrier(...call(bash("cat src/a.mjs"), "x")), 1, "a plain read");
+    assert.equal(barrier(...call(bash("rm -f jev-batch.json"), "")), 1, "a lone rm of another path");
+    assert.equal(seen(...writeClaims(), ...call(helper("done", "--claims other.json"), doneOut()), ...doneClaims()).coverage.protocol_claims_files, 0, "another done may have changed the tree");
+  });
+  it("a call that overlaps the write or the done is not proven away", () => {
+    const rec = (blocks) => asst(blocks);
+    const w = use("Write", { file_path: CP, content: CLAIMS });
+    const t = bash("node --test");
+    const overlapWrite = audit([prompt("go"), ...editing, rec([w, t]), res(w, created(CP)), res(t, "ok"), ...doneClaims(), final()]);
+    assert.equal(overlapWrite.coverage.protocol_claims_files, 0, "a test run in the same message as the write");
+    const d = helper("done", "--claims jev-claims.json");
+    const t2 = bash("node --test");
+    const overlapDone = audit([prompt("go"), ...editing, ...writeClaims(), rec([d, t2]), res(d, doneOut()), res(t2, "ok"), final()]);
+    assert.equal(overlapDone.coverage.protocol_claims_files, 0, "a test run in the same message as the done");
+  });
+  it("a result that names another file, or a content the helper would refuse, proves nothing", () => {
+    const forged = (name, content) => seen(...writeClaims(content, { path: `${ROOT}/${name}` }), ...doneClaims(doneOut({ claims_removed: name, claims_sha256: sha(content) }), name)).coverage.protocol_claims_files;
+    assert.equal(forged("jev-claims.json", CLAIMS), 1);
+    assert.equal(forged("claims.json", CLAIMS), 0, "a name the helper does not consume");
+    assert.equal(forged("jev-claims.json", json({ claims: [] })), 0, "a content the helper refuses");
+    assert.equal(forged("jev-claims.json", json({ request: "x", claims: [{ text: "t", evidence: ["file:a"] }], checks: "npm test" })), 0, "invalid checks");
+  });
+  it("a done that removed some other version of the file is not a harmless refusal", () => {
+    const a = seen(...writeClaims(), ...doneClaims(doneOut({ claims_sha256: sha("another version") })), ...doneClaims());
+    assert.equal(a.coverage.protocol_claims_files, 0);
+    const b = seen(...writeClaims(), ...doneClaims(json({ status: "invalid", message: "x" })), ...doneClaims(json("opaque")), ...doneClaims());
+    assert.equal(b.coverage.protocol_claims_files, 0, "a done whose result is opaque may have done anything");
+  });
+  it("a call that ran beside the write and ended before it did still overlaps it", () => {
+    const w = use("Write", { file_path: CP, content: CLAIMS });
+    const t = bash("node --test");
+    const a = audit([prompt("go"), ...editing, asst([w, t]), res(t, "ok"), res(w, created(CP)), ...doneClaims(), final()]);
+    assert.equal(a.coverage.protocol_claims_files, 0);
+  });
+  it("a done that came before the write cannot consume it: the same content written again after a removal stays an edit until its own done", () => {
+    const a = seen(...writeClaims(), ...doneClaims(), ...writeClaims());
+    assert.equal(a.coverage.protocol_claims_files, 1);
+    assert.equal(a.finalization.edits, 2, "the repository edit and the second claims file");
+  });
+  it("a second claims version needs its own creation and its own confirmed removal", () => {
+    const second = json({ request: "fix it again", claims: [{ text: "x", evidence: ["file:src/a.mjs"] }] });
+    const a = seen(...writeClaims(), ...doneClaims(), ...writeClaims(second), ...doneClaims(doneOut({ claims_sha256: sha(second) })));
+    assert.equal(a.coverage.protocol_claims_files, 2);
+    assert.equal(a.coverage.protocol_claims_removals, 2);
+    const stale = seen(...writeClaims(), ...doneClaims(), ...writeClaims(second), ...doneClaims());
+    assert.equal(stale.coverage.protocol_claims_files, 1, "the second done confirms the first version, not the second");
   });
 });
 
