@@ -8,9 +8,10 @@ import { materialize } from "../fixtures/lib.mjs";
 import { ASK_ID, CONTROL_IDS, GATHER_ID, KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { cleanupLine, compactOut } from "../cli.mjs";
+import { runControlDone } from "../done.mjs";
 import { classifyClaimsSource, ClaimsRefused, consumableClaimsName, loadClaims, splitClaims } from "../claimsfile.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
-import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
+import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, git, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
 
 const SID = ["--session-id", "cli-session-1"];
 const on = (repo, env, extra = []) => cli(["on", ...SID, "--priorities", "fix it with the smallest change", ...extra], { env, cwd: repo });
@@ -674,6 +675,7 @@ describe("help without SKILL.md (R04)", () => {
     assert.match(text, /Write a NEW file jev-claims\.json in the repository root \(never overwrite another file\)/);
     assert.match(text, /run done --claims jev-claims\.json ALONE \(a pipe, ; or && voids the grant\)/);
     assert.match(text, /removes it before the snapshot and prints claims_removed: do not remove it yourself/);
+    assert.match(text, /Headless runs refused a \/tmp file and a heredoc; an inline JSON is avoided for the same risk\./);
     assert.match(text, /outcome accepted = done, for that tree only/);
     assert.match(text, /end with "Incomplete:"/);
     const line = text.split("\n").find((l) => l.includes('{"request"'));
@@ -939,6 +941,141 @@ describe("done consumes a claims file written in the repository root (R07)", () 
     await refused(probe(ok, { status: 0 }), /is ignored by git/);
     assert.equal(existsSync(path), true);
     assert.equal((await loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null, git: probe(ok, { status: 1 }) })).removed, NAME);
+  });
+  // R07 council (A): on a case-insensitive file system (macOS) `jev-claims.json` reaches a TRACKED `Jev-Claims.json`.
+  const caseInsensitive = (() => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "Probe-Case.txt"), "x");
+    return existsSync(join(dir, "probe-case.txt"));
+  })();
+  it("another case of the name is another file: the root must hold exactly that name, whatever the file system", () => {
+    const { repo, env } = setup();
+    write(repo, claimsOf(), "Jev-Claims.json");
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME], { env, cwd: repo }), repo, env, "Jev-Claims.json", /exactly that name/);
+    const missing = setup();
+    const none = cli(["done", ...SID, "--claims", NAME], { env: missing.env, cwd: missing.repo });
+    assert.equal(none.code, 4, none.stdout);
+    assert.match(none.json.message, /exactly that name/);
+    assert.equal(gateCalls(missing.env).length, 0);
+  });
+  it("a committed Jev-Claims.json is never consumed through jev-claims.json (a case-insensitive file system reaches it)", { skip: caseInsensitive ? false : "this file system is case-sensitive: the exact-name test above covers it" }, () => {
+    const body = JSON.stringify(claimsOf());
+    const { repo, env } = setup(0.95, { files: { "Jev-Claims.json": body } });
+    const r = cli(["done", ...SID, "--claims", NAME], { env, cwd: repo });
+    refusedUntouched(r, repo, env, "Jev-Claims.json");
+    assert.equal(readFileSync(join(repo, "Jev-Claims.json"), "utf8"), body, "the tracked file is untouched");
+    assert.equal(git(repo, "status", "--porcelain", "--", "Jev-Claims.json").trim(), "", "git sees no change to the tracked file");
+  });
+  it("the index is also searched for the name up to case: a tracked variant in the listing is a refusal, a git error stays one", async () => {
+    const repo = makeRepo({ "a.js": "x\n" });
+    const path = join(repo, NAME);
+    writeFileSync(path, JSON.stringify(claimsOf()));
+    const seen = [];
+    const probe = (variant, folded = { status: 0, stdout: variant ? "Jev-Claims.json\0" : "" }) => (root, args) => {
+      seen.push(args.join(" "));
+      if (args[0] === "check-ignore") return { status: 1 };
+      return args.some((x) => x.startsWith(":(icase")) ? folded : { status: 0, stdout: "" };
+    };
+    const refused = (git, why) => assert.rejects(loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null, git }), (e) => e instanceof ClaimsRefused && why.test(e.message));
+    await refused(probe(true), /a tracked file has the same name up to case/);
+    await refused(probe(false, { status: 128, stdout: "" }), /up to case/);
+    await refused(probe(false, { error: new Error("x"), stdout: "" }), /up to case/);
+    assert.equal(existsSync(path), true);
+    assert.ok(seen.some((x) => x.includes(`:(icase,literal)${NAME}`)), "the lookup is case-insensitive and literal");
+    assert.equal((await loadClaims(NAME, { cwd: repo, repoRoot: repo, readExternal: () => null, git: probe(false) })).removed, NAME);
+  });
+  it("the real git lists a committed variant by its icase lookup (the lookup itself, not the injected one)", () => {
+    const repo = makeRepo({ "Jev-Claims.json": "{}\n" });
+    const listed = git(repo, "ls-files", "--cached", "-z", "--", `:(icase,literal)${NAME}`);
+    assert.equal(listed, "Jev-Claims.json\0");
+  });
+  it("invalid --check values and more than eight checks in all are refused before the removal, with a compact JSON that never echoes the input", () => {
+    const marker = "SECRET-MARKER-123";
+    const a = setup();
+    write(a.repo, claimsOf());
+    const r = cli(["done", ...SID, "--claims", NAME, "--check", `not json ${marker}`], { env: a.env, cwd: a.repo });
+    refusedUntouched(r, a.repo, a.env, NAME, /--check must be a JSON array/);
+    assert.equal(r.stdout.includes(marker), false, "the bad --check is not echoed");
+    const b = setup();
+    write(b.repo, claimsOf({ checks: Array.from({ length: 8 }, () => ["node", "-v"]) }));
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME, "--check", '["node","-v"]'], { env: b.env, cwd: b.repo }), b.repo, b.env, NAME, /at most 8 checks in all/);
+    const c = setup();
+    write(c.repo, claimsOf({ checks: Array.from({ length: 7 }, () => ["node", "-e", "process.exit(0)"]) }));
+    const ok = cli(["done", ...SID, "--claims", NAME, "--check", '["node","-e","process.exit(0)"]'], { env: c.env, cwd: c.repo });
+    assert.equal(ok.code, 0, ok.stdout);
+    assert.equal(ok.json.checks.length, 8, "eight in all is the limit, not a refusal");
+    const d = setup();
+    write(d.repo, claimsOf());
+    refusedUntouched(cli(["done", ...SID, "--claims", NAME, "--check", "[]"], { env: d.env, cwd: d.repo }), d.repo, d.env, NAME, /--check must be a JSON array/);
+  });
+  it("a refusal never projects the keys or values of the input: a marker in an unknown key, a check or a claim does not come back, and the file stays", () => {
+    const marker = "KEY-MARKER-987";
+    const a = setup();
+    write(a.repo, claimsOf({ [marker]: "v" }));
+    const r = cli(["done", ...SID, "--claims", NAME], { env: a.env, cwd: a.repo });
+    refusedUntouched(r, a.repo, a.env, NAME, /invalid claims/);
+    assert.equal(`${r.stdout}${r.stderr}`.includes(marker), false);
+    const b = setup();
+    write(b.repo, claimsOf({ checks: [["node", ""], marker] }));
+    const r2 = cli(["done", ...SID, "--claims", NAME], { env: b.env, cwd: b.repo });
+    refusedUntouched(r2, b.repo, b.env, NAME, /argv/);
+    assert.equal(`${r2.stdout}${r2.stderr}`.includes(marker), false);
+    assert.throws(() => splitClaims({ request: "r", claims: [], [marker]: 1 }), (e) => e instanceof ClaimsRefused && !e.message.includes(marker));
+  });
+  it("an error AFTER the consumption still reports the removal, never an acceptance: a handled one (the gate is disabled) and an unexpected one", () => {
+    const handled = setup();
+    writeFiles(handled.repo, { ".jev-flow-denylist": "*\n" });
+    write(handled.repo, claimsOf());
+    const h = cli(["done", ...SID, "--claims", NAME], { env: handled.env, cwd: handled.repo });
+    assert.equal(h.code, 3, h.stdout);
+    assert.equal(h.json.outcome, "disabled");
+    assert.equal(h.json.claims_removed, NAME);
+    assert.match(h.json.claims_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(existsSync(join(handled.repo, NAME)), false);
+    assert.equal(gateCalls(handled.env).length, 0);
+    const crash = setup();
+    write(crash.repo, claimsOf());
+    const dir = controlSessionDir(crash.repo, "cli-session-1", crash.env);
+    chmodSync(dir, 0o555); // the budget cannot be written: the gate throws after the file is gone
+    let c;
+    try {
+      c = cli(["done", ...SID, "--claims", NAME], { env: crash.env, cwd: crash.repo });
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+    assert.equal(c.code, 1, c.stdout);
+    assert.equal(c.json.status, "error");
+    assert.notEqual(c.json.outcome, "accepted");
+    assert.equal(c.json.claims_removed, NAME);
+    assert.match(c.json.claims_sha256, /^[0-9a-f]{64}$/);
+    assert.match(c.json.message, /nothing was accepted/);
+    assert.equal(existsSync(join(crash.repo, NAME)), false);
+    // An error BEFORE the consumption keeps the file and says nothing of a removal (the same crash with a refused name).
+    const before = setup();
+    write(before.repo, claimsOf(), "claims.json");
+    const dir2 = controlSessionDir(before.repo, "cli-session-1", before.env);
+    chmodSync(dir2, 0o555);
+    let b;
+    try {
+      b = cli(["done", ...SID, "--claims", "claims.json"], { env: before.env, cwd: before.repo });
+    } finally {
+      chmodSync(dir2, 0o755);
+    }
+    refusedUntouched(b, before.repo, before.env, "claims.json");
+  });
+  it("runControlDone reports a handled error after a consumption as a JSON line with the removal (no empty output)", async () => {
+    const repo = makeRepo({ "a.js": "x\n" });
+    const extra = { claims_removed: NAME, claims_sha256: "a".repeat(64) };
+    const bad = await runControlDone({ root: repo, claims: claimsOf(), checks: ["not json"], extra }, { T: 0.9, caller: null, dir: tempDir(), sessionKey: "0123456789abcdef", env: controlEnv() });
+    assert.equal(bad.code, 4);
+    assert.notEqual(bad.text, "");
+    const out = JSON.parse(bad.text);
+    assert.equal(out.outcome, "invalid_input");
+    assert.equal(out.claims_removed, NAME);
+    assert.equal(out.problems.join().includes("not json"), false);
+    const nowhere = await runControlDone({ root: tempDir(), claims: claimsOf(), checks: [], extra }, { T: 0.9, caller: null, dir: tempDir(), sessionKey: "0123456789abcdef", env: controlEnv() });
+    assert.equal(JSON.parse(nowhere.text).claims_sha256, extra.claims_sha256);
+    assert.equal(nowhere.code, 4);
   });
   it("with the mode off nothing is read or removed", () => {
     const repo = makeRepo({ "a.js": "export const a = 1;\n" });

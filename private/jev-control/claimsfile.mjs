@@ -1,11 +1,12 @@
 // R07: the completion gate must be reachable in a headless session, where a Write outside the working directory (the
-// /tmp claims file of /jev:jev-done) is refused, a heredoc or an inline JSON with braces and quotes is refused ("brace with quote
-// character") and a claims file left in the repository would itself be one more new file of the diff the gate judges.
+// /tmp claims file of /jev:jev-done) and a heredoc with braces and quotes were refused (R06), an inline JSON on the command line is
+// avoided for the same risk (it was never tried) and a claims file left in the repository would itself be one more new file of the diff
+// the gate judges.
 // So `done --claims jev-claims*.json` CONSUMES a claims file the model wrote in the repository root: the helper reads it, checks it,
 // and removes it before the gate takes its snapshot. Anything else keeps the old behaviour (an external file or `-` is read and left
 // alone) or is refused without touching it: a file the helper may delete must be provably the model's scratch file.
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseCheckArgv, RUN_LIMITS, validateRunInput } from "../jev-flow/gate-run.mjs";
@@ -45,11 +46,18 @@ function runGit(root, args) {
   return spawnSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1024 * 1024 });
 }
 
-/** Tracked or ignored files are never consumed; a git failure is a refusal, never proof that the file is untracked. */
+/**
+ * Tracked or ignored files are never consumed; a git failure is a refusal, never proof that the file is untracked. On a case-insensitive
+ * file system `jev-claims.json` reaches a tracked `Jev-Claims.json` that an exact lookup does not list, so the index is also searched
+ * for the name up to case (the exact entry is required in the directory by loadClaims; this is the second line of defence).
+ */
 function untrackedAndNotIgnored(root, name, git) {
   const listed = git(root, ["ls-files", "--cached", "-z", "--", name]);
   if (listed.error || listed.status !== 0) return { ok: false, why: "git could not say whether the claims file is tracked" };
   if (listed.stdout !== "") return { ok: false, why: "the claims file is tracked by git" };
+  const folded = git(root, ["ls-files", "--cached", "-z", "--", `:(icase,literal)${name}`]);
+  if (folded.error || folded.status !== 0) return { ok: false, why: "git could not say whether a tracked file has the same name up to case" };
+  if (folded.stdout !== "") return { ok: false, why: "a tracked file has the same name up to case" };
   const ignored = git(root, ["check-ignore", "-q", "--", name]);
   if (ignored.error) return { ok: false, why: "git could not say whether the claims file is ignored" };
   if (ignored.status === 1) return { ok: true };
@@ -77,8 +85,6 @@ function refuse(message) {
   throw new ClaimsRefused(message);
 }
 
-const clip = (text, n) => String(text).slice(0, n);
-
 /** Validate a parsed claims object: the runner's own schema check plus an optional `checks` list of argv arrays. */
 export function splitClaims(object, { validate = true } = {}) {
   if (!object || typeof object !== "object" || Array.isArray(object)) {
@@ -98,17 +104,19 @@ export function splitClaims(object, { validate = true } = {}) {
       }
     }
   }
-  const problems = validate ? validateRunInput(claims) : [];
-  if (problems.length) refuse(`invalid claims: ${problems.slice(0, 3).map((p) => clip(p, 80)).join("; ")}`);
+  // A fixed message: the keys and values of the input are never projected into an error.
+  if (validate && validateRunInput(claims).length) refuse("invalid claims: the object needs request (the user's request, a non-empty string) and claims (a non-empty array of {text, evidence}); excerpts (an array) and checks are optional; no other key");
   return { claims, fileChecks };
 }
 
 /**
  * Read `source` for `done`. Returns {claims, checks (argv arrays from the file), removed?, sha256?}.
  * `readExternal(source)` is the old reader (`-` and files outside the work tree); it is never followed by a removal.
+ * `cliChecks` are the `--check` values (JSON argv strings): they come first, then those of the file, and the whole list is validated
+ * before the removal, so an input the runner would reject never costs the file.
  * A refusal throws ClaimsRefused and leaves every file as it was.
  */
-export async function loadClaims(source, { cwd, repoRoot, readExternal, beforeRemove, git = runGit }) {
+export async function loadClaims(source, { cwd, repoRoot, readExternal, beforeRemove, cliChecks = [], git = runGit }) {
   const where = classifyClaimsSource(source, { cwd, repoRoot });
   if (!where.internal) {
     // `-` and a file outside the work tree: read as before and never removed; only a `checks` key is taken out of the object.
@@ -119,6 +127,14 @@ export async function loadClaims(source, { cwd, repoRoot, readExternal, beforeRe
   if (where.cwdReal !== where.rootReal) refuse("run the helper from the repository root to use a claims file inside it");
   if (!consumableClaimsName(source)) refuse("a claims file inside the work tree must be named jev-claims*.json (letters, digits, . _ -; at most 120 bytes) in the repository root; any other path would change the snapshot");
   const path = resolve(where.rootReal, source);
+  // On a case-insensitive file system another spelling of the name reaches another file: the directory must hold this exact name.
+  let names;
+  try {
+    names = readdirSync(where.rootReal);
+  } catch {
+    names = [];
+  }
+  if (!names.includes(source)) refuse("the claims file must exist in the repository root with exactly that name");
   let st;
   try {
     st = lstatSync(path);
@@ -142,6 +158,14 @@ export async function loadClaims(source, { cwd, repoRoot, readExternal, beforeRe
     refuse("input is not valid JSON; the file was left as it is");
   }
   const { claims, fileChecks } = splitClaims(object);
+  for (const value of cliChecks) {
+    try {
+      parseCheckArgv(value);
+    } catch {
+      refuse("--check must be a JSON array of non-empty strings (argv, no shell); the claims file was left as it is");
+    }
+  }
+  if (cliChecks.length + fileChecks.length > RUN_LIMITS.maxChecks) refuse(`at most ${RUN_LIMITS.maxChecks} checks in all (--check and the file's checks); the claims file was left as it is`);
   // Remove only the version that was read and validated: the same file, the same bytes.
   const digest = sha256(raw);
   if (beforeRemove) beforeRemove(); // test seams: `beforeRemove` runs a change between the read and the removal, `git` replaces the git probe

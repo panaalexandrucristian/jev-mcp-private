@@ -30,9 +30,9 @@ const LINES = {
   receipt: "receipt verify --id <receipt> --option <id> (--action-file <file|-> | --tool T --target t) [--dry-run]: check an option's action right before running it.",
 };
 
-// R07: the completion gate in a headless run, where /tmp, a heredoc and an inline JSON are refused and a claims file left in the repository is part of the diff.
+// R07: the completion gate in a headless run, where a /tmp file and a heredoc were refused (R06), an inline JSON is avoided for the same risk and a claims file left in the repository is part of the diff.
 const DONE = [
-  'done --claims jev-claims.json [--check \'["cmd","arg"]\']...: the completion gate (also /jev:jev-done). Headless: no /tmp, heredoc or inline JSON.',
+  'done --claims jev-claims.json [--check \'["cmd","arg"]\']...: the completion gate (also /jev:jev-done). Headless runs refused a /tmp file and a heredoc; an inline JSON is avoided for the same risk.',
   '- Write a NEW file jev-claims.json in the repository root (never overwrite another file): {"request":"<the user\'s request, verbatim>","claims":[{"text":"<one concrete claim>","evidence":["file:<path>","cmd-1"]}],"checks":[["node","--test"]]}',
   '- evidence: file:<path> (the changed hunks of that file; every changed or new file must be cited), an excerpt id, or cmd-N (the Nth check, run by the gate itself; cite it for any claim about tests).',
   '- Edit nothing more, then run done --claims jev-claims.json ALONE (a pipe, ; or && voids the grant). The helper reads the file, removes it before the snapshot and prints claims_removed: do not remove it yourself.',

@@ -731,7 +731,35 @@ describe("only a claims file the transcript proves the helper consumed is not an
     assert.equal(wrong(...call(bash(`node "${CLI} done --claims jev-claims.json | head -5`), doneOut())), 0, "a pipe from it");
     assert.equal(wrong(...call(bash(`cd sub && node "${CLI} done --claims jev-claims.json`), doneOut())), 0, "a cd: the path is not the transcript's");
     assert.equal(wrong(...doneClaims(doneOut(), "jev-claims.json", { agent: "agent-1" })), 0, "another agent context");
-    assert.equal(seen(...writeClaims(), ...doneClaims(doneOut(), `${ROOT}/jev-claims.json`)).coverage.protocol_claims_files, 1, "the absolute spelling names the same path");
+    // R07 council (B3): the helper consumes only the plain name, so only that spelling of the argument proves a consumption.
+    for (const spelling of [`${ROOT}/jev-claims.json`, "./jev-claims.json", "sub/../jev-claims.json"]) assert.equal(wrong(...doneClaims(doneOut(), spelling)), 0, `the spelling ${spelling} is not what the helper consumes`);
+    assert.equal(wrong(...doneClaims(doneOut(), "jev-claims.json")), 1, "the plain name");
+  });
+  it("a gate report without the removal is no harmless refusal: the checks may have run (R07 council, B4)", () => {
+    const failed = `Exit code 2\n${doneOut({ claims_removed: undefined, claims_sha256: undefined }, "checks_failed")}`;
+    const a = seen(...writeClaims(), ...doneClaims(failed, "jev-claims.json", { error: true }), ...doneClaims());
+    assert.equal(a.coverage.protocol_claims_files, 0, "the write stays an edit");
+    assert.equal(a.coverage.protocol_claims_removals, 0);
+    assert.equal(a.finalization.edits, 2, "the claims file counts as an edit, as before R07");
+    const refusal = json({ status: "invalid", message: "x" });
+    assert.equal(seen(...writeClaims(), ...doneClaims(refusal, "jev-claims.json", { error: true }), ...doneClaims()).coverage.protocol_claims_files, 1, "the helper's own pre-gate refusal is harmless");
+    assert.equal(seen(...writeClaims(), ...doneClaims(json({ status: "refused", message: "x", jev_flow_gate_run: 1 }), "jev-claims.json", { error: true }), ...doneClaims()).coverage.protocol_claims_files, 0, "a refusal that carries a gate report is not pre-gate");
+  });
+  it("is_error policy (R07 council, B5): only a complete report that agrees with how the call ended proves the consumption", () => {
+    const files = (out, opts = {}) => seen(...writeClaims(), ...doneClaims(out, "jev-claims.json", opts)).coverage.protocol_claims_files;
+    assert.equal(files(doneOut()), 1, "accepted, exit 0, not an error");
+    assert.equal(files(`Exit code 2\n${doneOut({}, "needs_evidence")}`, { error: true }), 1, "not accepted, exit 2, an error that says Exit code 2");
+    assert.equal(files(doneOut(), { error: true }), 0, "accepted but an error");
+    assert.equal(files(doneOut({}, "needs_evidence")), 0, "not accepted but no error");
+    assert.equal(files(`Exit code 3\n${doneOut({ exit: 3 }, "unavailable")}`, { error: true }), 0, "an operational outcome");
+    assert.equal(files(`Exit code 2\n${doneOut({ exit: 2 }, "not_ready")}`, { error: true }), 0, "an operational outcome with the not-accepted exit");
+    assert.equal(files(`Exit code 4\n${doneOut({}, "needs_evidence")}`, { error: true }), 0, "the text and the report disagree on the exit");
+    assert.equal(files(doneOut({}, "needs_evidence"), { error: true }), 0, "an error without the Exit code line");
+    assert.equal(files(`Exit code 4\n${doneOut({ exit: 4 }, "snapshot_changed")}`, { error: true }), 0, "an exit other than 2");
+    assert.equal(files(`Exit code 2\n${doneOut({ exit: undefined }, "needs_evidence")}`, { error: true }), 0, "no exit in the report");
+    assert.equal(files(`Exit code 2\n${doneOut({ exit: 2 }, "accepted")}`, { error: true }), 0, "accepted with the not-accepted exit contradicts itself");
+    assert.equal(files(`Exit code 2\n${doneOut({ outcome: undefined }, "needs_evidence")}`, { error: true }), 0, "no outcome in the report");
+    assert.equal(files(`Exit code 2\n${json({ status: "error", outcome: "error", exit: 1, claims_removed: "jev-claims.json", claims_sha256: sha(CLAIMS) })}`, { error: true }), 0, "the helper's internal-error line has no gate report");
   });
   it("another write, edit or rm of the path, or a call of unknown effects, between the write and the done leaves an edit", () => {
     const barrier = (...mid) => seen(...writeClaims(), ...mid, ...doneClaims()).coverage.protocol_claims_files;

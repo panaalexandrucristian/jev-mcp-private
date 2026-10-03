@@ -731,14 +731,30 @@ function auxiliaryBatchFiles(events, classOf) {
  * The transcript must PROVE it, per request, agent context and path, from confirmed results:
  * - the Write is confirmed as a creation ("File created successfully"), names a plain `jev-claims*.json` in the session root, and its
  *   content is a claims object the helper accepts (the runner's schema, optional `checks`); the version is bound at the tool_use (the content);
- * - a genuine `done --claims <that path>` of the same request and context (alone: no `cd`, pipe, `;` or `&&`) follows, and its result
- *   is the real helper's summary naming `claims_removed` equal to the file and `claims_sha256` equal to the sha256 of that very
- *   content (printed only after the removal; a refusal or another version has neither). The verdict does not matter: removal is not acceptance;
+ * - a genuine `done --claims <the plain name>` of the same request and context (alone: no `cd`, pipe, `;` or `&&`; the argument is the
+ *   plain `jev-claims*.json` name the helper consumes, never an absolute path, a `./` prefix or a subdirectory) follows, and its result
+ *   is the real helper's COHERENT summary naming `claims_removed` equal to the file and `claims_sha256` equal to the sha256 of that very
+ *   content (printed only after the removal; a refusal or another version has neither). Coherent: either a success (not an error)
+ *   with outcome accepted and exit 0, or an error result whose text starts with `Exit code 2` (the helper's not-accepted exit) and whose
+ *   summary agrees (exit 2, an outcome that is not accepted and not an operational one: disabled, invalid_input, not_ready, unavailable,
+ *   error). Removal is not acceptance, so the verdict does not matter, but an operational error, a report that contradicts its exit or
+ *   an accepted report that is an error proves nothing (R07 council, B5: a documented narrowing of "an error result still counts");
  * - nothing of unknown effects (a Bash that is not one plain read or a lone `rm` of another path, a delegated agent, an unclassified
  *   tool, another `done` or a flow helper) and no other write, edit or `rm` of the path, by any request or context, ran or overlapped
- *   between the Write's result and the done's result, or while the Write ran. A `done` of the same path that did not remove the file is not a barrier.
+ *   between the Write's result and the done's result, or while the Write ran. A `done` of the same path that is provably refused BEFORE
+ *   the gate (the helper's own `{"status":"invalid"|"refused"}` line, no gate report) is not a barrier; a gate report without the removal
+ *   is one (checks may have run).
  * Otherwise the Write is an ordinary edit.
  */
+const OPERATIONAL_OUTCOMES = new Set(["disabled", "invalid_input", "not_ready", "unavailable", "error"]);
+/** The helper's report of a consumed file is complete and agrees with how the call ended (see auxiliaryClaimsFiles). */
+function coherentReport(result, p) {
+  if (typeof p.outcome !== "string" || !Number.isInteger(p.exit)) return false;
+  if (!result.error) return p.outcome === "accepted" && p.exit === 0;
+  const m = /^Exit code (\d+)\n/.exec(String(result.text));
+  return m !== null && Number(m[1]) === p.exit && p.exit === 2 && p.outcome !== "accepted" && !OPERATIONAL_OUTCOMES.has(p.outcome);
+}
+
 function auxiliaryClaimsFiles(events, classOf) {
   const files = new Set();
   const removals = new Set();
@@ -746,7 +762,7 @@ function auxiliaryClaimsFiles(events, classOf) {
   const hi = (e) => (e.result ? e.result.i : Infinity);
   const sameDone = (e, target) => {
     const c = classOf(e);
-    return c.cat === "protocol" && c.sub === "done" && typeof c.flags?.claims === "string" && !c.moved && normalizePath(c.flags.claims, e.root) === target;
+    return c.cat === "protocol" && c.sub === "done" && typeof c.flags?.claims === "string" && !c.moved && consumableClaimsName(c.flags.claims) && normalizePath(c.flags.claims, e.root) === target;
   };
   const unknownEffects = (e) => {
     const c = classOf(e);
@@ -777,14 +793,14 @@ function auxiliaryClaimsFiles(events, classOf) {
     const harmless = (x) => {
       if (!sameDone(x, target) || !x.result) return false;
       const p = lastJson(x.result.text);
-      return Boolean(p) && typeof p === "object" && !("claims_removed" in p) && (p.jev_flow_gate_run === 1 || p.status === "invalid" || p.status === "refused");
+      return Boolean(p) && typeof p === "object" && !("claims_removed" in p) && !("jev_flow_gate_run" in p) && (p.status === "invalid" || p.status === "refused");
     };
     const blocked = (lo, hiPos, except) => events.some((x) => !except.includes(x.id) && x.i <= hiPos && hi(x) >= lo && (touches(x, target) || (unknownEffects(x) && !harmless(x))));
     if (blocked(w.i, w.result.i, [w.id])) continue;
     for (const d of events) {
       if (d.i <= w.result.i || d.req !== w.req || d.ctx !== w.ctx || !sameDone(d, target)) continue;
       const p = d.result ? lastJson(d.result.text) : null;
-      const confirmed = p?.jev_flow_gate_run === 1 && p.claims_removed === name && p.claims_sha256 === digest;
+      const confirmed = p?.jev_flow_gate_run === 1 && p.claims_removed === name && p.claims_sha256 === digest && coherentReport(d.result, p);
       if (confirmed) {
         if (!blocked(w.result.i, d.result.i, [w.id, d.id])) {
           files.add(w.id);

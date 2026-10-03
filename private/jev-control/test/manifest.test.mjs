@@ -90,12 +90,13 @@ describe("skill and command", () => {
     assert.match(read("commands", "jev-done.md"), /strictly above `T`/);
   });
   it("R07: the headless completion recipe is in SKILL.md and in the jev-control paragraph of jev-done.md, and nothing else of jev-done.md moved", () => {
-    assert.match(skill, /In a headless run \(no `\/tmp`, no heredoc, no JSON with braces on the command line\) the recipe is `cli\.mjs help done`: Write a NEW `jev-claims\.json` in the repository root/);
+    assert.match(skill, /In a headless run \(a `\/tmp` file and a heredoc were refused there; a JSON with braces on the command line is avoided for the same risk\) the recipe is `cli\.mjs help done`: Write a NEW `jev-claims\.json` in the repository root/);
     assert.match(skill, /run `cli\.mjs done --claims jev-claims\.json` ALONE; the helper reads it, removes it before the snapshot and prints `claims_removed` \(never remove it yourself; another name, a subdirectory, a tracked, ignored or symlinked file is refused and left alone\)/);
     const done = read("commands", "jev-done.md");
     assert.match(done, /\*\*Headless runs \(R07\):\*\*/);
     assert.match(done, /Write a NEW file `jev-claims\.json` in the repository root \(never overwrite another file\)/);
     assert.match(done, /removes it BEFORE the snapshot and prints `claims_removed` and `claims_sha256` \(that is not acceptance: only the `outcome` is\)/);
+    assert.match(done, /a heredoc with braces and quotes were refused there, a JSON with braces and quotes on the command line is avoided for the same risk \(it was never tried\)/);
     assert.match(done, /a file outside the work tree \(`\/tmp`\) and `-` are read as before and never removed/);
     // The upstream procedure text outside the jev-control paragraph keeps the /tmp claims file of steps 4 and 5.
     assert.match(done, /1\. \*\*Freeze the snapshot\.\*\*/);

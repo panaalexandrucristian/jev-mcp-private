@@ -491,7 +491,7 @@ async function cmdDone(flags, ctx) {
   // R07: a `jev-claims*.json` written in the repository root is consumed (read, checked, removed) before the snapshot.
   let loaded;
   try {
-    loaded = await loadClaims(flags.claims, { cwd: process.cwd(), repoRoot: ctx.repoRoot, readExternal: readJson });
+    loaded = await loadClaims(flags.claims, { cwd: process.cwd(), repoRoot: ctx.repoRoot, readExternal: readJson, cliChecks: flags.check ?? [] });
   } catch (error) {
     if (error instanceof ClaimsRefused) throw new UsageError(error.message);
     throw error;
@@ -500,9 +500,17 @@ async function cmdDone(flags, ctx) {
   const checkTimeoutMs = flags["check-timeout"] ? Number(flags["check-timeout"]) * 1000 : undefined;
   const checks = [...(flags.check ?? []), ...loaded.checks.map((argv) => JSON.stringify(argv))];
   const extra = loaded.removed ? { claims_removed: loaded.removed, claims_sha256: loaded.sha256 } : {};
-  const { code, text } = await runControlDone({ root: ctx.repoRoot, claims: loaded.claims, checks, checkTimeoutMs, extra }, { T: state.threshold.value, caller, dir: ctx.dir, sessionKey: ctx.key, env: ctx.env });
-  process.stdout.write(`${text}\n`);
-  return { raw: true, code };
+  let done;
+  try {
+    done = await runControlDone({ root: ctx.repoRoot, claims: loaded.claims, checks, checkTimeoutMs, extra }, { T: state.threshold.value, caller, dir: ctx.dir, sessionKey: ctx.key, env: ctx.env });
+  } catch (error) {
+    if (!loaded.removed) throw error;
+    // The file is already gone: the model must still read that, and that nothing was accepted (fixed words, never the error's own).
+    process.stdout.write(`${JSON.stringify({ status: "error", outcome: "error", exit: EXIT.internal, message: "the gate stopped on an internal error after the claims file was consumed; nothing was accepted, write the file again to retry", ...extra })}\n`);
+    return { raw: true, code: EXIT.internal };
+  }
+  process.stdout.write(`${done.text}\n`);
+  return { raw: true, code: done.code };
 }
 
 // Flags of the helper (parseFlags and the help detection in main share them).

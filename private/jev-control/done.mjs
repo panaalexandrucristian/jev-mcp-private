@@ -29,15 +29,20 @@ export function gatePolicy({ T, caller }) {
  */
 export async function runControlDone(args, ctx) {
   const env = ctx.env ?? process.env;
+  // Every handled return is a JSON report; one after a consumed claims file also names the file (the removal is never lost, and never acceptance).
+  const early = (code, summary) => {
+    Object.assign(summary, { outcome: summary.status, exit: code }, args.extra);
+    return { code, summary, text: compactSummary(summary) };
+  };
   const repoRoot = gitTopLevel(args.root);
-  if (!repoRoot) return { code: EXIT.invalid, summary: { status: "invalid_input", problems: [`not a git work tree: ${args.root}`] }, text: "" };
+  if (!repoRoot) return early(EXIT.invalid, { status: "invalid_input", problems: ["not a git work tree"] });
   const attempt = startAttempt({ repoRoot, sessionKeyArg: ctx.sessionKey, env });
   let checks;
   try {
     checks = (args.checks ?? []).map(parseCheckArgv);
   } catch (error) {
     attempt.close();
-    if (error instanceof RunError) return { code: EXIT.invalid, summary: { status: "invalid_input", problems: [error.message] }, text: "" };
+    if (error instanceof RunError) return early(EXIT.invalid, { status: "invalid_input", problems: ["a --check is not a JSON array of non-empty strings (argv, no shell)"] });
     throw error;
   }
   let result;
