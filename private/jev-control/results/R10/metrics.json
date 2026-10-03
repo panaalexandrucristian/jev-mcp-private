@@ -1,0 +1,338 @@
+{
+  "round": "R10",
+  "kind": "sealed finals on the frozen R09 product; campaign summary",
+  "live": true,
+  "live_sessions_used": 2,
+  "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
+  "product_commit": "6b188153c8b0556d7af55be625c4795ce4d420e9",
+  "branch": "jev-control-skill",
+  "versions": {
+    "plugin": "0.7.0",
+    "node": "v22.23.1",
+    "claude_code": "2.1.288",
+    "model": "claude-sonnet-5-5",
+    "jev_mcp_server": "jev-mcp@0.13.0"
+  },
+  "plugin_snapshot_sha256_at_launch": {
+    "plugin.json": "302328d4734fd1645e47575ae3931b15c674be30a06d5f2159cdd43c91be1dd3",
+    "hooks.json": "5cc80abaf62b34e6f9cd7d8cfe05ba1bf346fcf374e3e7c75588583c9d641c15",
+    "marketplace.json": "a4a693798868f320ba6a1093cb531d770d292cde8840e6ac63d305149d61b83d"
+  },
+  "answers": {
+    "D42": "no forcing; skill followed willingly",
+    "D45": "one Read rule for the skill directory",
+    "D47": "confirmed protocol-file Reads outside coverage",
+    "D48": "product frozen; analysis, limits and documentation only",
+    "D49": "F1 then F2, default threshold, exact dev prompt, reserve only for infrastructure failure",
+    "D50": "tokens side by side as different tasks, no savings, same-scenario comparison unmeasured"
+  },
+  "ledger": {
+    "before": 15,
+    "after": 17,
+    "cap": 20,
+    "left": 3,
+    "lines": {
+      "16": {
+        "time": "08:01:06Z",
+        "session": "F1"
+      },
+      "17": {
+        "time": "08:01:31Z",
+        "session": "F2"
+      }
+    },
+    "reserve_used": 0,
+    "lock_after": "none"
+  },
+  "scenarios": {
+    "f1": {
+      "id": "f1-ambiguous-ttl",
+      "scenario_hash": "8c22eb66a2d77d6f4eb92ab6cfb4ce2965b4b6b4e1a1f9689ff07d391062c464",
+      "equals_sealed": true,
+      "prompt_sha256": "6c7dd5e3b091a307359be83469dcc633cfdb0ca4bad0b144a20e78ec73f277af",
+      "pristine_oracle": "fail",
+      "reference_oracle": "pass"
+    },
+    "f2": {
+      "id": "f2-inclusive-range",
+      "scenario_hash": "86a9887b1b17149044a724b344b9b050fd7cd50dbcdfb78ea9ee0933381b7d56",
+      "equals_sealed": true,
+      "prompt_sha256": "61c790632d31b8a32bf35b8af47dc205e8dd863a532733ee0eb1bf32d0bd4d50",
+      "pristine_oracle": "fail",
+      "reference_oracle": "pass"
+    }
+  },
+  "config": {
+    "threshold": 0.95,
+    "threshold_source": "default",
+    "launch_threshold_flag": false,
+    "prompt": "Let Jev control this session. + blank line + scenario prompt unchanged",
+    "d45_read_rule": "unchanged ALLOWED_TOOLS",
+    "max_turns": 40
+  },
+  "isolation": {
+    "mcp_servers": [
+      "plugin:jev:jev connected"
+    ],
+    "tools": 37,
+    "permission_mode": "acceptEdits",
+    "plugin": "jev@inline 0.7.0",
+    "personal_hooks_absent": "not demonstrated"
+  },
+  "sessions": {
+    "f1": {
+      "ledger": 16,
+      "state": "done",
+      "exit": 0,
+      "timed_out": false,
+      "group_gone": true,
+      "oracle": "pass",
+      "oracle_detail": {
+        "mentionsPath": true,
+        "wrongPath": false,
+        "overlaps": true,
+        "clean": true
+      },
+      "final_message_starts_incomplete": "not applicable (answered)",
+      "turns": 6,
+      "unique_assistant_messages": 5,
+      "cost_usd": 0.0851316,
+      "stream_duration_ms": 14877,
+      "wrapper_wall_ms": 16606,
+      "permission_denials": 0,
+      "events": {
+        "hook_context": "transcript:10",
+        "skill_call": "transcript:19",
+        "skill_result": "transcript:20",
+        "skill_meta_message": "transcript:21",
+        "on": "transcript:27-28",
+        "search": "transcript:30-31",
+        "read": "transcript:33-34",
+        "final": "transcript:36"
+      },
+      "helper": {
+        "on": 1,
+        "help": 0,
+        "decide": 0,
+        "search": 1,
+        "done": 0,
+        "attempts": 1,
+        "limit": 25,
+        "median_latency_ms": 1877
+      },
+      "search_result": {
+        "status": "found",
+        "jev_used": "rerank",
+        "hits": 1,
+        "top_score": 0.98
+      },
+      "coverage": {
+        "numerator": 1,
+        "denominator": 1,
+        "uncovered": 0,
+        "unknown": 0,
+        "search_whole_file_reads": 1,
+        "unverified_binding": 1
+      },
+      "skill": {
+        "load": "unknown",
+        "full_load": "unknown",
+        "skill_tool_calls": 1,
+        "level": "result_without_identity",
+        "skill_reads": 0,
+        "uncovered_skill_reads": 0
+      },
+      "usage_parent": {
+        "input": 10,
+        "output": 661,
+        "cache_read": 101068,
+        "cache_creation": 14572,
+        "messages": 5
+      },
+      "usage_subagent": "unknown",
+      "stream_equals_measure": true
+    },
+    "f2": {
+      "ledger": 17,
+      "state": "done",
+      "exit": 0,
+      "timed_out": false,
+      "group_gone": true,
+      "oracle": "fail",
+      "oracle_detail": {
+        "a": 4,
+        "b": 0,
+        "c": 8,
+        "d": true
+      },
+      "final_message_starts_incomplete": false,
+      "turns": 7,
+      "unique_assistant_messages": 5,
+      "cost_usd": 0.0912038,
+      "stream_duration_ms": 21162,
+      "wrapper_wall_ms": 22395,
+      "permission_denials": 0,
+      "events": {
+        "hook_context": "transcript:10",
+        "skill_call": "transcript:19",
+        "skill_result": "transcript:20",
+        "skill_meta_message": "transcript:21",
+        "on": "transcript:27-29",
+        "own_listing": "transcript:28-30",
+        "search": "transcript:33-34",
+        "widen": "transcript:37-38",
+        "final": "transcript:41"
+      },
+      "helper": {
+        "on": 1,
+        "help": 0,
+        "decide": 0,
+        "search": 2,
+        "done": 0,
+        "attempts": 2,
+        "limit": 25,
+        "median_latency_ms": 995
+      },
+      "search_result": {
+        "first": "none_eligible (evaluations 1)",
+        "second": "search_budget_exhausted (evaluations 2)",
+        "scores_printed": false
+      },
+      "coverage": {
+        "numerator": 0,
+        "denominator": 1,
+        "uncovered": 1,
+        "uncovered_reason": "no_grant (the model's own ls; git ls-files)",
+        "unknown": 0
+      },
+      "finalization": {
+        "edits": 0,
+        "unknown": "possible_changes_unvalidated"
+      },
+      "skill": {
+        "load": "unknown",
+        "full_load": "unknown",
+        "skill_tool_calls": 1,
+        "level": "result_without_identity",
+        "skill_reads": 0,
+        "uncovered_skill_reads": 0
+      },
+      "usage_parent": {
+        "input": 10,
+        "output": 1144,
+        "cache_read": 101499,
+        "cache_creation": 14861,
+        "messages": 5
+      },
+      "usage_subagent": "unknown",
+      "stream_equals_measure": true
+    }
+  },
+  "skill_delivery_manual_derivation": {
+    "skill_result": "Launching skill: jev:jev-control-mode (tool result only)",
+    "body_message": "next transcript record, isMeta user message, 15989 bytes",
+    "equals_skill_md_body_except": "one line with ${CLAUDE_PLUGIN_ROOT} substituted",
+    "frontmatter_included": false,
+    "note": "derived by hand; not what the audit reports (skill.load unknown); full_load stays unknown by design"
+  },
+  "answers_to_open_r09_items": {
+    "skill_tool_delivers_skill_md_in_p": "yes in both sessions (manual derivation)",
+    "read_rule_granted": "unmeasured (no Read of a skill file attempted)",
+    "rules_reached_the_model": "yes (transcript:10 and the on result)",
+    "effect_of_rules": "unmeasured at n=1",
+    "live_gate": "not exercised (done_calls 0)"
+  },
+  "tokens_context": "side by side as different tasks (D50); no savings or percentages; same-scenario comparison unmeasured; R01 pilot not comparable",
+  "tokens_parent_in_out_cache_read_cache_creation": {
+    "R02_baseline_S1_ledger2": [
+      10,
+      768,
+      81292,
+      8561
+    ],
+    "R02_baseline_S2_ledger3": [
+      10,
+      1613,
+      83427,
+      9475
+    ],
+    "R02_dev_S1_ledger4": [
+      14,
+      1506,
+      123812,
+      10498
+    ],
+    "R02_dev_S2_ledger5": [
+      14,
+      1890,
+      123608,
+      10482
+    ],
+    "R08_dev_S1_ledger14": [
+      8,
+      1077,
+      65435,
+      9196
+    ],
+    "R08_dev_S2_ledger15": [
+      36,
+      5021,
+      383902,
+      15375
+    ],
+    "R10_F1_ledger16": [
+      10,
+      661,
+      101068,
+      14572
+    ],
+    "R10_F2_ledger17": [
+      10,
+      1144,
+      101499,
+      14861
+    ]
+  },
+  "defect": {
+    "chosen_with": "jev_decide",
+    "confidence": 0.99,
+    "selected": "search_dead_end",
+    "candidates": [
+      "search_dead_end",
+      "measurer_skill_identity",
+      "headless_final_prefix",
+      "gate_never_live",
+      "evidence_depth"
+    ],
+    "statement": "a strict-threshold search stop can leave a small, fully listed repository without an eligible file, with no scores or candidates shown, so the controlled task stays undone (F2)",
+    "implemented": false,
+    "reason_not_implemented": "D48: the R09 product is frozen; recommendation for future work"
+  },
+  "campaign": {
+    "sessions_used": 17,
+    "cap": 20,
+    "reserve_unused": 3,
+    "controlled_live_sessions": 14,
+    "oracle_pass": 9,
+    "oracle_fail": 5,
+    "note": "descriptive, different scenarios, thresholds and revisions; not a rate"
+  },
+  "unmeasured": [
+    "Read rule granted in -p",
+    "live completion gate",
+    "slash command in -p",
+    "delegation (not chosen)",
+    "provider-internal Jev calls (unknown)",
+    "personal hooks absent",
+    "same-scenario token baseline for F1/F2",
+    "effect of the compact rules"
+  ],
+  "files_changed": [
+    "private/jev-control/results/R10/summary.md",
+    "private/jev-control/results/R10/metrics.json",
+    "private/jev-control/results/README.md",
+    "skills/jev-control-mode/reference/evaluation.md",
+    "PRIVATE.md (section Jev control only)"
+  ],
+  "product_changed": false
+}
