@@ -3,7 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { DEV_SCENARIOS } from "../fixtures/scenarios.mjs";
-import { asksForControl, handleControlHook, mergeOutputs, reminder } from "../hook.mjs";
+import { NATURAL_MARKER, asksForControl, handleControlHook, mergeOutputs, reminder } from "../hook.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
 import { HOOK_CLI, controlEnv, makeRepo, run } from "./helpers.mjs";
 
@@ -134,11 +134,24 @@ describe("the control hook: a reminder only, never a block", () => {
     assert.match(natural, /Read \/[^ ]+\/skills\/jev-control\/SKILL\.md \(the Skill tool returns only the command text/);
     const root = /node "([^"]+)\/private\/jev-control\/cli\.mjs"/.exec(natural)[1];
     assert.ok(existsSync(join(root, "skills", "jev-control", "SKILL.md")), "the named SKILL.md exists");
-    for (const prompt of ["/jev:jev-control off", "/jev:jev-control status"]) {
+    assert.ok(natural.includes(`requested by the user ${NATURAL_MARKER}`), "the natural-language marker");
+    for (const prompt of ["/jev:jev-control", "/jev:jev-control foo", "/jev:jev-control off", "/jev:jev-control status", "/jev:jev-control on"]) {
       const text = hook("UserPromptSubmit", { prompt }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
       assert.doesNotMatch(text, /Do first|cli\.mjs" on/, prompt);
+      assert.doesNotMatch(text, /in natural language/, `${prompt}: a slash command never carries the natural-language marker`);
+      assert.match(text, /requested by the user for this session\./, prompt);
       assert.match(text, /--session-cap /, prompt);
     }
+    for (const scenario of DEV_SCENARIOS.filter((x) => ["s1-bug-several-files", "s3-ambiguous-search"].includes(x.id))) {
+      const text = hook("UserPromptSubmit", { prompt: `Let Jev control this session.\n\n${scenario.prompt}` }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
+      assert.ok(text.includes(NATURAL_MARKER), scenario.id);
+    }
+    // A later prompt of a session whose mode is on gets the reminder, never a repeated marker (a marker of an earlier request must not be reusable).
+    const live = makeRepo({ "a.txt": "a\n" });
+    turnOn(live, env);
+    const again = hook("UserPromptSubmit", { prompt: "Let Jev control this session." }, { env, cwd: live }).json.hookSpecificOutput.additionalContext;
+    assert.doesNotMatch(again, /in natural language/);
+    assert.match(again, /^jev-control ON/);
     assert.match(reminder(0.95), /protocol: skills\/jev-control\/SKILL\.md/);
     assert.doesNotMatch(reminder(0.95), /see the jev-control skill/);
   });

@@ -439,14 +439,15 @@
   "defect_and_change": {
     "most_important": "the Skill tool never delivers skills/jev-control/SKILL.md: the command commands/jev-control.md has the same name and its text is what `Skill jev:jev-control` returns, with the model's `args` as $ARGUMENTS. The protocol (what Jev decides, the decision loop, search, done) therefore never reached the model in any of the four dev sessions of R02-R03; the model saw only the command text, the hook line and the `next` line. In d-s3b the natural-language request reached the command with no argument, step 3 ran `status`, the mode stayed off, nothing was answered (frozen oracle fails, the first failed correctness result of the campaign). In d-s3a `on` ran (the model passed args \"on\") and then the model searched with its own grep.",
     "fixed": [
-      "hook.mjs: the activation line for a natural-language request now says to run `cli.mjs on --session-cap <cap> --priorities \"<one line>\"` first and to Read <plugin root>/skills/jev-control/SKILL.md; the command-prompt activation is unchanged (it must not demand `on` for off/status); the ON reminder points at skills/jev-control/SKILL.md instead of \"the jev-control skill\"",
-      "commands/jev-control.md: step 1 reads SKILL.md with Read; step 3 runs `on` (not `status`) for no/unknown arguments when the hook line says the user requested the mode"
+      "hook.mjs: the activation line for a natural-language request now says to run `cli.mjs on --session-cap <cap> --priorities \"<one line>\"` first and to Read <plugin root>/skills/jev-control/SKILL.md, and alone carries the marker «requested by the user in natural language for this request.» (NATURAL_MARKER); the command-prompt activation is unchanged and never carries it (it must not demand `on` for off/status); the ON reminder points at skills/jev-control/SKILL.md instead of \"the jev-control skill\"",
+      "commands/jev-control.md: step 1 reads SKILL.md with Read; step 3 runs `on` (not `status`) for no/unknown arguments only when the hook of the current request put the natural-language marker line in the context; a slash command with no/unknown arguments still runs `status`"
     ],
+    "correction_after_ratification_round_1": "members A and B: the first R03 commit (7e5bd81) tested the line also emitted for a bare or misspelled /jev:jev-control, which would have started the control without a request; fixed with the exclusive natural-language marker; no live result changed",
     "tests": [
       "hook.test.mjs: the natural-language activation text (on first, Read SKILL.md, the path exists), command prompts do not demand `on`, reminder text",
-      "manifest.test.mjs: the command reads SKILL.md and treats a hook-requested no-argument call as `on`"
+      "manifest.test.mjs: step 3 quotes exactly the marker line hook.mjs emits, an earlier line does not count, the generic line is not the condition"
     ],
-    "mutation": "both new tests fail on the HEAD versions of hook.mjs and commands/jev-control.md and pass on the new ones",
+    "mutation": "the new tests fail on the behaviour of 7e5bd81 (its hook.mjs and command with only the NATURAL_MARKER export added; also each file alone) and pass on the new ones",
     "measured_live": "no; no session is left in R03, R04 is the first that can show the effect"
   },
   "limits": [

@@ -43,11 +43,14 @@ export function reminder(threshold, cap = null) {
   return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; protocol: skills/jev-control/SKILL.md. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
 }
 
+export const NATURAL_MARKER = "in natural language for this request.";
+
 function activation(cap, natural = false) {
   const first = natural
     ? ` Do first, before any search or edit: node "${PLUGIN_ROOT}/private/jev-control/cli.mjs" on --session-cap ${cap} --priorities "<one line from the request>", then Read ${join(PLUGIN_ROOT, "skills", "jev-control", "SKILL.md")} (the Skill tool returns only the command text, never that file).`
     : "";
-  return `jev-control was requested by the user for this session.${first} ${capNote(cap)}`;
+  // Only the natural-language line carries the marker that step 3 of commands/jev-control.md tests; a slash command never does.
+  return `jev-control was requested by the user ${natural ? NATURAL_MARKER : "for this session."}${first} ${capNote(cap)}`;
 }
 
 function repoFor(input) {

@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { NATURAL_MARKER } from "../hook.mjs";
 import { REPO_ROOT } from "./helpers.mjs";
 
 const read = (...p) => readFileSync(join(REPO_ROOT, ...p), "utf8");
@@ -59,7 +60,12 @@ describe("skill and command", () => {
     assert.match(text, /Read `\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/jev-control\/SKILL\.md`/);
     assert.match(text, /the Skill tool returns this text and never that file/);
     assert.doesNotMatch(text, /Load the `jev-control` skill/);
-    assert.match(text, /With no or unknown arguments: when the prompt hook put the line «jev-control was requested by the user for this session» in your context[^.]*run `on` as above; otherwise run `status`/);
+    // Step 3 tests exactly the line that only hook.mjs emits for a natural-language request (never for a slash command), of the current request.
+    const marked = `jev-control was requested by the user ${NATURAL_MARKER.replace(/\.$/, "")}`;
+    assert.ok(text.includes(`«${marked}»`), "step 3 quotes the natural-language line of the hook");
+    assert.match(text, /With no or unknown arguments: when the prompt hook of the current request put the line «[^»]+» in your context/);
+    assert.match(text, /a line from an earlier prompt does not count, and a `\/jev:jev-control` prompt never gets it\), run `on` as above; otherwise run `status` and explain the four commands/);
+    assert.doesNotMatch(text, /«jev-control was requested by the user for this session»/, "the line that slash commands also get is not the condition");
   });
   it("jev-done, jev-locate and the locator have explicit control branches", () => {
     for (const f of [["commands", "jev-done.md"], ["commands", "jev-locate.md"], ["agents", "jev-locator.md"]]) assert.match(read(...f), /jev-control/, f.join("/"));
