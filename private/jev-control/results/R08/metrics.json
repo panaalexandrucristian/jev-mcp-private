@@ -213,17 +213,24 @@
    "no-change": 0.01
   }
  },
- "defect": "scratch batch files of a decision the helper did not clear (expand, refused, invalid, incomplete, ask_user) counted as edits and the cleanup rm as an action while blocked",
+ "defect": "scratch batch files of a decision the helper did not clear (expand, refused, invalid, incomplete, ask_user) counted as edits and the cleanup rm as an action while blocked (S2 did what the cleanup line asked; that is not full conformance: no_new_material refusal, an invalid batch, a final message not starting with Incomplete:, a refused sed -i)",
  "change": {
   "files": [
    "private/jev-control/measure.mjs",
    "private/jev-control/test/measure.test.mjs"
   ],
-  "new_tests": 4,
+  "new_tests": 6,
+  "rule": "a not-cleared decide proves the read only in a form printed after the file was read: expand/ask_user/incomplete need a normalizing version, decision_id, kind and scores id:p with p finite in [0,1] naming options of that version or the escape hatches; invalid needs non-empty problems or a decision_id; refused needs decision_id and reason. OFF, denylist and usage errors prove no read; a credential refusal stays an edit (conservative)",
   "mutations": {
-   "run": 11,
-   "killed": 10,
-   "survivor_removed": "normalizeBatch on the exit-2 branch (redundant)"
+   "run": 14,
+   "killed": 14,
+   "earlier_survivors": "normalizeBatch on the exit-2 branch (brought back with a test), exit === undefined guard (redundant, removed)"
+  },
+  "historical_transcripts": {
+   "sessions": 15,
+   "identical_to_86e8497_measurer": 14,
+   "differs": "R08 S2 only",
+   "r05_r06_changed": false
   }
  },
  "doc_corrections_d41": [
@@ -234,9 +241,9 @@
  ],
  "offline_checks": {
   "control_tests": {
-   "tests": 509,
+   "tests": 511,
    "suites": 85,
-   "pass": 509,
+   "pass": 511,
    "fail": 0
   },
   "flow_tests": {
@@ -249,7 +256,14 @@
   "seal_verify": "ok",
   "diff_check": "clean",
   "help_decide_bytes": 1499,
-  "protected_diff": 0
+  "protected_diff_vs_879c2ba": 0,
+  "not_changed_by_r08_vs_86e8497": [
+   "PRIVATE.md",
+   "agents",
+   "private/jev-flow",
+   "scripts",
+   "commands"
+  ]
  },
  "unmeasured": [
   "completion gate live",

@@ -1360,6 +1360,40 @@ describe("only a batch file the transcript proves to be helper input is not an e
       ]) assert.deepEqual(run(out, ...remove()), KEPT(0, 1), why);
       assert.deepEqual(verdict(audit([prompt("go"), ...writeBatch(), ...decideFile(expandOut(), "jev-batch.json"), ...remove(), final()])), KEPT(0, 1), "an expand that is not an error result");
     });
+    it("only the results printed AFTER the helper read the file prove a read: not OFF, not the denylist, not a usage error", () => {
+      const run = (out, content = BATCH()) => verdict(audit([prompt("go"), ...writeBatch(content), ...decideFile(out, "jev-batch.json", { error: true }), ...remove(), final()]));
+      for (const [out, why] of [
+        [failed(4, { status: "invalid", message: "unknown argument: --bogus" }), "a usage error (unknown argument) is printed before any read"],
+        [failed(4, { status: "invalid", message: "input is not valid JSON" }), "a usage error: not valid JSON"],
+        [failed(4, { status: "refused", message: "jev-control is off for this session: run /jev:jev-control on first" }), "the OFF refusal comes before the read"],
+        [failed(4, { status: "refused", message: "the repository opts out of Jev (.jev-flow-denylist): nothing is sent" }), "the denylist refusal comes before the read"],
+        [failed(4, { status: "invalid", problems: [], message: "x" }), "an invalid with no problems is no proof"],
+        [failed(4, { status: "invalid", problems: [""], message: "x" }), "an empty problem is no proof"],
+        [failed(4, { status: "invalid", problems: "text", message: "x" }), "problems that are not an array"],
+        [failed(4, { status: "refused", decision_id: "d1", message: "a credential was refused" }), "a refusal with no reason stays an edit (conservative)"],
+        [failed(4, { status: "refused", reason: "no_new_material", message: "no decision id" }), "a refusal with no decision id"],
+      ]) assert.deepEqual(run(out), KEPT(0, 1), why);
+      assert.deepEqual(run(failed(4, { status: "invalid", problems: ["options[0].evidence must have 1-3 concrete lines"], message: "m" })), { files: 1, removals: 1, edits: 0, violations: 0 }, "the normalization problems are printed after the read");
+      assert.deepEqual(run(failed(4, { status: "invalid", message: "priorities are required: pass them in the batch or set them at activation", decision_id: "d1" })), { files: 1, removals: 1, edits: 0, violations: 0 }, "protocol.mjs: invalid with a decision id, printed after the read");
+    });
+    it("the scores must be well formed, and a version that does not normalize cannot be the one an expand read", () => {
+      const run = (out, content = BATCH()) => verdict(audit([prompt("go"), ...writeBatch(content), ...decideFile(out, "jev-batch.json", { error: true }), ...remove(), final()]));
+      for (const [out, why] of [
+        [expandOut({ scores: ["o1"] }), "an id without a score"],
+        [expandOut({ scores: ["o1:99"] }), "a score above 1"],
+        [expandOut({ scores: ["o1:1.5"] }), "a score above 1 with decimals"],
+        [expandOut({ scores: ["o1:NaN"] }), "a score that is not a number"],
+        [expandOut({ scores: ["o1:-0.2"] }), "a negative score"],
+        [expandOut({ scores: ["o1:0.8", "zz9:0.1"] }), "one id of another version among valid scores"],
+        [expandOut({ scores: [0.8] }), "a score that is not a string"],
+        [expandOut({ scores: ["o1:0.8x"] }), "text after the score"],
+        [incompleteOut({ scores: ["o1:0.9", "o2"] }), "an incomplete result with an id without a score"],
+      ]) assert.deepEqual(run(out), KEPT(0, 1), why);
+      assert.deepEqual(run(expandOut({ scores: ["o1:1", "o2:0", "action_ask_user:0.5"] })), { files: 1, removals: 1, edits: 0, violations: 0 }, "the bounds 0 and 1 are valid");
+      const small = json({ decision: "which first?", kind: "order", options: OPTIONS().slice(0, 4) });
+      assert.equal(normalizeBatch(JSON.parse(small)).ok, false, "four options without space_small do not normalize");
+      assert.deepEqual(run(expandOut(), small), KEPT(0, 1), "an expand on a version that cannot normalize");
+    });
   });
   it("a real edit stays an action while blocked, a proven batch edit in the same state does not", () => {
     const asking = decideOut({ status: "ask_user", kind: "order", scores: ["o1:0.5"] });

@@ -20,7 +20,7 @@
 // Write or Edit that is not an edit (R05, coverage.protocol_batch_files): a version of a batch file the transcript proves to be
 // helper input: created by a confirmed Write ("File created successfully"), changed only by confirmed Write or Edit calls whose
 // result is a batch, bound at the tool_use of a genuine `decide --file` of the same request and agent context whose successful
-// result (selected or ordered, not an error; R08: or the helper's own expand, ask_user, incomplete, invalid or refused error result) names only options of that very version, with nothing of unknown effects running
+// result (selected or ordered, not an error; R08: or the helper's own expand, ask_user or incomplete error result with valid scores, or an invalid or refused error result in a form printed only after the file was read: the OFF and denylist refusals and the usage errors prove no read) names only options of that very version, with nothing of unknown effects running
 // meanwhile, and finally removed by a lone `rm [-f] <path>` of that request and context (that removal is then no action either). Any other write, whatever the file is
 // called, a chain that is still alive at the end, an unsafe intermediate mutation or a result that fits another version is an edit. A result
 // without the shape the real helper prints is opaque, never a grant source; a
@@ -605,11 +605,14 @@ function simpleRm(command, root) {
  *   unknown effects started or overlapping while it ran. Its result must be a success (not an error), status selected or ordered,
  *   of the batch's kind, with plan items that name only options of that version, and that version must pass normalizeBatch; the shared ids
  *   alone prove nothing about which version was read. R08: a decide the helper did NOT clear (an error result whose first line is the
- *   exit code of its status: expand, ask_user, incomplete 2; invalid, refused 4) also consumed the version it read, because the
- *   helper's own refusal or request for more proves it read that file (live S2: three expansions, a refusal, an invalid and an
+ *   exit code of its status: expand, ask_user, incomplete 2; invalid, refused 4) also consumed the version it read, but only when the
+ *   result is a form the helper prints AFTER reading the file (live S2: three expansions, a refusal, an invalid and an
  *   incomplete result, all on scratch batch files that the helper's `cleanup` line then had removed): expand, ask_user and incomplete
- *   must name the decision, the batch's kind and scores that name only options of that version (or the escape hatches), invalid
- *   and refused a message or problems; a version no decide read, or whose result is none of these, stays an edit.
+ *   need a version that normalizes, the decision id, the batch's kind and scores "id:p" with p finite in [0, 1] that name only options of
+ *   that version (or the escape hatches); invalid needs non-empty `problems` (cli.mjs:300) or a decision id (protocol.mjs:204);
+ *   refused needs a decision id and a reason (no_new_material). The OFF and denylist refusals (cli.mjs:201, :297) and every usage error
+ *   (unknown argument, cannot read, invalid JSON, 1 MiB; cli.mjs:593) are printed BEFORE any read and prove nothing; a credential refusal
+ *   has no reason and stays an edit (conservative); a version no decide read, or whose result is none of these, stays an edit.
  * - Calls of unknown effects end every chain of their request when they start and forbid a chain from starting or continuing while
  *   they overlap its write: any Bash that is not ONE plain read (a listed command, listed options, literal operands, one line: never `rg --pre`) or a lone
  *   `rm` of one path that is not an option (node mutate.mjs and node --test may write files), a delegated agent, an unclassified tool, `done` and the flow helpers; so do a MultiEdit or notebook edit of the path, a
@@ -619,6 +622,10 @@ function simpleRm(command, root) {
  *   deletion proves nothing), leaves every one of its versions an ordinary edit, whatever the file is called.
  */
 // Statuses of a decide that did not clear anything, with the exit code the helper gives them (cli.mjs STATUS_EXIT): the batch was read.
+const parseScore = (entry) => {
+  const m = typeof entry === "string" ? /^(.+):(\d+(?:\.\d+)?)$/.exec(entry) : null;
+  return m && Number(m[2]) <= 1 ? { id: m[1], p: Number(m[2]) } : null;
+};
 const NOT_CLEARED_EXIT = { expand: 2, ask_user: 2, incomplete: 2, invalid: 4, refused: 4 };
 function auxiliaryBatchFiles(events, classOf) {
   const exempt = new Set();
@@ -705,16 +712,27 @@ function auxiliaryBatchFiles(events, classOf) {
         continue;
       }
       // A decision the helper did not clear (R08): the helper still read this very version, so it is helper input, if the error
-      // result is the helper's own (the exit code of its status is the first line) and, for expand, ask_user and incomplete, it
-      // names the decision, the kind and scores that name only options of this version (invalid and refused name a message).
+      // result is the helper's own (the exit code of its status is the first line) and has a form printed only after the read.
       const exit = NOT_CLEARED_EXIT[result.status];
       const code = /^Exit code (\d+)\n/.exec(String(e.result.text));
-      if (exit === undefined || code === null || Number(code[1]) !== exit) continue;
+      if (code === null || Number(code[1]) !== exit) continue;
       if (exit === 2) {
-        const scores = Array.isArray(result.scores) ? result.scores.map((s) => (typeof s === "string" ? s.replace(/:[0-9.]+$/, "") : null)) : [];
-        if (!nonEmpty(result.decision_id) || result.kind !== batch.kind || scores.length === 0) continue;
-        if (!scores.every((id) => id !== null && (version.options.has(id) || HATCH_IDS.has(id)))) continue;
-      } else if (!nonEmpty(result.message) && !Array.isArray(result.problems)) continue;
+        // The helper reached a score for this very version: it must normalize, name the decision and the kind, and every score must be "id:p"
+        // with a finite p in [0, 1] and an id of this version (or an escape hatch). A result without scores proves no read.
+        const scores = Array.isArray(result.scores) ? result.scores.map(parseScore) : [];
+        if (!normalizeBatch(batch).ok || !nonEmpty(result.decision_id) || result.kind !== batch.kind || scores.length === 0) continue;
+        if (!scores.every((s) => s !== null && (version.options.has(s.id) || HATCH_IDS.has(s.id)))) continue;
+      } else if (result.status === "invalid") {
+        // Only the forms produced AFTER the file was read: the normalization problems (cli.mjs:300) or a decision id (protocol.mjs:204, a Jev
+        // invalid_args reply). The usage errors (unknown argument, cannot read, not valid JSON, input too large; cli.mjs:593) print
+        // an invalid with a message alone, before any read.
+        const problems = Array.isArray(result.problems) && result.problems.length > 0 && result.problems.every((p) => nonEmpty(p));
+        if (!problems && !nonEmpty(result.decision_id)) continue;
+      } else if (!nonEmpty(result.decision_id) || !nonEmpty(result.reason)) {
+        // A refusal proves the read only with a decision id and a reason (no_new_material, protocol.mjs:215). The OFF and denylist refusals
+        // (cli.mjs:201, :297) come before the read and a credential refusal carries no reason, so it stays an edit (conservative).
+        continue;
+      }
       chain.consumed.push(version.event);
       continue;
     }
