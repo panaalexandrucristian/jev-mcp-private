@@ -5,7 +5,7 @@
  "live": "unmeasured",
  "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
  "branch": "jev-control-skill",
- "commits": ["e57cd8588acec1da6ba385b8a72b25bb2c2b9811", "bdbf7fe", "round-3 commit (adds results/R07, README and evaluation rows)"],
+ "commits": ["e57cd8588acec1da6ba385b8a72b25bb2c2b9811", "bdbf7fe", "d61b652 (coherentReport whitelist, results/R07, README and evaluation rows)", "round-4 commit (status and verdict domains, documentation of the is_error rule)"],
  "ledger": {
   "before": 13,
   "after": 13,
@@ -37,9 +37,10 @@
  "defects": [
   {"round": 1, "by": "A", "what": "tracked file under another case consumed on a case-insensitive file system", "fixed": true},
   {"round": 1, "by": "B", "what": "check validation after the removal, empty output, absolute path and gate report accepted by the measurer, input keys echoed, inline JSON called refused", "fixed": true},
-  {"round": 3, "by": "B", "what": "coherentReport accepted snapshot_changed with exit 2 and unknown outcomes", "fixed": true}
+  {"round": 3, "by": "B", "what": "coherentReport accepted snapshot_changed with exit 2 and unknown outcomes", "fixed": true},
+  {"round": 4, "by": "B", "what": "status and verdict not checked for presence and domain; is_error rule described as a narrowing of the plan", "fixed": true}
  ],
- "is_error_policy": "documented adjustment: only a complete report whose fields agree with the call's end proves a consumption; a known not-accepted outcome with exit 2 and its implied fields, or accepted with exit 0; everything else leaves the Write an edit",
+ "is_error_policy": "a later adjustment, not the plan (R07-c2 refused the exemption for any is_error result): only a complete report whose fields agree with the call's end proves a consumption; a known not-accepted outcome with exit 2 and its implied fields, or accepted with exit 0; everything else leaves the Write an edit",
  "coverage_on_R06_transcripts": {"protocol_claims_files": 0, "protocol_claims_removals": 0},
  "limits": [
   "no live session: the gate under the real headless permissions is unmeasured",

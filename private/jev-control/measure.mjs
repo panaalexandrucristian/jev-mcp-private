@@ -68,6 +68,7 @@ import { actionHash, EDIT_TOOLS, normalizePath, observedDescriptor, parsePlanIte
 import { BUDGET_SCOPE, findAuthorizations, incrementFor, optionScope } from "./authorization.mjs";
 import { parseDecideResult, parseNoulResult, parseRankResult, toolBase } from "./contracts.mjs";
 import { consumableClaimsName, splitClaims } from "./claimsfile.mjs";
+import { STATUS_ORDER, VERDICT_ORDER } from "../jev-flow/gate-run.mjs";
 import { normalizeBatch } from "./options.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
@@ -739,7 +740,8 @@ function auxiliaryBatchFiles(events, classOf) {
  *   not-accepted exit) and whose summary names exit 2 and one of the runner's known not-accepted outcomes with the fields that outcome
  *   implies (see coherentReport). Removal is not acceptance, so the verdict does not matter, but an operational error (snapshot_changed,
  *   unavailable, disabled, invalid_input, not_ready), an unknown outcome, a report that contradicts its exit or itself, or an accepted
- *   report that is an error proves nothing (R07 council, B5: a documented narrowing of the plan's "an error result still counts");
+ *   report that is an error proves nothing. The plan (R07-c2) refused the exemption for any is_error result; allowing a coherent
+ *   not-accepted report with exit 2 is a later adjustment proposed by the council (B), not the plan's rule;
  * - nothing of unknown effects (a Bash that is not one plain read or a lone `rm` of another path, a delegated agent, an unclassified
  *   tool, another `done` or a flow helper) and no other write, edit or `rm` of the path, by any request or context, ran or overlapped
  *   between the Write's result and the done's result, or while the Write ran. A `done` of the same path that is provably refused BEFORE
@@ -748,12 +750,15 @@ function auxiliaryBatchFiles(events, classOf) {
  * Otherwise the Write is an ordinary edit.
  */
 // The outcomes the gate runner gives with its not-accepted exit (2), by the rule of decideOutcome in jev-flow/gate-run.mjs: a semantic
-// verdict (needs_evidence, ask_user, escalate; the status is then "ok"), a contradiction (any status) and a failed check (status
-// checks_failed, no contradiction). snapshot_changed (exit 4), unavailable (3), disabled, invalid_input, not_ready and anything unknown are not here.
+// verdict (needs_evidence, ask_user, escalate; the status is then "ok"), a contradiction (any status of the runner's domain) and a failed
+// check (status checks_failed, no contradiction; the verdict may be null). snapshot_changed (exit 4), unavailable (3), disabled, invalid_input, not_ready and anything unknown are not here.
 const VERDICT_OUTCOMES = new Set(["needs_evidence", "ask_user", "escalate"]);
 /** The helper's report of a consumed file is complete and its fields agree with each other and with how the call ended (see auxiliaryClaimsFiles). */
 function coherentReport(result, p) {
   if (typeof p.outcome !== "string" || !Number.isInteger(p.exit)) return false;
+  // The runner's domains (gate-run.mjs STATUS_ORDER, VERDICT_ORDER): the status is always present and known; the verdict is a known verdict
+  // or an explicit null (no part was evaluated); an absent verdict is undefined, which is neither.
+  if (!STATUS_ORDER.includes(p.status) || (p.verdict !== null && !VERDICT_ORDER.includes(p.verdict))) return false;
   if (!result.error) return p.outcome === "accepted" && p.exit === 0 && p.verdict === "accepted" && p.status === "ok";
   const m = /^Exit code (\d+)\n/.exec(String(result.text));
   if (m === null || Number(m[1]) !== p.exit || p.exit !== 2) return false;

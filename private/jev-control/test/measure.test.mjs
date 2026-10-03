@@ -768,6 +768,16 @@ describe("only a claims file the transcript proves the helper consumed is not an
     assert.equal(err2({ status: "checks_failed", verdict: "needs_evidence" }, "checks_failed"), 1, "a failed check with a semantic verdict");
     assert.equal(err2({ status: "checks_failed" }, "some_new_outcome"), 0, "an unknown outcome is not a failed check just because the status says so");
     assert.equal(files(`Exit code 3\n${doneOut({ exit: 3 }, "needs_evidence")}`, { error: true }), 0, "a known outcome with an exit that is not the not-accepted one, text and report agreeing");
+    // Round 4 (B): the status and the verdict are present and in the runner's domains (an absent verdict is not a null one).
+    assert.equal(err2({ status: "checks_failed", verdict: null }, "checks_failed"), 1, "a failed check with an explicit null verdict (no part evaluated)");
+    assert.equal(err2({ status: "checks_failed", verdict: undefined }, "checks_failed"), 0, "checks_failed without a verdict key");
+    assert.equal(err2({ status: "checks_failed", verdict: "weird" }, "checks_failed"), 0, "checks_failed with an unknown verdict");
+    assert.equal(err2({ status: undefined }, "contradicted"), 0, "contradicted without a status");
+    assert.equal(err2({ status: "weird" }, "contradicted"), 0, "contradicted with an unknown status");
+    assert.equal(err2({ status: "unavailable" }, "contradicted"), 1, "contradicted with another status of the runner's domain");
+    assert.equal(err2({ verdict: undefined }, "needs_evidence"), 0, "a semantic outcome without a verdict");
+    assert.equal(files(doneOut({ status: undefined })), 0, "accepted without a status");
+    assert.equal(files(doneOut({ verdict: null })), 0, "accepted with a null verdict");
     assert.equal(err2({ status: "snapshot_changed" }, "snapshot_changed"), 0, "snapshot_changed even with exit 2");
     assert.equal(err2({}, "some_new_outcome"), 0, "an unknown outcome with exit 2");
     assert.equal(err2({}, "unavailable"), 0, "unavailable with exit 2");
