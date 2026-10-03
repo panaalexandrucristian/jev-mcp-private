@@ -47,7 +47,7 @@ export const NATURAL_MARKER = "in natural language for this request.";
 
 function activation(cap, natural = false) {
   const first = natural
-    ? ` Do first, before any search or edit: node "${PLUGIN_ROOT}/private/jev-control/cli.mjs" on --session-cap ${cap} --priorities "<one line from the request>", then Read ${join(PLUGIN_ROOT, "skills", "jev-control", "SKILL.md")} (the Skill tool returns only the command text, never that file).`
+    ? ` Do first, before any search or edit: node "${PLUGIN_ROOT}/private/jev-control/cli.mjs" on --session-cap ${cap} --priorities "<one line from the request>", then Read ${join(PLUGIN_ROOT, "skills", "jev-control", "SKILL.md")} (the Skill tool returns only the command text, never that file). If that Read is refused, go on: \`cli.mjs help decide\` prints the batch format and \`help search\` the search form.`
     : "";
   // Only the natural-language line carries the marker that step 3 of commands/jev-control.md tests; a slash command never does.
   return `jev-control was requested by the user ${natural ? NATURAL_MARKER : "for this session."}${first} ${capNote(cap)}`;

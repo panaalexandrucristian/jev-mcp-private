@@ -132,6 +132,8 @@ describe("the control hook: a reminder only, never a block", () => {
     const natural = hook("UserPromptSubmit", { prompt: "Let Jev control this session.\n\nWhere is the delay computed?" }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
     assert.match(natural, /Do first, before any search or edit: node "[^"]+\/private\/jev-control\/cli\.mjs" on --session-cap [0-9a-f]{16}\.[0-9a-f]{32} --priorities/);
     assert.match(natural, /Read \/[^ ]+\/skills\/jev-control\/SKILL\.md \(the Skill tool returns only the command text/);
+    // R04: the Read of SKILL.md was refused in both dev sessions (outside the working directory); the line says how to go on without it.
+    assert.match(natural, /If that Read is refused, go on: `cli\.mjs help decide` prints the batch format and `help search` the search form\./);
     const root = /node "([^"]+)\/private\/jev-control\/cli\.mjs"/.exec(natural)[1];
     assert.ok(existsSync(join(root, "skills", "jev-control", "SKILL.md")), "the named SKILL.md exists");
     assert.ok(natural.includes(`requested by the user ${NATURAL_MARKER}`), "the natural-language marker");

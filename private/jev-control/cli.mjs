@@ -2,6 +2,7 @@
 // jev-control command line (Node 22, standard library plus the jev-flow modules).
 // Jev is called here, outside the model's context, with compact one-line JSON
 // output (at most 1.5 KB). Usage (the plugin root is ${CLAUDE_PLUGIN_ROOT}):
+//   cli.mjs help [command]   (also <command> --help: usage and the decide batch format; needs no session)
 //   cli.mjs on [--threshold x] [--priorities "one line"]
 //   cli.mjs off | status | threshold <x>
 //   cli.mjs decide --file <batch.json|-> [--decision-id id] [--headless] [--source subagent]
@@ -31,6 +32,7 @@ import { approveMore, budgetView, confirm, release, reserve, startRequest } from
 import { BudgetedCaller } from "./client.mjs";
 import { checkTools } from "./contracts.mjs";
 import { runControlDone } from "./done.mjs";
+import { helpText } from "./help.mjs";
 import { normalizeBatch } from "./options.mjs";
 import { runDecision } from "./protocol.mjs";
 import { verifyDecisionReceipt, writeDecisionReceipt } from "./receipts.mjs";
@@ -119,7 +121,7 @@ function print(object) {
 }
 
 // What the model sees right after `on` (R02: two dev sessions switched the mode on and then took no decision and ran no search).
-const NEXT_AFTER_ON = "act only through the helper from now on: several tasks or ways to do one are a decision (decide --file <batch>), a user phrase such as \"choose the order yourself\" hands that choice to Jev, files are found with search, completion is /jev:jev-done";
+const NEXT_AFTER_ON = "act only through the helper from now on: several tasks or ways to do one are a decision (decide --file <batch>), a user phrase such as \"choose the order yourself\" hands that choice to Jev, files are found with search, completion is /jev:jev-done; the batch format is in `help decide`, the search form in `help search` (SKILL.md may be unreadable)";
 
 function resolveSession(repoRoot, flags, env) {
   const id = flags["session-id"] ?? env.CLAUDE_CODE_SESSION_ID;
@@ -465,8 +467,10 @@ async function cmdDone(flags, ctx) {
 
 export async function main(argv, env = process.env) {
   const cmd = argv[0];
-  if (!cmd || cmd === "--help" || cmd === "-h") {
-    process.stdout.write("Usage: cli.mjs on|off|status|threshold <x>|decide|search|approve|budget|receipt|done  (see the header of cli.mjs)\n");
+  // `help [command]`, `<command> --help` and `-h` need no session, repository or Jev call (R04).
+  if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help" || argv.includes("--help") || argv.includes("-h")) {
+    const topic = cmd === "help" ? argv[1] : cmd?.startsWith("-") ? undefined : cmd;
+    process.stdout.write(`${helpText(topic)}\n`);
     return EXIT.ok;
   }
   const flags = parseFlags(argv.slice(), {

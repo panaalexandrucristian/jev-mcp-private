@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { S3 } from "../fixtures/scenarios.mjs";
 import { materialize } from "../fixtures/lib.mjs";
+import { KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { compactOut } from "../cli.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
@@ -37,6 +38,9 @@ describe("activation (D1, D2, D13, D16)", () => {
     assert.match(r.json.next, /choose the order yourself/);
     assert.match(r.json.next, /search/);
     assert.match(r.json.next, /\/jev:jev-done/);
+    // R04: SKILL.md can be unreadable (a Read outside the working directory is refused in a headless run); the line says where the batch format is.
+    assert.match(r.json.next, /`help decide`/);
+    assert.match(r.json.next, /`help search`/);
     assert.ok(r.stdout.trim().length < 900, `the line stays compact (${r.stdout.trim().length} characters)`);
     const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
     assert.equal(state.mode, "on");
@@ -483,6 +487,52 @@ describe("approvals, budget and direct calls", () => {
     assert.equal(approved.json.limit, 50);
     assert.deepEqual(approved.json.approval, { n: 25, msg: "yes, go on beyond the limit" });
     assert.equal(cli(["budget", "reserve", ...SID, "--tool", "noul", "--source", "main"], { env, cwd: repo }).json.status, "ok");
+  });
+});
+
+describe("help without SKILL.md (R04)", () => {
+  // R04: both dev sessions had their Read of skills/jev-control/SKILL.md refused (outside the working directory); one then spent
+  // five invalid `decide` calls finding the batch format and ended without doing the task, the other tried `search --help`.
+  const outside = () => tempDir();
+  it("`help decide`, `decide --help` and `decide -h` print the batch format with no repository, session or capability", () => {
+    const direct = cli(["help", "decide"], { env: controlEnv(), cwd: outside() });
+    assert.equal(direct.code, 0, direct.stdout + direct.stderr);
+    for (const args of [["decide", "--help"], ["decide", "-h"], ["decide", "--file", "x", "--help"]]) {
+      const r = cli(args, { env: controlEnv(), cwd: outside() });
+      assert.equal(r.code, 0, args.join(" "));
+      assert.equal(r.stdout, direct.stdout, args.join(" "));
+    }
+    assert.ok(direct.stdout.length < 1500, `fits the output cap (${direct.stdout.length})`);
+    for (const word of ["--file", "--decision-id", "\"decision\"", "\"kind\"", "\"options\"", "\"evidence\"", "\"action\"", "old_string", "space_small", "new_material", "expand", "ask_user", "incomplete"]) {
+      assert.ok(direct.stdout.includes(word), `mentions ${word}`);
+    }
+    assert.ok(direct.stdout.includes(KINDS.join("|")), "the kinds are the ones the helper accepts");
+    assert.ok(direct.stdout.includes(`At least ${MIN_OPTIONS} distinct real options`));
+    assert.ok(direct.stdout.includes(`at most ${MAX_OPTIONS}`));
+    assert.match(direct.stdout, /a pipe after it voids the grant/, "R04: `search ... | head -40` was audited as an ordinary action and granted nothing");
+  });
+  it("the example batch in `help decide` has the shape the helper accepts", () => {
+    const text = cli(["help", "decide"], { env: controlEnv(), cwd: outside() }).stdout;
+    const example = JSON.parse(text.split("\n").find((l) => l.startsWith("{")));
+    const options = ["a", "b", "c", "d", "e"].map((id) => ({ ...example.options[0], id, text: `option ${id}`, evidence: ["a concrete line"], action: { ...example.options[0].action, target: `src/${id}.mjs` } }));
+    const checked = normalizeBatch({ ...example, decision: "which file first?", kind: "edit", options, new_material: undefined });
+    assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+  });
+  it("`help search`, `search --help`, the other commands and an unknown topic", () => {
+    const search = cli(["help", "search"], { env: controlEnv(), cwd: outside() });
+    assert.equal(search.code, 0);
+    for (const word of ["--query", "--single", "--exact-path", "--widen", "--search-id", "sha256"]) assert.ok(search.stdout.includes(word), word);
+    assert.match(search.stdout, /a pipe after it \(`\| head`\) voids the grant/);
+    assert.equal(cli(["search", "--help"], { env: controlEnv(), cwd: outside() }).stdout, search.stdout);
+    for (const topic of ["on", "off", "status", "threshold", "page", "approve", "budget", "receipt", "done"]) {
+      const r = cli(["help", topic], { env: controlEnv(), cwd: outside() });
+      assert.equal(r.code, 0, topic);
+      assert.ok(r.stdout.startsWith(topic), `${topic}: ${r.stdout}`);
+    }
+    const unknown = cli(["help", "frobnicate"], { env: controlEnv(), cwd: outside() });
+    assert.equal(unknown.code, 0);
+    assert.match(unknown.stdout, /^Usage: cli\.mjs on\|off\|status/);
+    assert.match(unknown.stdout, /cli\.mjs help decide/);
   });
 });
 

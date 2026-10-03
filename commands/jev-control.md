@@ -5,7 +5,7 @@ argument-hint: on [threshold] | off | status | threshold <x>
 
 Run the jev-control command for this request: `$ARGUMENTS`
 
-1. Read `${CLAUDE_PLUGIN_ROOT}/skills/jev-control/SKILL.md` once and follow it for the whole session while the mode is on. (The skill has the same name as this command, so the Skill tool returns this text and never that file: read it with `Read`.)
+1. Read `${CLAUDE_PLUGIN_ROOT}/skills/jev-control/SKILL.md` once and follow it for the whole session while the mode is on. (The skill has the same name as this command, so the Skill tool returns this text and never that file: read it with `Read`. If the read is refused, do not stop: the `on` result says how to go on, and `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" help decide` prints the batch format, `help search` the search form.)
 2. Run exactly one of these (plugin root in Claude Code: `${CLAUDE_PLUGIN_ROOT}`) and show its compact output:
    - `on` (optionally followed by a threshold in (0.5, 1)): derive the **priorities** from the user's explicit request and constraints in one line, then
      `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" on [--threshold <x>] --priorities "<one line>"`

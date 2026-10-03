@@ -59,6 +59,8 @@ describe("skill and command", () => {
     const text = read("commands", "jev-control.md");
     assert.match(text, /Read `\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/jev-control\/SKILL\.md`/);
     assert.match(text, /the Skill tool returns this text and never that file/);
+    // R04: a refused Read must not end the session; the command names the helper's own usage text.
+    assert.match(text, /If the read is refused, do not stop: .*cli\.mjs" help decide` prints the batch format, `help search` the search form/);
     assert.doesNotMatch(text, /Load the `jev-control` skill/);
     // Step 3 tests exactly the line that only hook.mjs emits for a natural-language request (never for a slash command), of the current request.
     const marked = `jev-control was requested by the user ${NATURAL_MARKER.replace(/\.$/, "")}`;
