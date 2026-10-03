@@ -88,14 +88,17 @@ const MECHANICAL = new Set(["TodoWrite", "ToolSearch", "Skill", "TaskOutput", "T
 // transcript cannot show completeness (a Read result may be cut, a Skill result need not carry the file), so `full_load` stays "unknown".
 const SKILL_FILE = /^(?:SKILL\.md|reference\/[^/]+\.md|examples\/[^/]+\.md)$/;
 const SKILL_NAMES = new Set(["jev:jev-control-mode", "jev-control-mode"]);
-// A real frontmatter block: a line `---`, then only `key: value` lines (one of them `name: jev-control-mode`), then `---`; the line numbers a Read result
-// puts before each line are stripped first. The name quoted in prose, in a fence or in a code line is not a frontmatter.
-const FRONTMATTER = /^---[ \t]*\n((?:[A-Za-z][\w-]*:[^\n]*\n)+)---[ \t]*(?:\n|$)/gm;
+// A real frontmatter block AT THE START of the returned content: a line `---`, then only `key: value` lines (one of them `name: jev-control-mode`), then `---`.
+// Before the match the line numbers a Read result puts in front of each line and the leading blank lines are removed, and so are the two wrapper lines a
+// Skill result is known to carry (`Launching skill: <name>`, `Base directory for this skill: <path>`); nothing else may precede the block. A block that follows
+// prose, sits in a code fence or appears later in the text is a quotation, not the file, and gives no identity.
+const FRONTMATTER = /^---[ \t]*\n((?:[A-Za-z][\w-]*:[^\n]*\n)+)---[ \t]*(?:\n|$)/;
+const SKILL_WRAPPER = /^(?:(?:Launching skill|Base directory for this skill):[^\n]*\n\s*)+/;
 const SKILL_NAME_LINE = /^name:\s*["']?jev-control-mode["']?\s*$/m;
 function hasSkillFrontmatter(text) {
-  const plain = String(text ?? "").replace(/\r/g, "").replace(/^[ \t]*\d+[\t→][ ]?/gm, "");
-  for (const m of plain.matchAll(FRONTMATTER)) if (SKILL_NAME_LINE.test(m[1])) return true;
-  return false;
+  const plain = String(text ?? "").replace(/\r/g, "").replace(/^[ \t]*\d+[\t→][ ]?/gm, "").replace(/^\s+/, "").replace(SKILL_WRAPPER, "");
+  const m = FRONTMATTER.exec(plain);
+  return m !== null && SKILL_NAME_LINE.test(m[1]);
 }
 const SKILL_LIST_MAX = 40;
 /** Free text of the `skill` section: capability-shaped strings and recognizable credentials redacted, suspicious lines omitted, then collapsed and cut. */

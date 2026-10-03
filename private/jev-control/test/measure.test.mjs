@@ -1950,6 +1950,42 @@ describe("R09 (D47): the skill's protocol files and the Skill tool", () => {
     const call = audit([prompt("go"), ...skillCall("The skill name: jev-control-mode was loaded.")]).skill;
     assert.deepEqual([call.skill_tool_calls[0].level, call.load], ["result_without_identity", "unknown"], "a Skill result that only names it proves nothing");
   });
+  it("a COMPLETE frontmatter block that is quoted (in a code fence, after prose, after a recognized wrapper and prose) is no identity, for a Read and for a Skill result; at the start, numbered or behind a recognized wrapper it is", () => {
+    const block = "---\nname: jev-control-mode\ndescription: example\n---\n";
+    const quoted = [
+      ["a code fence", `\`\`\`yaml\n${block}\`\`\`\n`],
+      ["a fence after a line number", `     1\u2192\`\`\`yaml\n     2\u2192---\n     3\u2192name: jev-control-mode\n     4\u2192description: example\n     5\u2192---\n     6\u2192\`\`\``],
+      ["prose in front", `This is the skill file:\n${block}`],
+      ["a heading in front", `# jev-control-mode\n\n${block}`],
+      ["a wrapper and prose in front", `Launching skill: jev:jev-control-mode\nHere is what it says:\n${block}`],
+      ["a second block after another block", `---\ntitle: x\n---\n${block}`],
+    ];
+    for (const [why, text] of quoted) {
+      const read = audit([prompt("go"), ...skillRead("SKILL.md", { text })]).skill;
+      assert.equal(read.skill_reads[0].identity_observed, false, `Read: ${why}`);
+      assert.equal(read.load, "unknown", `Read: ${why}`);
+      const sk = audit([prompt("go"), ...skillCall(text)]).skill;
+      assert.equal(sk.skill_tool_calls[0].level, "result_without_identity", `Skill: ${why}`);
+      assert.equal(sk.load, "unknown", `Skill: ${why}`);
+      assert.equal(sk.full_load, "unknown");
+    }
+    for (const [why, text] of [
+      ["the plain block", block],
+      ["line numbers", `     1\u2192---\n     2\u2192name: jev-control-mode\n     3\u2192description: example\n     4\u2192---\n     5\u2192# jev-control-mode`],
+      ["leading blank lines", `\n\n${block}`],
+      ["the Launching wrapper", `Launching skill: jev:jev-control-mode\n${block}`],
+      ["both wrappers", `Launching skill: jev:jev-control-mode\nBase directory for this skill: ${SKILL_DIR}\n\n${block}`],
+    ]) {
+      const read = audit([prompt("go"), ...skillRead("SKILL.md", { text })]).skill;
+      assert.equal(read.skill_reads[0].identity_observed, true, `Read: ${why}`);
+      assert.deepEqual([read.load, read.full_load], ["identity_observed", "unknown"], `Read: ${why}`);
+      const sk = audit([prompt("go"), ...skillCall(text)]).skill;
+      assert.equal(sk.skill_tool_calls[0].level, "identity_observed", `Skill: ${why}`);
+    }
+    // The exemption of D47 does not depend on the identity: a quoted block is still an exempt confirmed Read.
+    const exempt = audit([prompt("go"), ...skillRead("SKILL.md", { text: `prose\n${block}` })]);
+    assert.equal(exempt.coverage.exceptions.skill_protocol_read, 1);
+  });
   it("a protocol Read does not disturb the audit of the task: a covered edit stays covered, and a skill Read after a stop is not an action while blocked", () => {
     const plan = [item("o1", "execute", 0.98, "Edit", "src/a.mjs")];
     const a = audit([prompt("go"), ...decide(decideOut({ plan })), ...skillRead("SKILL.md"), ...edit("src/a.mjs")]);

@@ -13,7 +13,7 @@
   "lock": false,
   "reserve_used": 0,
   "left": 5,
-  "r10": "2 sealed + 3 reserve (the reserve only replaces failed or lost sessions; R09 authorizes no use of it)"
+  "r10": "2 sealed + 3 reserve; R09 authorizes no use of the reserve"
  },
  "versions": {
   "node": "v22.23.1",
@@ -51,10 +51,14 @@
  },
  "offline_checks": {
   "control_tests": {
-   "tests": 553,
+   "tests": 555,
    "suites": 89,
-   "pass": 553,
+   "pass": 555,
    "fail": 0,
+   "at_28abafa": {
+    "tests": 553,
+    "suites": 89
+   },
    "first_r09_commit": {
     "tests": 549,
     "suites": 89
@@ -89,6 +93,11 @@
    "mutants": 15,
    "killed": 15,
    "note": "rules wording (end with, end the final message with, finish with), load state, frontmatter detection, capability redaction, sanitizer, totals behind the cap (reads and calls), omitted counter, full_load, redaction of reasons and typed paths, Read line numbers; a first harness run with an empty NODE_TEST_CONTEXT killed nothing and was discarded"
+  },
+  "mutations_ratification_round_2": {
+   "mutants": 10,
+   "killed": 10,
+   "note": "help decide and help done wording back to end with or finish with, unanchored frontmatter pattern, wrapper handling"
   }
  },
  "historical_recalculation": {
@@ -120,7 +129,7 @@
    "not_attempted"
   ],
   "full_load": "always unknown (completeness is never inferred; full_read_observed removed in ratification round 1)",
-  "identity": "a real frontmatter block (--- / key: value lines with name: jev-control-mode / ---) after the Read line numbers are stripped; prose, fence, code line and unclosed block do not count",
+  "identity": "the returned content STARTS with a real frontmatter block (--- / key: value lines with name: jev-control-mode / ---) after the Read line numbers, leading blank lines and the two recognized Skill wrapper lines (Launching skill, Base directory for this skill) are removed; a complete block quoted in a code fence, behind prose or later in the text, prose, a code line and an unclosed block do not count",
   "totals": "count every event; the lists keep the first 40 records and report omitted counts; the load is computed from the totals",
   "free_text": "redacted before the cut: capability-shaped strings and the jev-flow sanitizer; result category and record position stay"
  },
@@ -130,5 +139,25 @@
    "rules: headless start the final message with Incomplete: + scores (measure.mjs accepts only /^Incomplete:/)",
    "measure.mjs: full_read_observed removed, full_load unknown, real frontmatter, totals and omitted independent of the 40-record lists, free text redacted"
   ]
+ },
+ "help_output_bytes": {
+  "decide": 1491,
+  "done": 1050,
+  "search": 522,
+  "cap": 1500,
+  "was_before_round_2": {
+   "decide": 1498,
+   "done": 1030
+  },
+  "note": "help decide and help done now ask that the final message START with Incomplete: (aligned with rules.mjs and the audit /^Incomplete:/)"
+ },
+ "ratification_round_2": {
+  "commit_fixed": "28abafa",
+  "fixes": [
+   "help.mjs: start the final message with Incomplete: in help decide and help done (three phrases shortened to stay under 1500 bytes)",
+   "measure.mjs: identity only when a frontmatter block starts the returned content (after line numbers, blank lines and two recognized wrapper lines); quoted blocks give no identity",
+   "results: allocation written as 2 sealed + 3 reserve; R09 authorizes no use of the reserve"
+  ],
+  "historical_recalculation": "15 transcripts re-measured with the cb0f52e and the 28abafa measurers against the new one: 0 different outside the skill section; no Skill call and no Read of the new name or directory identified"
  }
 }

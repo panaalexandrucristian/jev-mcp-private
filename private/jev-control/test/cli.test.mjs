@@ -667,6 +667,16 @@ describe("help without SKILL.md (R04)", () => {
     assert.match(text, /status: selected\/ordered: do exactly the plan items/);
     assert.ok(text.length < 1500, `fits the output cap (${text.length})`);
   });
+  it("R09: `help decide` asks that the final message START with Incomplete: (the audit accepts only /^Incomplete:/), like the rules, and still fits OUT_MAX in bytes through every alias", () => {
+    const direct = cli(["help", "decide"], { env: controlEnv(), cwd: outside() }).stdout;
+    assert.match(direct, /incomplete: start the final message with "Incomplete:" \+ scores/);
+    assert.match(direct, /start[^.]*Incomplete:/);
+    assert.doesNotMatch(direct, /end with|ending with|finish with/);
+    for (const args of [["decide", "--help"], ["decide", "-h"]]) assert.equal(cli(args, { env: controlEnv(), cwd: outside() }).stdout, direct, args.join(" "));
+    assert.ok(Buffer.byteLength(direct) < 1500, `${Buffer.byteLength(direct)} bytes`);
+    const rules = PROTOCOL_RULES.match(/headless [^.]*Incomplete:/)[0];
+    assert.match(rules, /start the final message with Incomplete:/, "the rules and the help say the same thing");
+  });
   it("R07: `help done` is the headless completion recipe: a new jev-claims.json, done alone, the helper removes it; its example is a claims object the helper accepts", () => {
     const text = cli(["help", "done"], { env: controlEnv(), cwd: outside() }).stdout;
     assert.equal(cli(["done", "--help"], { env: controlEnv(), cwd: outside() }).stdout, text);
@@ -677,7 +687,10 @@ describe("help without SKILL.md (R04)", () => {
     assert.match(text, /removes it before the snapshot and prints claims_removed: do not remove it yourself/);
     assert.match(text, /Headless runs refused a \/tmp file and a heredoc; an inline JSON is avoided for the same risk\./);
     assert.match(text, /outcome accepted = done, for that tree only/);
-    assert.match(text, /end with "Incomplete:"/);
+    assert.match(text, /start the final message with "Incomplete:" and the outcome/, "the audit accepts only a final message that STARTS with Incomplete:");
+    assert.doesNotMatch(text, /end with|ending with|finish with/, "no wording that reads as putting Incomplete: at the end");
+    assert.equal(cli(["help", "done"], { env: controlEnv(), cwd: outside() }).stdout, text, "help done and done --help are the same text");
+    assert.ok(Buffer.byteLength(text) < 1500, `fits OUT_MAX in bytes (${Buffer.byteLength(text)})`);
     const line = text.split("\n").find((l) => l.includes('{"request"'));
     const example = JSON.parse(line.slice(line.indexOf("{")).replace("<the user's request, verbatim>", "fix it"));
     const { claims, fileChecks } = splitClaims(example);

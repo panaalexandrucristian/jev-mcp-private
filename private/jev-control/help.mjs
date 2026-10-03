@@ -5,12 +5,12 @@
 
 const DECIDE = [
   'decide --file <batch.json|-> [--decision-id <id>]. One JSON object:',
-  '{"decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion rounds only>"}',
+  '{"decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
   '- 5 to 18 real options; the limit 20 counts action_gather_evidence and action_ask_user, added if missing. "space_small":true only when fewer real alternatives exist.',
   '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash, edit: edit tools, delegate: Agent only). Others: optional.',
-  '- order = several tasks: one option per task, each with its own action. Often only the next task is cleared: do the plan items, then decide again for the rest; never run an option outside the plan. Other kinds: first option only.',
+  '- order: one option per task, each with its own action. Often only the next task is cleared: do the plan items, then decide again for the rest; never run an option outside the plan. Other kinds: first option only.',
   '- Write the batch to a NEW file in the working directory (e.g. jev-batch.json if free; elsewhere or heredoc: refused). Run decide alone (a pipe, ; or && voids the grant); then a lone rm of only that file, else an audited edit.',
-  '- status: selected/ordered: do exactly the plan items. expand: add only NEW options or evidence, set "new_material", rerun with the SAME --decision-id (2 rounds; else a new decision). ask_user: ask. incomplete: end with "Incomplete:" + the scores. invalid: fix "problems".',
+  '- status: selected/ordered: do exactly the plan items. expand: add only NEW options or evidence, set "new_material", rerun with the SAME --decision-id (2 rounds; else a new decision). ask_user: ask. incomplete: start the final message with "Incomplete:" + scores. invalid: fix "problems".',
 ].join("\n");
 
 const SEARCH = [
@@ -36,7 +36,7 @@ const DONE = [
   '- Write a NEW file jev-claims.json in the repository root (never overwrite another file): {"request":"<the user\'s request, verbatim>","claims":[{"text":"<one concrete claim>","evidence":["file:<path>","cmd-1"]}],"checks":[["node","--test"]]}',
   '- evidence: file:<path> (the changed hunks of that file; every changed or new file must be cited), an excerpt id, or cmd-N (the Nth check, run by the gate itself; cite it for any claim about tests).',
   '- Edit nothing more, then run done --claims jev-claims.json ALONE (a pipe, ; or && voids the grant). The helper reads the file, removes it before the snapshot and prints claims_removed: do not remove it yourself.',
-  '- outcome accepted = done, for that tree only. Otherwise fix, rewrite the WHOLE file and run once more, or end with "Incomplete:" and the outcome. Never rerun for a better verdict.',
+  '- outcome accepted = done, for that tree only. Otherwise fix, rewrite the WHOLE file and run once more, or start the final message with "Incomplete:" and the outcome. Never rerun for a better verdict.',
 ].join("\n");
 
 const OVERVIEW = [
