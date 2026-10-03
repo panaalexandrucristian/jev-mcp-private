@@ -759,6 +759,25 @@ describe("only a claims file the transcript proves the helper consumed is not an
     assert.equal(files(`Exit code 2\n${doneOut({ exit: undefined }, "needs_evidence")}`, { error: true }), 0, "no exit in the report");
     assert.equal(files(`Exit code 2\n${doneOut({ exit: 2 }, "accepted")}`, { error: true }), 0, "accepted with the not-accepted exit contradicts itself");
     assert.equal(files(`Exit code 2\n${doneOut({ outcome: undefined }, "needs_evidence")}`, { error: true }), 0, "no outcome in the report");
+    // R07 council round 3 (B1/B2): only the runner's real not-accepted outcomes with the fields each one implies.
+    const err2 = (extra, outcome) => files(`Exit code 2\n${doneOut({ exit: 2, ...extra }, outcome)}`, { error: true });
+    assert.equal(err2({}, "ask_user"), 1);
+    assert.equal(err2({}, "escalate"), 1);
+    assert.equal(err2({}, "contradicted"), 1, "a contradiction, whatever the status");
+    assert.equal(err2({ status: "checks_failed" }, "contradicted"), 1);
+    assert.equal(err2({ status: "checks_failed", verdict: "needs_evidence" }, "checks_failed"), 1, "a failed check with a semantic verdict");
+    assert.equal(err2({ status: "checks_failed" }, "some_new_outcome"), 0, "an unknown outcome is not a failed check just because the status says so");
+    assert.equal(files(`Exit code 3\n${doneOut({ exit: 3 }, "needs_evidence")}`, { error: true }), 0, "a known outcome with an exit that is not the not-accepted one, text and report agreeing");
+    assert.equal(err2({ status: "snapshot_changed" }, "snapshot_changed"), 0, "snapshot_changed even with exit 2");
+    assert.equal(err2({}, "some_new_outcome"), 0, "an unknown outcome with exit 2");
+    assert.equal(err2({}, "unavailable"), 0, "unavailable with exit 2");
+    assert.equal(err2({ verdict: "accepted" }, "needs_evidence"), 0, "the verdict contradicts the outcome");
+    assert.equal(err2({ status: "unavailable" }, "needs_evidence"), 0, "a semantic outcome needs status ok");
+    assert.equal(err2({}, "checks_failed"), 0, "checks_failed needs status checks_failed");
+    assert.equal(err2({ status: "checks_failed", verdict: "contradicted" }, "checks_failed"), 0, "a contradiction would have been the outcome");
+    assert.equal(err2({ verdict: "needs_evidence" }, "contradicted"), 0, "contradicted needs the verdict contradicted");
+    assert.equal(files(doneOut({ status: "unavailable" })), 0, "an accepted report whose status is not ok");
+    assert.equal(files(doneOut({ verdict: "needs_evidence" })), 0, "an accepted outcome with another verdict");
     assert.equal(files(`Exit code 2\n${json({ status: "error", outcome: "error", exit: 1, claims_removed: "jev-claims.json", claims_sha256: sha(CLAIMS) })}`, { error: true }), 0, "the helper's internal-error line has no gate report");
   });
   it("another write, edit or rm of the path, or a call of unknown effects, between the write and the done leaves an edit", () => {

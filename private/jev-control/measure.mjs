@@ -735,10 +735,11 @@ function auxiliaryBatchFiles(events, classOf) {
  *   plain `jev-claims*.json` name the helper consumes, never an absolute path, a `./` prefix or a subdirectory) follows, and its result
  *   is the real helper's COHERENT summary naming `claims_removed` equal to the file and `claims_sha256` equal to the sha256 of that very
  *   content (printed only after the removal; a refusal or another version has neither). Coherent: either a success (not an error)
- *   with outcome accepted and exit 0, or an error result whose text starts with `Exit code 2` (the helper's not-accepted exit) and whose
- *   summary agrees (exit 2, an outcome that is not accepted and not an operational one: disabled, invalid_input, not_ready, unavailable,
- *   error). Removal is not acceptance, so the verdict does not matter, but an operational error, a report that contradicts its exit or
- *   an accepted report that is an error proves nothing (R07 council, B5: a documented narrowing of "an error result still counts");
+ *   with outcome accepted, exit 0, verdict accepted and status ok, or an error result whose text starts with `Exit code 2` (the runner's
+ *   not-accepted exit) and whose summary names exit 2 and one of the runner's known not-accepted outcomes with the fields that outcome
+ *   implies (see coherentReport). Removal is not acceptance, so the verdict does not matter, but an operational error (snapshot_changed,
+ *   unavailable, disabled, invalid_input, not_ready), an unknown outcome, a report that contradicts its exit or itself, or an accepted
+ *   report that is an error proves nothing (R07 council, B5: a documented narrowing of the plan's "an error result still counts");
  * - nothing of unknown effects (a Bash that is not one plain read or a lone `rm` of another path, a delegated agent, an unclassified
  *   tool, another `done` or a flow helper) and no other write, edit or `rm` of the path, by any request or context, ran or overlapped
  *   between the Write's result and the done's result, or while the Write ran. A `done` of the same path that is provably refused BEFORE
@@ -746,13 +747,19 @@ function auxiliaryBatchFiles(events, classOf) {
  *   is one (checks may have run).
  * Otherwise the Write is an ordinary edit.
  */
-const OPERATIONAL_OUTCOMES = new Set(["disabled", "invalid_input", "not_ready", "unavailable", "error"]);
-/** The helper's report of a consumed file is complete and agrees with how the call ended (see auxiliaryClaimsFiles). */
+// The outcomes the gate runner gives with its not-accepted exit (2), by the rule of decideOutcome in jev-flow/gate-run.mjs: a semantic
+// verdict (needs_evidence, ask_user, escalate; the status is then "ok"), a contradiction (any status) and a failed check (status
+// checks_failed, no contradiction). snapshot_changed (exit 4), unavailable (3), disabled, invalid_input, not_ready and anything unknown are not here.
+const VERDICT_OUTCOMES = new Set(["needs_evidence", "ask_user", "escalate"]);
+/** The helper's report of a consumed file is complete and its fields agree with each other and with how the call ended (see auxiliaryClaimsFiles). */
 function coherentReport(result, p) {
   if (typeof p.outcome !== "string" || !Number.isInteger(p.exit)) return false;
-  if (!result.error) return p.outcome === "accepted" && p.exit === 0;
+  if (!result.error) return p.outcome === "accepted" && p.exit === 0 && p.verdict === "accepted" && p.status === "ok";
   const m = /^Exit code (\d+)\n/.exec(String(result.text));
-  return m !== null && Number(m[1]) === p.exit && p.exit === 2 && p.outcome !== "accepted" && !OPERATIONAL_OUTCOMES.has(p.outcome);
+  if (m === null || Number(m[1]) !== p.exit || p.exit !== 2) return false;
+  if (VERDICT_OUTCOMES.has(p.outcome)) return p.verdict === p.outcome && p.status === "ok";
+  if (p.outcome === "contradicted") return p.verdict === "contradicted";
+  return p.outcome === "checks_failed" && p.status === "checks_failed" && p.verdict !== "contradicted";
 }
 
 function auxiliaryClaimsFiles(events, classOf) {

@@ -1,0 +1,50 @@
+{
+ "round": "R07",
+ "kind": "offline, no live session",
+ "live_sessions_used": 0,
+ "live": "unmeasured",
+ "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
+ "branch": "jev-control-skill",
+ "commits": ["e57cd8588acec1da6ba385b8a72b25bb2c2b9811", "bdbf7fe", "round-3 commit (adds results/R07, README and evaluation rows)"],
+ "ledger": {
+  "before": 13,
+  "after": 13,
+  "cap": 20,
+  "lock": false,
+  "reserve_used": 0
+ },
+ "versions": {
+  "node": "v22.23.1",
+  "claude_code": "2.1.288",
+  "plugin": "0.7.0"
+ },
+ "answers": {
+  "D36": "gate sessions: dev S1 at 0.95, dev S2 at 0.90 via launch --threshold (moved to R08 by D39)",
+  "D37": "offline fix so the gate is reachable headless, council-verified before launch",
+  "D38": "surface: private/jev-control, skills/jev-control, commands/jev-control.md, the jev-control paragraph of commands/jev-done.md",
+  "D39": "R07 sessions run at the start of R08 (R08 up to 4 sessions), reported as «R07 gate sessions (run in R08 per D39)»"
+ },
+ "offline_checks": {
+  "control_tests": {"tests": 505, "suites": 84, "pass": 505, "fail": 0, "at_e57cd85": 495},
+  "flow_tests": {"tests": 324, "pass": 324, "fail": 0},
+  "plugin_validate": "passed",
+  "seal_verify": "ok",
+  "diff_check": "clean",
+  "protected_diff_lines": 0,
+  "secret_grep": "none",
+  "help_bytes": {"decide": 1499, "done": 1031, "limit": 1500}
+ },
+ "defects": [
+  {"round": 1, "by": "A", "what": "tracked file under another case consumed on a case-insensitive file system", "fixed": true},
+  {"round": 1, "by": "B", "what": "check validation after the removal, empty output, absolute path and gate report accepted by the measurer, input keys echoed, inline JSON called refused", "fixed": true},
+  {"round": 3, "by": "B", "what": "coherentReport accepted snapshot_changed with exit 2 and unknown outcomes", "fixed": true}
+ ],
+ "is_error_policy": "documented adjustment: only a complete report whose fields agree with the call's end proves a consumption; a known not-accepted outcome with exit 2 and its implied fields, or accepted with exit 0; everything else leaves the Write an edit",
+ "coverage_on_R06_transcripts": {"protocol_claims_files": 0, "protocol_claims_removals": 0},
+ "limits": [
+  "no live session: the gate under the real headless permissions is unmeasured",
+  "cleanup line of R06 unmeasured live",
+  "whether the model reaches done is unknown",
+  "the helper was not run under the real headless permission layer"
+ ]
+}
