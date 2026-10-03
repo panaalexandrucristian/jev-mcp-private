@@ -147,7 +147,8 @@
           }
         ]
       ]
-    }
+    },
+    "claudeai_connectors_switch": "strings ENABLE_CLAUDEAI_MCP_SERVERS and disableClaudeAiConnectors present in the Claude Code 2.1.288 binary; semantics not tested; configuration not changed"
   },
   "metrics": {
     "outcome": {
@@ -280,7 +281,8 @@
     "plugin_validate": "passed (Claude Code 2.1.288)",
     "seal_verify": "ok",
     "control_suite_final": "425 tests, 78 suites, all pass (after the authorization fix)",
-    "flow_suite_final": "324 tests, 61 suites, all pass"
+    "flow_suite_final": "324 tests, 61 suites, all pass",
+    "control_suite_after_ratification_fixes": "429 tests, 78 suites, all pass"
   },
   "defect_and_change": {
     "priority_1_runner_or_measurement_defect_that_invalidates_R02_R10": "none shown by the real transcript",
@@ -288,12 +290,21 @@
       "measure.mjs has no baseline mode: its coverage and finalization counters describe the absence of the control",
       "measure.mjs counts an attempted but permission-denied Bash command (is_error result, stream permission_denied) as a possible change (bash_changes 1)"
     ],
-    "fixed": "edit_a/edit-a authorization collision: ids are read exactly in authorization.mjs (idPositions); regressions in authorization, cli and measure-integration tests"
+    "fixed": "edit_a/edit-a authorization collision: ids are read exactly in authorization.mjs (idPositions); regressions in authorization, cli and measure-integration tests",
+    "found_at_ratification": [
+      "options.mjs SLUG accepted trailing/doubled separators (edit_a-, edit_a_, edit__a) and idPositions voided a match only for separator+letter/digit: 'Approve edit_a-.' authorized edit_a",
+      "run-session.mjs configProblems read only the first occurrence of each flag: a repeated --permission-mode/--setting-sources/--plugin-dir before --allowedTools was not seen"
+    ],
+    "fixed_at_ratification": [
+      "SLUG = ^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*$; any _ or - right before or after the id voids the match",
+      "-p, --model, --max-turns, --output-format, --verbose, --setting-sources, --plugin-dir, --permission-mode, --allowedTools must appear exactly once; aliases and --flag=value spellings refused"
+    ]
   },
   "limits": [
     "n = 1 baseline; no saving or ranking is claimed",
     "JEV_PROVIDER inside the session, the Jev MCP server version and per-hook activity are not observable in the stream or transcript (unknown)",
     "S2 was not launched",
-    "the stream reports 7 turns for 6 unique assistant messages; the difference is not explained here"
+    "the stream reports 7 turns for 6 unique assistant messages; the difference is not explained here",
+    "whether the claude.ai connectors affect sessions other than S1 is not shown; no live session until the user answers"
   ]
 }

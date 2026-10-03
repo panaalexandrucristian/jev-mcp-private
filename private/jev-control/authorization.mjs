@@ -89,7 +89,8 @@ const spansOf = (s) => Array.from(s.matchAll(TOKEN), (m) => ({ tok: m[0], start:
 /**
  * Positions {p, n} of the id in the normalized sentence `s`, in the words of `tokensOf(s)`. The identity is EXACT: the text
  * must be the id itself, with its own `_` and `-` («edit_a» is not «edit-a» nor «edit a»), and not a piece of a longer
- * identifier («pre-edit_a»); two ids that differ only by their separators are two options, and a word that names one never
+ * identifier: any `_` or `-` right before or right after the id voids the match, whatever follows it («pre-edit_a», «edit_a-»,
+ * «edit_a_.», «edit_a--.»); two ids that differ only by their separators are two options, and a word that names one never
  * approves the other. An id of one or two letters, which is also a word, only after «option».
  */
 function idPositions(s, id) {
@@ -102,10 +103,11 @@ function idPositions(s, id) {
   for (let p = 0; p + idt.length <= t.length; p++) {
     if (!idt.every((w, k) => t[p + k] === w)) continue;
     const start = spans[p].start;
-    const end = spans[p + idt.length - 1].end;
-    if (s.slice(start, end) !== want) continue;
-    if (/[_-]/.test(s[start - 1] ?? "") && /[\p{L}\p{N}]/u.test(s[start - 2] ?? "")) continue;
-    if (/[_-]/.test(s[end] ?? "") && /[\p{L}\p{N}]/u.test(s[end + 1] ?? "")) continue;
+    if (!s.startsWith(want, start)) continue;
+    const end = start + want.length;
+    if (end < spans[p + idt.length - 1].end) continue;
+    if (/[_-]/.test(s[start - 1] ?? "") || /[_-]/.test(s[end] ?? "")) continue;
+    if (/[\p{L}\p{N}]/u.test(s[end] ?? "")) continue;
     if (isShortId(id) && !OPTION_TAG.has(t[p - 1])) continue;
     out.push({ p, n: idt.length });
   }

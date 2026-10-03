@@ -79,6 +79,37 @@ describe("the user's words as an authorization", () => {
     assert.equal(grants("Yes, use edit_a.", optionScope("edit_a")), true);
     assert.equal(grants("Yes, go-ahead, use o1", optionScope("o1")), true, "ordinary hyphenated words are read as before");
   });
+  it("a separator right before or after the id voids the match, whatever follows it: edit_a- is not edit_a", () => {
+    const a = optionScope("edit_a");
+    const long = optionScope("edit_a_b");
+    for (const text of ["Approve edit_a-.", "Approve edit_a_.", "Approve edit_a--.", "Approve edit_a--please.", "Approve edit_a-please.", "Approve -edit_a.", "Approve _edit_a.", "Approve --edit_a.", "Approve edit__a.", "Approve pre--edit_a."]) {
+      assert.equal(grants(text, a), false, text);
+      assert.equal(readMessage(text, a).reason, "object_missing", text);
+    }
+    // The exact id stays approved, also next to ordinary punctuation and spaces around a dash.
+    for (const text of ["Approve edit_a.", "Approve edit_a", "Approve (edit_a)!", "Approve edit_a - thanks"]) assert.equal(grants(text, a), true, text);
+    // A longer id with several separators names itself only; its prefix is not approved by it, nor it by the prefix.
+    assert.equal(grants("Approve edit_a_b.", long), true);
+    assert.equal(grants("Approve edit_a_b.", a), false);
+    assert.equal(grants("Approve edit_a.", long), false);
+    assert.equal(grants("Approve edit_a--b.", long), false);
+    assert.equal(grants("Approve pre--edit_a_b.", long), false);
+    // A short answer bound to the question, and the source-message check, agree.
+    assert.equal(grants("yes", a, "Approve edit_a-?"), false);
+    assert.equal(grants("yes", a, "Approve edit_a_?"), false);
+    assert.equal(grants("yes", a, "Approve edit_a?"), true);
+    assert.equal(grants("edit_a-", a, "Should we approve edit_a or edit_a_b?"), false);
+    assert.equal(grants("edit_a", a, "Should we approve edit_a or edit_a_b?"), true);
+    assert.equal(grants("edit_a_b", a, "Should we approve edit_a or edit_a_b?"), false);
+    assert.equal(findAuthorizations("Approve edit_a-.", "Approve edit_a-.", a).occurrences.length, 0);
+    assert.equal(findAuthorizations("Approve edit_a_.", "Approve edit_a_.", a).occurrences.length, 0);
+    assert.equal(findAuthorizations("Approve edit_a_b.", "Approve edit_a_b.", a).occurrences.length, 0);
+    assert.equal(findAuthorizations("Approve edit_a.", "Approve edit_a.", a).occurrences.length, 1);
+    // An id written with its own terminal separator (not a valid option id, but the matcher must not lend its approval to another) is itself.
+    assert.equal(grants("Approve edit_a-.", optionScope("edit_a-")), true);
+    assert.equal(grants("Approve edit_a.", optionScope("edit_a-")), false);
+    assert.equal(grants("Approve edit_a--.", optionScope("edit_a-")), false);
+  });
   it("mentioning the object is not authorizing the operation: the grant must be aimed at the budget or the option", () => {
     for (const no of ["Use Jev.", "Use Node 22 for the calls.", "Approve the pull request for calls.", "Yes, the budget.", "Jev is fine.", "Yes, calls are cheap."]) assert.equal(grants(no), false, no);
     for (const yes of ["Increase the budget.", "Yes, approve 25 more calls.", "yes spend five more calls", "Ok, continue past the limit", "Da, mărește bugetul cu 30."]) assert.equal(grants(yes), true, yes);

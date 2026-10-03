@@ -25,7 +25,8 @@ export const MAX_OPTIONS = 20;
 export const MAX_EVIDENCE_LINES = 3;
 const MAX_EVIDENCE_LINE_CHARS = 600;
 const MAX_TEXT_CHARS = 1500;
-const SLUG = /^[a-z][a-z0-9_-]*$/;
+// Words of a-z and 0-9 joined by single `_` or `-`: no trailing or doubled separator, so no id is a prefix-with-separator of another.
+const SLUG = /^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*$/;
 
 const CONTROL_TEXT = {
   [GATHER_ID]: "Gather more evidence before acting: read or run something that could change the choice.",
@@ -74,7 +75,7 @@ export function normalizeBatch(raw, { root = null } = {}) {
     }
     const id = typeof o.id === "string" ? o.id : "";
     const text = typeof o.text === "string" ? o.text.trim() : "";
-    if (!SLUG.test(id) || id.length > 64) problems.push(`${where}.id must be a lowercase slug (a-z, 0-9, _ or -), at most 64 characters`);
+    if (!SLUG.test(id) || id.length > 64) problems.push(`${where}.id must be a lowercase slug: a-z and 0-9 words joined by single _ or -, at most 64 characters`);
     else if (DECIDE_HATCHES.includes(id)) problems.push(`${where}.id "${id}" collides with a jev_decide escape hatch; use e.g. action_${id}`);
     if (!text || text.length > MAX_TEXT_CHARS) problems.push(`${where}.text must be 1-${MAX_TEXT_CHARS} characters`);
     const evidence = Array.isArray(o.evidence) ? o.evidence.filter((e) => typeof e === "string" && e.trim() !== "").map((e) => e.trim()) : [];

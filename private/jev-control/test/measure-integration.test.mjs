@@ -214,13 +214,13 @@ describe("the audit follows the real receipt, budget and search shapes", () => {
 
 describe("the audit reads an approval by the exact id (edit_a is not edit-a)", () => {
   /** A real decision whose two best options are Write actions of different content, with ids that differ only by _ and -. */
-  const prepare = () => {
+  const prepare = (ids = ["edit_a", "edit-a"]) => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv({ script: { noul: [{ p: p7([0.9, 0.8, 0.4, 0.3, 0.2]) }] } });
     cli(["on", ...SID, "--priorities", "x"], { env, cwd: repo });
     const batch = batchOf(5, { kind: "edit" });
-    batch.options[0] = { ...batch.options[0], id: "edit_a", action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
-    batch.options[1] = { ...batch.options[1], id: "edit-a", action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
+    batch.options[0] = { ...batch.options[0], id: ids[0], action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
+    batch.options[1] = { ...batch.options[1], id: ids[1], action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
     const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d.json.status, "expand", d.stdout);
     return { repo, env, d };
@@ -260,5 +260,26 @@ describe("the audit reads an approval by the exact id (edit_a is not edit-a)", (
     assert.equal(reverse.approvals.bound, 0);
     assert.equal(reverse.coverage.covered, 0);
     assert.equal(reverse.coverage.grants.created, 0);
+  });
+  it("a valid batch with a longer id: the prefix, a trailing or a doubled separator bind nothing", () => {
+    const { repo, env, d } = prepare(["edit_a", "edit_a_b"]);
+    const genuine = prepare(["edit_a", "edit_a_b"]);
+    const real = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit_a_b", "--message", "Approve edit_a_b."], { env: genuine.env, cwd: genuine.repo });
+    assert.equal(real.json.override, "user", real.stdout);
+    for (const words of ["Approve edit_a.", "Approve edit_a_b-.", "Approve edit_a_b--please."]) {
+      const refused = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit_a_b", "--message", words], { env, cwd: repo });
+      assert.equal(refused.json.reason, "message_not_about_option", words);
+      const a = audit([prompt(repo, words), ...step(repo, decideCmd, lastLine(d)), ...step(repo, approveCmd("edit_a_b", words), lastLine(real)), ...step(repo, writeCall(repo, "BBB"), "ok"), ...step(repo, writeCall(repo, "AAA"), "ok")]);
+      assert.equal(a.approvals.bound, 0, words);
+      assert.equal(a.threshold.approvals_unbound, 1, words);
+      assert.equal(a.coverage.covered, 0, words);
+      assert.equal(a.coverage.grants.created, 0, words);
+    }
+    // The words for edit_a do not bind a claimed approval of the longer id's prefix when they carry a trailing separator.
+    const realA = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit_a", "--message", "Approve edit_a."], { env: genuine.env, cwd: genuine.repo });
+    const trailing = audit([prompt(repo, "Approve edit_a-."), ...step(repo, decideCmd, lastLine(d)), ...step(repo, approveCmd("edit_a", "Approve edit_a-."), lastLine(realA)), ...step(repo, writeCall(repo, "AAA"), "ok")]);
+    assert.equal(trailing.approvals.bound, 0);
+    assert.equal(trailing.coverage.covered, 0);
+    assert.equal(trailing.coverage.grants.created, 0);
   });
 });

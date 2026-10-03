@@ -404,6 +404,31 @@ describe("approvals, budget and direct calls", () => {
     assert.deepEqual(approved(), ["edit_a", "edit-a"]);
     assert.notEqual(exact.json.ah, answered.json.ah, "the two grants are bound to different Write payloads");
   });
+  it("a valid batch of edit_a and the longer edit_a_b: separators around an id never lend its approval to the other", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: noulScript(p7([0.9, 0.8, 0.4, 0.3, 0.2])) });
+    on(repo, env);
+    const batch = batchOf(5, { kind: "edit" });
+    batch.options[0] = { ...batch.options[0], id: "edit_a", action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
+    batch.options[1] = { ...batch.options[1], id: "edit_a_b", action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
+    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
+    assert.equal(d.json.status, "expand", d.stdout);
+    const approve = (option, message, question) => cli(["approve", ...SID, "--decision", "dec9", "--option", option, "--message", message, ...(question ? ["--question", question] : [])], { env, cwd: repo });
+    const approved = () => loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.map((a) => a.option);
+    for (const [option, message] of [["edit_a", "Approve edit_a-."], ["edit_a", "Approve edit_a_."], ["edit_a", "Approve edit_a--."], ["edit_a", "Approve edit_a--please."], ["edit_a", "Approve edit_a_b."], ["edit_a_b", "Approve edit_a."], ["edit_a_b", "Approve edit_a_b-."], ["edit_a_b", "Approve pre--edit_a_b."]]) {
+      const r = approve(option, message);
+      assert.equal(r.code, 4, `${message} for ${option}`);
+      assert.equal(r.json.reason, "message_not_about_option", `${message} for ${option}`);
+    }
+    assert.equal(approve("edit_a", "yes", "Approve edit_a_b?").json.reason, "message_not_about_option");
+    assert.deepEqual(approved(), [], "no refused approval was recorded");
+    const exact = approve("edit_a", "Approve edit_a.");
+    assert.equal(exact.json.override, "user", exact.stdout);
+    const longer = approve("edit_a_b", "yes", "Approve edit_a_b?");
+    assert.equal(longer.json.override, "user", longer.stdout);
+    assert.deepEqual(approved(), ["edit_a", "edit_a_b"]);
+    assert.notEqual(exact.json.ah, longer.json.ah);
+  });
   it("direct calls: reserve before, confirm after; at 25 the reservation is refused until the user approves more", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv();

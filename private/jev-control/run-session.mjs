@@ -68,22 +68,38 @@ export function sessionEnv(env = process.env) {
   return out;
 }
 
+/** `args` without the prompt, the argument of -p: it is text and not a flag. */
+const flagArgs = (args) => {
+  const at = args.indexOf("-p");
+  return at < 0 ? args : args.filter((_, i) => i !== at + 1);
+};
 const valueAfter = (args, flag) => {
   const at = args.indexOf(flag);
   return at < 0 ? undefined : args[at + 1];
 };
 
+// Every flag the configuration validates must appear once: a second occurrence (or a `--flag=value` / alias spelling) could
+// override the first, so only a command with exactly one of each is accepted.
+const SINGLETON_FLAGS = ["-p", "--model", "--max-turns", "--output-format", "--verbose", "--setting-sources", "--plugin-dir", "--permission-mode", "--allowedTools"];
+const FLAG_SPELLINGS = /^--(?:(?:model|max-turns|output-format|verbose|setting-sources|plugin-dir|permission-mode|allowedTools|allowed-tools|disallowedTools|disallowed-tools)=|allowed-tools$|disallowedTools$|disallowed-tools$)/;
+
 /** Why `args` do not carry the mandatory D27/D28 configuration (empty when they do); bypassing permissions is always refused. */
 export function configProblems(args) {
   const problems = [];
   if (args.some((a) => /^--(allow-)?dangerously-skip-permissions$/.test(a) || /bypassPermissions/.test(String(a)))) problems.push("bypassing permissions is not allowed in a test session");
-  if (valueAfter(args, "--permission-mode") !== PERMISSION_MODE) problems.push(`the session must pass --permission-mode ${PERMISSION_MODE}`);
-  const tools = args.indexOf("--allowedTools");
-  const list = tools < 0 ? [] : args.slice(tools + 1);
+  const flags = flagArgs(args);
+  for (const flag of SINGLETON_FLAGS) {
+    const n = flags.filter((a) => a === flag).length;
+    if (n > 1) problems.push(`${flag} must appear exactly once, not ${n} times`);
+  }
+  if (flags.some((a) => FLAG_SPELLINGS.test(String(a)))) problems.push("a flag of the session configuration must be written once, as «--flag value», without alias or «=» spelling");
+  if (valueAfter(flags, "--permission-mode") !== PERMISSION_MODE) problems.push(`the session must pass --permission-mode ${PERMISSION_MODE}`);
+  const tools = flags.indexOf("--allowedTools");
+  const list = tools < 0 ? [] : flags.slice(tools + 1);
   if (list.length !== ALLOWED_TOOLS.length || list.some((t, i) => t !== ALLOWED_TOOLS[i])) problems.push("--allowedTools must be exactly the D27 list, last on the command line");
-  if (valueAfter(args, "--setting-sources") !== "project") problems.push("the session must pass --setting-sources project");
-  if (valueAfter(args, "--plugin-dir") !== PLUGIN_DIR) problems.push(`the session must pass --plugin-dir ${PLUGIN_DIR}`);
-  if (valueAfter(args, "--output-format") !== "stream-json" || !args.includes("--verbose")) problems.push("the session must pass --output-format stream-json --verbose");
+  if (valueAfter(flags, "--setting-sources") !== "project") problems.push("the session must pass --setting-sources project");
+  if (valueAfter(flags, "--plugin-dir") !== PLUGIN_DIR) problems.push(`the session must pass --plugin-dir ${PLUGIN_DIR}`);
+  if (valueAfter(flags, "--output-format") !== "stream-json" || !flags.includes("--verbose")) problems.push("the session must pass --output-format stream-json --verbose");
   return problems;
 }
 
@@ -218,11 +234,12 @@ export function launchProblems({ wrapper, args, ledgerPath = LEDGER, lockPath = 
   } else if (lockPath === LOCK_PATH) {
     problems.push("a simulated executable must use its own lockPath, never the campaign lock");
   }
-  const at = args.indexOf("--model");
-  if (at < 0 || args[at + 1] !== "sonnet") problems.push("the session must pass --model sonnet");
+  const flags = flagArgs(args);
+  const at = flags.indexOf("--model");
+  if (at < 0 || flags[at + 1] !== "sonnet") problems.push("the session must pass --model sonnet");
   if (!args.includes("-p")) problems.push("a headless session needs -p");
-  const turns = args.indexOf("--max-turns");
-  if (turns < 0 || !(Number(args[turns + 1]) >= 1 && Number(args[turns + 1]) <= LIMITS.maxTurns)) problems.push(`--max-turns must be 1-${LIMITS.maxTurns}`);
+  const turns = flags.indexOf("--max-turns");
+  if (turns < 0 || !(Number(flags[turns + 1]) >= 1 && Number(flags[turns + 1]) <= LIMITS.maxTurns)) problems.push(`--max-turns must be 1-${LIMITS.maxTurns}`);
   problems.push(...configProblems(args));
   const count = ledgerCount(ledgerPath);
   if (count === null) problems.push("the ledger cannot be read");

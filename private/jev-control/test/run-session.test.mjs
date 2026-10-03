@@ -112,6 +112,39 @@ describe("launch rules", () => {
     assert.match(launchProblems({ ...base, args: [...good, "Bash(rm:*)"] }).join(), /allowedTools/);
     assert.match(launchProblems({ ...base, args: [...good.slice(0, good.indexOf("--allowedTools")), "--allowedTools", "Bash(*)"] }).join(), /allowedTools/);
   });
+  it("a repeated or conflicting configuration flag is refused, wherever it stands before the allowlist", () => {
+    const base = { wrapper: "w", ledgerPath: emptyLedger(), lockPath: tempLock(), testWrapper: true };
+    const good = baseArgs();
+    const at = good.indexOf("--setting-sources");
+    const before = (...extra) => [...good.slice(0, at), ...extra, ...good.slice(at)];
+    const repeated = [
+      [["--setting-sources", "user"], /--setting-sources must appear exactly once/],
+      [["--plugin-dir", "/other/plugin"], /--plugin-dir must appear exactly once/],
+      [["--permission-mode", "default"], /--permission-mode must appear exactly once/],
+      [["--model", "opus"], /--model must appear exactly once/],
+      [["--max-turns", "1"], /--max-turns must appear exactly once/],
+      [["--output-format", "json"], /--output-format must appear exactly once/],
+      [["--verbose"], /--verbose must appear exactly once/],
+      [["--allowedTools", "Bash(rm:*)"], /--allowedTools must appear exactly once/],
+      [["-p", "another prompt"], /-p must appear exactly once/],
+    ];
+    for (const [extra, pattern] of repeated) {
+      assert.match(launchProblems({ ...base, args: before(...extra) }).join(), pattern, extra.join(" "));
+      assert.match(configProblems(before(...extra)).join(), pattern, extra.join(" "));
+    }
+    // The same flags placed first, or an extra one placed after a valid one, are as refused.
+    assert.notDeepEqual(configProblems(["--permission-mode", "default", ...good]), []);
+    assert.notDeepEqual(configProblems(["--setting-sources", "user", ...good]), []);
+    assert.notDeepEqual(configProblems(["--plugin-dir", "/other/plugin", ...good]), []);
+    // Alias and «=» spellings could override the checked flag.
+    for (const spelled of ["--permission-mode=default", "--setting-sources=user", "--plugin-dir=/other/plugin", "--allowed-tools", "--allowedTools=Bash(*)", "--model=opus", "--disallowedTools"]) {
+      assert.notDeepEqual(configProblems(before(spelled)), [], spelled);
+    }
+    // A prompt that looks like a flag is text: the command stays valid.
+    assert.deepEqual(configProblems(buildArgs({ prompt: "--permission-mode" })), []);
+    assert.deepEqual(launchProblems({ ...base, args: buildArgs({ prompt: "--model" }) }), []);
+    assert.deepEqual(configProblems(good), []);
+  });
   it("sessionEnv fixes JEV_PROVIDER and drops JEV_FLOW and every JEV_CONTROL* key, without touching the input", () => {
     const input = { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_FLOW: "on", JEV_CONTROL: "on", JEV_CONTROL_LIVE: "1", JEV_CONTROL_CACHE: "/c", JEV_PROVIDER: "openai", JEV_OTHER: "x" };
     const out = sessionEnv(input);

@@ -43,6 +43,17 @@ describe("option batches (D6)", () => {
     const b = batchOf(5);
     b.options[1].id = "Bad Id";
     assert.match(problemsOf(b).join(" "), /lowercase slug/);
+    // Words of a-z and 0-9 joined by single separators: a trailing or doubled one would let text naming the id name its prefix.
+    for (const id of ["edit_a-", "edit_a_", "edit__a", "edit_a--", "edit--a", "-edit_a", "_edit_a", "1edit", "edit_"]) {
+      const bad = batchOf(5);
+      bad.options[1].id = id;
+      assert.match(problemsOf(bad).join(" "), /lowercase slug: a-z and 0-9 words joined by single _ or -/, id);
+    }
+    for (const id of ["edit_a", "edit-a", "o1", "edit_a_b", "a", "o10"]) {
+      const good = batchOf(5);
+      good.options[1].id = id;
+      assert.doesNotMatch(problemsOf(good).join(" "), /lowercase slug/, id);
+    }
     const d = batchOf(5);
     d.options[1].id = "o1";
     d.options[1].text = "another text";
