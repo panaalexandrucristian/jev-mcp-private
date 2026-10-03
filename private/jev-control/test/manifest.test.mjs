@@ -32,6 +32,14 @@ describe("the plugin ships jev-control as 0.7.0", () => {
 describe("skill and command", () => {
   const skill = read("skills", "jev-control-mode", "SKILL.md");
   const fm = frontmatter(skill);
+  it("R09: no file of the skill asks to END the final message with Incomplete: (the audit accepts only a message that starts with it)", () => {
+    const base = join(REPO_ROOT, "skills", "jev-control-mode");
+    const files = ["SKILL.md", ...["reference", "examples"].flatMap((d) => readdirSync(join(base, d)).filter((f) => f.endsWith(".md")).map((f) => `${d}/${f}`))];
+    const old = /\b(?:end|ends|ending|finish|finishes)\s+with\s+[`"']?Incomplete:/i;
+    for (const f of files) assert.doesNotMatch(readFileSync(join(base, f), "utf8"), old, f);
+    assert.match(skill, /start the final message with `Incomplete:` or ask the user/);
+    assert.match(skill, /\(or start the final message with `Incomplete:`\)/);
+  });
   it("is named jev-control-mode (R09, D43) with explicit-only triggers in English and Romanian", () => {
     assert.equal(fm.name, "jev-control-mode");
     assert.equal(fm.name, "jev-control-mode", "the skill name is its directory name");
