@@ -1317,6 +1317,50 @@ describe("only a batch file the transcript proves to be helper input is not an e
     assert.equal(a.coverage.uncovered, 0, "the removal is not an action either");
     assert.equal(a.eliminators.below_threshold_actions_without_approval, 0);
   });
+  describe("a decision the helper did not clear still read the batch, so its versions are helper input (R08)", () => {
+    const failed = (code, o) => `Exit code ${code}\n${json(o)}`;
+    const expandOut = (o = {}) => failed(2, { status: "expand", decision_id: "d1", kind: "order", threshold: 0.9, round: 0, calls: 1, tiebreaks: 0, reason: "none_above_threshold", expansions_left: 2, plan: [], plan_total: 0, scores: ["o1:0.8", "o2:0.18", "action_gather_evidence:0.15", "action_ask_user:0.12"], scores_total: 4, ...o });
+    const incompleteOut = (o = {}) => failed(2, { status: "incomplete", decision_id: "d1", kind: "order", threshold: 0.9, round: 2, calls: 1, tiebreaks: 0, reason: "none_above_threshold", report: "Incomplete: no option exceeded T=0.9", plan: [], plan_total: 0, scores: ["o1:0.9", "o3:0.17"], scores_total: 2, ...o });
+    const invalidOut = failed(4, { status: "invalid", problems: ["options[0].evidence must have 1-3 concrete lines"], message: "options[0].evidence must have 1-3 concrete lines" });
+    const refusedOut = failed(4, { status: "refused", decision_id: "d1", reason: "no_new_material", message: "an expansion round needs new options or new evidence" });
+    const decideErr = (out) => decideFile(out, "jev-batch.json", { error: true });
+    it("the live shape: every version read by an expand, a refusal, an invalid or an incomplete result, then the lone rm, is no edit, no uncovered action and no action while blocked", () => {
+      const a = audit([prompt("go"), ...writeBatch(), ...decideErr(invalidOut), ...editBatch('"which first?"', '"which now?"'), ...decideErr(expandOut()), ...editBatch('"which now?"', '"which then?"'), ...decideErr(refusedOut), ...editBatch('"which then?"', '"which last?"'), ...decideErr(incompleteOut()), ...remove(), final()]);
+      assert.deepEqual(verdict(a), { files: 4, removals: 1, edits: 0, violations: 0 });
+      assert.equal(a.coverage.uncovered, 0, "the removal after the incomplete result is no action");
+      assert.equal(a.threshold.actions_while_blocked, 0);
+    });
+    it("ask_user ends a batch the same way", () => {
+      const a = audit([prompt("go"), ...writeBatch(), ...decideErr(failed(2, { status: "ask_user", decision_id: "d1", kind: "order", scores: ["o1:0.5", "action_ask_user:0.4"] })), ...remove(), final()]);
+      assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 0, violations: 0 });
+    });
+    it("a real edit still counts after such a result, and so does a version nothing read", () => {
+      const blocked = audit([prompt("go"), ...writeBatch(), ...decideErr(incompleteOut()), ...edit("src/x.mjs"), ...remove(), final()]);
+      assert.equal(blocked.threshold.actions_while_blocked, 1);
+      assert.deepEqual(blocked.coverage.uncovered_reasons, { while_blocked: 1 });
+      const unread = audit([prompt("go"), ...writeBatch(), ...decideErr(expandOut()), ...editBatch('"which first?"', '"which now?"'), ...remove(), final()]);
+      assert.deepEqual(verdict(unread), { files: 1, removals: 1, edits: 1, violations: 1 }, "the Edit was never read by a decide");
+    });
+    it("only the helper's own result for that version proves it, and the file must still be removed", () => {
+      const run = (out, ...tail) => verdict(audit([prompt("go"), ...writeBatch(), ...decideFile(out, "jev-batch.json", { error: true }), ...tail, final()]));
+      assert.deepEqual(run(expandOut()), KEPT(0, 1), "never removed");
+      for (const [out, why] of [
+        [expandOut().replace("Exit code 2", "Exit code 4"), "the exit code is not the one of the status"],
+        [expandOut().replace(/^Exit code 2\n/, ""), "no exit code line"],
+        [failed(3, { status: "unavailable", message: "no provider" }), "unavailable is not a read of the batch"],
+        [failed(2, { status: "expand_later", decision_id: "d1", kind: "order", scores: ["o1:0.5"] }), "an unknown status"],
+        [expandOut({ scores: ["zz9:0.8"] }), "a score names an option that is not in this version"],
+        [expandOut({ scores: [] }), "no scores"],
+        [expandOut({ scores: undefined }), "no scores field"],
+        [expandOut({ decision_id: "" }), "no decision id"],
+        [expandOut({ kind: "edit" }), "another kind"],
+        [failed(4, { status: "invalid" }), "an invalid result without a message or problems"],
+        [failed(4, "text"), "not an object"],
+        [expandOut().replace("Exit code 2", "Exit code 2 ") , "a changed first line"],
+      ]) assert.deepEqual(run(out, ...remove()), KEPT(0, 1), why);
+      assert.deepEqual(verdict(audit([prompt("go"), ...writeBatch(), ...decideFile(expandOut(), "jev-batch.json"), ...remove(), final()])), KEPT(0, 1), "an expand that is not an error result");
+    });
+  });
   it("a real edit stays an action while blocked, a proven batch edit in the same state does not", () => {
     const asking = decideOut({ status: "ask_user", kind: "order", scores: ["o1:0.5"] });
     const a = audit([prompt("go"), ...writeBatch(), ...decideFile(ordered("o1")), ...decideFile(asking), ...editBatch('"which first?"', '"which now?"'), ...edit("src/x.mjs"), ...decideFile(ordered("o2")), ...remove()]);

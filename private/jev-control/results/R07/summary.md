@@ -1,6 +1,6 @@
 # R07 — completion path (offline round)
 
-**No live session was started in R07** (ledger 13/20 before and after, no lock). The two gate sessions planned for R07 are moved to the start of R08 by D39 (see below); nothing in this file is a live result, and every live metric is `"unmeasured"`.
+**No live session was started in R07** (ledger 13/20 before and after, no lock). The two gate sessions planned for R07 (D36) were run at the start of R08 under the user's D39 (see below); nothing in this file is a live result, and every live metric is `"unmeasured"`.
 
 Base commit `879c2ba032c8b3779862e696e33653504e818265`, branch `jev-control-skill`, plugin version 0.7.0 (unchanged), Node v22.23.1, Claude Code 2.1.288 (`claude plugin validate .`).
 
@@ -47,6 +47,6 @@ New tests fail on the previous code (10 on `e57cd85` after round 1; the measurer
 - The `cleanup` line of R06 on live data is still unmeasured.
 - No claim of saving or conformance is made for any session.
 
-## D39: where the R07 sessions run
+## D39: where the R07 sessions run (corrected in R08, D41)
 
-Ratification ends a council task, so a "Phase 2 after ratification" cannot run inside R07. D39 (jev_decide, 0.98): R07 is ratified on this offline change; its two gate sessions run at the START of R08, strictly sequentially, before R08's own sessions: dev S1 at the default 0.95, then dev S2 at 0.90 via `run-session.mjs launch --threshold 0.90` (the D36 exception moved explicitly to R08 for that one session; D31 prompt unchanged; D35 stays valid). R08 may run up to 4 sessions within the budget actually verified at launch (the ledger and `cap.txt`, never a guaranteed future total). Their results are reported in `results/R08` under the heading «R07 gate sessions (run in R08 per D39)».
+Ratification ends a council task, so a "Phase 2 after ratification" cannot run inside R07. At the end of R07 the orchestrator proposed, with a `jev_decide` of 0.98, that the two gate sessions run at the START of R08 and that R08 "may run up to 4 sessions". **That proposal was withdrawn: it was never an answer of the user** (the user's answers are D1-D38 for R07). The user's own D39 (R08, `jev_decide` 0.97) replaced it: R08 runs EXACTLY 2 sessions, both on revision `86e8497`, strictly sequentially, dev S1 at the default 0.95, then dev S2 at 0.90 via `run-session.mjs launch --threshold 0.90` (the D36 exception extended explicitly to that one R08 session; D31 prompt unchanged; D35 stays valid), and these two sessions are at once the live measurement of the R07 gate and R08's composed regression and token comparison; the offline fix of R08 comes after both. Their results are in `results/R08` under the heading «R07 gate sessions (run in R08 per D39)». The budget that counts is the ledger and `cap.txt` read at launch.

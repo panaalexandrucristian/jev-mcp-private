@@ -20,7 +20,7 @@
 // Write or Edit that is not an edit (R05, coverage.protocol_batch_files): a version of a batch file the transcript proves to be
 // helper input: created by a confirmed Write ("File created successfully"), changed only by confirmed Write or Edit calls whose
 // result is a batch, bound at the tool_use of a genuine `decide --file` of the same request and agent context whose successful
-// result (selected or ordered, not an error) names only options of that very version, with nothing of unknown effects running
+// result (selected or ordered, not an error; R08: or the helper's own expand, ask_user, incomplete, invalid or refused error result) names only options of that very version, with nothing of unknown effects running
 // meanwhile, and finally removed by a lone `rm [-f] <path>` of that request and context (that removal is then no action either). Any other write, whatever the file is
 // called, a chain that is still alive at the end, an unsafe intermediate mutation or a result that fits another version is an edit. A result
 // without the shape the real helper prints is opaque, never a grant source; a
@@ -109,6 +109,7 @@ export function parseJsonl(text) {
 
 const blocks = (record) => (Array.isArray(record?.message?.content) ? record.message.content : []);
 const nonEmpty = (v) => (typeof v === "string" && v !== "" ? v : null);
+const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const finite = (v) => typeof v === "number" && Number.isFinite(v);
 const collapse = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
 const carriesSidechain = (records) => records.some((r) => r && typeof r === "object" && "isSidechain" in r);
@@ -603,7 +604,12 @@ function simpleRm(command, root) {
  *   a genuine `decide --file` of the same request and context on that path (no leading `cd`: the path is then not the transcript's), with no write of the path, no foreign write and no call of
  *   unknown effects started or overlapping while it ran. Its result must be a success (not an error), status selected or ordered,
  *   of the batch's kind, with plan items that name only options of that version, and that version must pass normalizeBatch; the shared ids
- *   alone prove nothing about which version was read.
+ *   alone prove nothing about which version was read. R08: a decide the helper did NOT clear (an error result whose first line is the
+ *   exit code of its status: expand, ask_user, incomplete 2; invalid, refused 4) also consumed the version it read, because the
+ *   helper's own refusal or request for more proves it read that file (live S2: three expansions, a refusal, an invalid and an
+ *   incomplete result, all on scratch batch files that the helper's `cleanup` line then had removed): expand, ask_user and incomplete
+ *   must name the decision, the batch's kind and scores that name only options of that version (or the escape hatches), invalid
+ *   and refused a message or problems; a version no decide read, or whose result is none of these, stays an edit.
  * - Calls of unknown effects end every chain of their request when they start and forbid a chain from starting or continuing while
  *   they overlap its write: any Bash that is not ONE plain read (a listed command, listed options, literal operands, one line: never `rg --pre`) or a lone
  *   `rm` of one path that is not an option (node mutate.mjs and node --test may write files), a delegated agent, an unclassified tool, `done` and the flow helpers; so do a MultiEdit or notebook edit of the path, a
@@ -612,6 +618,8 @@ function simpleRm(command, root) {
  *   succeeded while the chain was intact; a chain that is still alive at the end of the transcript, or ended any other way (a compound
  *   deletion proves nothing), leaves every one of its versions an ordinary edit, whatever the file is called.
  */
+// Statuses of a decide that did not clear anything, with the exit code the helper gives them (cli.mjs STATUS_EXIT): the batch was read.
+const NOT_CLEARED_EXIT = { expand: 2, ask_user: 2, incomplete: 2, invalid: 4, refused: 4 };
 function auxiliaryBatchFiles(events, classOf) {
   const exempt = new Set();
   const removals = new Set();
@@ -685,13 +693,29 @@ function auxiliaryBatchFiles(events, classOf) {
     }
     if (decideSnap.has(e.id)) {
       const { chain, epoch, version } = decideSnap.get(e.id);
-      if (e.result.error || chain.busy !== 0 || chain.epoch !== epoch || chains.get(chain.key) !== chain) continue;
+      if (chain.busy !== 0 || chain.epoch !== epoch || chains.get(chain.key) !== chain) continue;
       const result = lastJson(e.result.text);
       const batch = parseBatch(version.text);
-      const items = Array.isArray(result?.plan) ? result.plan.map(parsePlanItem) : [];
-      const named = items.every((item) => item !== null) ? items.map((item) => item.id) : [];
-      if (!batch || !normalizeBatch(batch).ok || !["selected", "ordered"].includes(result?.status) || !nonEmpty(result.decision_id) || result.kind !== batch.kind) continue;
-      if (named.length > 0 && named.every((id) => version.options.has(id) || HATCH_IDS.has(id))) chain.consumed.push(version.event);
+      if (!batch || !isObject(result)) continue;
+      if (!e.result.error) {
+        const items = Array.isArray(result.plan) ? result.plan.map(parsePlanItem) : [];
+        const named = items.every((item) => item !== null) ? items.map((item) => item.id) : [];
+        if (!normalizeBatch(batch).ok || !["selected", "ordered"].includes(result.status) || !nonEmpty(result.decision_id) || result.kind !== batch.kind) continue;
+        if (named.length > 0 && named.every((id) => version.options.has(id) || HATCH_IDS.has(id))) chain.consumed.push(version.event);
+        continue;
+      }
+      // A decision the helper did not clear (R08): the helper still read this very version, so it is helper input, if the error
+      // result is the helper's own (the exit code of its status is the first line) and, for expand, ask_user and incomplete, it
+      // names the decision, the kind and scores that name only options of this version (invalid and refused name a message).
+      const exit = NOT_CLEARED_EXIT[result.status];
+      const code = /^Exit code (\d+)\n/.exec(String(e.result.text));
+      if (exit === undefined || code === null || Number(code[1]) !== exit) continue;
+      if (exit === 2) {
+        const scores = Array.isArray(result.scores) ? result.scores.map((s) => (typeof s === "string" ? s.replace(/:[0-9.]+$/, "") : null)) : [];
+        if (!nonEmpty(result.decision_id) || result.kind !== batch.kind || scores.length === 0) continue;
+        if (!scores.every((id) => id !== null && (version.options.has(id) || HATCH_IDS.has(id)))) continue;
+      } else if (!nonEmpty(result.message) && !Array.isArray(result.problems)) continue;
+      chain.consumed.push(version.event);
       continue;
     }
     if ((e.name !== "Write" && e.name !== "Edit") || !x.path) continue;

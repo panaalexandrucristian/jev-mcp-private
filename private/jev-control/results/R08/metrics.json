@@ -1,0 +1,261 @@
+{
+ "round": "R08",
+ "base_commit": "86e849797e1e356391dc1b3729965795a857c36f",
+ "versions": {
+  "node": "v22.23.1",
+  "claude_code": "2.1.288",
+  "plugin": "0.7.0",
+  "model": "claude-sonnet-5-5",
+  "jev_mcp": "jev-mcp@0.13.0"
+ },
+ "answers": {
+  "D39": "exactly 2 sessions on 86e8497: dev S1 at 0.95, dev S2 at 0.90 via launch --threshold; they are the R07 gate sessions and R08's regression; offline fix after both",
+  "D40": "fix surface as D38",
+  "D41": "the old 'up to 4 sessions' D39 was a withdrawn orchestrator proposal; documents corrected"
+ },
+ "ledger": {
+  "before": 13,
+  "after": 15,
+  "cap": 20,
+  "lines": {
+   "14": "2026-10-03T05:46:06Z dev S1",
+   "15": "2026-10-03T05:46:33Z dev S2 (threshold 0.90)"
+  },
+  "left": 5,
+  "plan_left": "R10 2 sealed, 3 reserve; reserve untouched"
+ },
+ "prompts": {
+  "d_s1_sha256": "9cf19555ade6830d6897a2bcfd63c652a5b6de80fbfae2f431ca4051416dc6bd",
+  "d_s2_sha256": "2495e29fa89268de41ff48c6fd2f31317ec73df9df9840a5e44f7a4dfed5b959",
+  "equal_to_r06": true
+ },
+ "sessions": {
+  "d_s1": {
+   "ledger": 14,
+   "threshold": 0.95,
+   "threshold_source": "default",
+   "state": "done",
+   "exit": 0,
+   "timed_out": false,
+   "oracle": "pass",
+   "turns": 6,
+   "assistant_messages": 4,
+   "tokens": {
+    "input": 8,
+    "output": 1077,
+    "cache_read": 65435,
+    "cache_creation": 9196,
+    "stream_equals_measure": true
+   },
+   "cost_usd": 0.060657,
+   "decide_calls": 0,
+   "search_calls": 0,
+   "done_calls": 0,
+   "claims_files": 0,
+   "coverage": {
+    "covered": 0,
+    "denominator": 4
+   },
+   "edits": 0,
+   "violations": [
+    "completion_declared_without_accepted_done"
+   ],
+   "helper_bytes": {
+    "on": 734
+   },
+   "denials": [
+    "Read SKILL.md (workingDir)"
+   ],
+   "delegation": "unmeasured (not chosen)"
+  },
+  "d_s2_t090": {
+   "ledger": 15,
+   "threshold": 0.9,
+   "threshold_source": "env",
+   "state": "done",
+   "exit": 0,
+   "timed_out": false,
+   "oracle": "fail",
+   "turns": 23,
+   "assistant_messages": 18,
+   "tokens": {
+    "input": 36,
+    "output": 5021,
+    "cache_read": 383902,
+    "cache_creation": 15375,
+    "stream_equals_measure": true
+   },
+   "cost_usd": 0.1885624,
+   "decide_calls": 6,
+   "decide_statuses": [
+    "invalid",
+    "expand",
+    "expand",
+    "refused",
+    "invalid",
+    "incomplete"
+   ],
+   "top_scores": [
+    0.8,
+    0.9,
+    0.9
+   ],
+   "search_calls": 0,
+   "done_calls": 0,
+   "claims_files": 0,
+   "cleanup_line_followed": true,
+   "batch_files_removed": 2,
+   "tree_clean_at_end": true,
+   "live_measure": {
+    "coverage": {
+     "covered": 0,
+     "denominator": 11
+    },
+    "edits": 6,
+    "actions_while_blocked": 3,
+    "protocol_batch_files": 0,
+    "protocol_batch_removals": 0,
+    "violations": 1
+   },
+   "recalculated_with_r08_measurer": {
+    "coverage": {
+     "covered": 0,
+     "denominator": 6
+    },
+    "edits": 2,
+    "actions_while_blocked": 1,
+    "protocol_batch_files": 4,
+    "protocol_batch_removals": 1,
+    "violations": 1
+   },
+   "helper_bytes": {
+    "on": 711,
+    "help_decide": 1498,
+    "decide_results": [
+     357,
+     364,
+     364,
+     221,
+     157,
+     656
+    ],
+    "total": 4328
+   },
+   "denials": [
+    "Read SKILL.md (workingDir)",
+    "sed -i (other)"
+   ],
+   "delegation": "unmeasured (not chosen)"
+  }
+ },
+ "gate": {
+  "exercised_live": false,
+  "note": "no done, /jev:jev-done, help done or jev-claims*.json in either session; claims_removed, claims_sha256 and protocol_claims_* unmeasured"
+ },
+ "token_comparison": {
+  "s1_vs": {
+   "ledger_2": [
+    -2,
+    309,
+    -15857,
+    635
+   ],
+   "ledger_4": [
+    -6,
+    -429,
+    -58377,
+    -1302
+   ],
+   "ledger_12": [
+    -4,
+    -447,
+    -38767,
+    -584
+   ]
+  },
+  "s2_vs": {
+   "ledger_11": [
+    -6,
+    -1409,
+    -83058,
+    -1883
+   ],
+   "ledger_13": [
+    -22,
+    -4477,
+    -304512,
+    -5559
+   ],
+   "ledger_3": [
+    26,
+    3408,
+    300475,
+    5900
+   ]
+  },
+  "order": [
+   "input",
+   "output",
+   "cache_read",
+   "cache_creation"
+  ],
+  "note": "n=1, no saving claim; S2 oracle failed; ledger 3 differs in threshold and oracle"
+ },
+ "decision": {
+  "tool": "jev_decide",
+  "selected": "measurer-batch-chain",
+  "probability": 0.71,
+  "confidence": 0.67,
+  "others": {
+   "completion-wording": 0.23,
+   "space-small-help": 0,
+   "threshold-boundary": 0,
+   "no-change": 0.01
+  }
+ },
+ "defect": "scratch batch files of a decision the helper did not clear (expand, refused, invalid, incomplete, ask_user) counted as edits and the cleanup rm as an action while blocked",
+ "change": {
+  "files": [
+   "private/jev-control/measure.mjs",
+   "private/jev-control/test/measure.test.mjs"
+  ],
+  "new_tests": 4,
+  "mutations": {
+   "run": 11,
+   "killed": 10,
+   "survivor_removed": "normalizeBatch on the exit-2 branch (redundant)"
+  }
+ },
+ "doc_corrections_d41": [
+  "results/R07/summary.md",
+  "results/R07/metrics.json",
+  "results/README.md",
+  "skills/jev-control/reference/evaluation.md"
+ ],
+ "offline_checks": {
+  "control_tests": {
+   "tests": 509,
+   "suites": 85,
+   "pass": 509,
+   "fail": 0
+  },
+  "flow_tests": {
+   "tests": 324,
+   "suites": 61,
+   "pass": 324,
+   "fail": 0
+  },
+  "plugin_validate": "passed",
+  "seal_verify": "ok",
+  "diff_check": "clean",
+  "help_decide_bytes": 1499,
+  "protected_diff": 0
+ },
+ "unmeasured": [
+  "completion gate live",
+  "claims-file Write and done --claims under the headless permission layer",
+  "subagent tokens",
+  "delegation",
+  "personal hooks absence"
+ ]
+}
