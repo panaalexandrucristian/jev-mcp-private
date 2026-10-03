@@ -396,9 +396,41 @@ describe("the decide result names the scratch batch file to remove (R06)", () =>
     for (const status of ["selected", "ordered", "ask_user", "incomplete"]) assert.equal(cleanupLine(FILE, status), LINE);
     for (const status of ["expand", "refused", "invalid", "unavailable", "budget_exhausted", "none_eligible", undefined]) assert.equal(cleanupLine(FILE, status), null, String(status));
     assert.match(cleanupLine("sub/jev-batch.json", "selected"), /rm -f sub\/jev-batch\.json, alone/);
-    for (const bad of ["-", "-f", "--file", "../x.json", "a/../x.json", "a b.json", 'a"b.json', "a'b.json", "a$b.json", "a;b.json", "a|b.json", "a*.json", "/abs/x.json", "~x.json", "a\nb.json", "", "~", undefined, null, 5]) {
+    for (const bad of ["-", "-f", "--file", "../x.json", "a/../x.json", "a b.json", 'a"b.json', "a'b.json", "a$b.json", "a;b.json", "a|b.json", "a*.json", "/abs/x.json", "~x.json", "a\nb.json", "", "~", undefined, null, 5, "a".repeat(121) + ".json"]) {
       assert.equal(cleanupLine(bad, "selected"), null, JSON.stringify(bad));
     }
+    const longest = "a".repeat(120 - ".json".length) + ".json";
+    assert.equal(Buffer.byteLength(longest), 120);
+    assert.match(cleanupLine(longest, "selected"), new RegExp(`rm -f ${longest}, alone in its own command$`));
+    assert.equal(cleanupLine(`${longest}x`, "selected"), null, "121 bytes is over the limit");
+    assert.equal(cleanupLine(["a".repeat(180), "b".repeat(180), "c".repeat(180), "d".repeat(180)].join("/") + ".json", "selected"), null, "a 728-byte path gets no line");
+  });
+  it("the line is whole or absent: the longest accepted path keeps a plan item inside 1500 bytes; a longer line is dropped, never cut", () => {
+    const plan = Array.from({ length: 40 }, (_, i) => `option-number-${i}:e:0.9${i % 10}:0123456789ab`);
+    const longest = "a".repeat(120 - ".json".length) + ".json";
+    const kept = cleanupLine(longest, "ordered");
+    const near = JSON.parse(compactOut({ status: "ordered", decision_id: "d1", plan, plan_total: 40, cleanup: kept }));
+    assert.equal(near.cleanup, kept);
+    assert.ok(near.plan.length >= 1 && near.plan_next === near.plan.length);
+    assert.ok(Buffer.byteLength(JSON.stringify(near)) <= 1500);
+    const segs = ["a".repeat(180), "b".repeat(180), "c".repeat(180), "d".repeat(180)].join("/") + ".json";
+    assert.equal(Buffer.byteLength(segs), 728);
+    const huge = `if you wrote ${segs} for this decision, remove it now: rm -f ${segs}, alone in its own command`;
+    const full = JSON.parse(compactOut({ status: "ordered", decision_id: "d1", plan, plan_total: 40, cleanup: huge }));
+    const none = JSON.parse(compactOut({ status: "ordered", decision_id: "d1", plan, plan_total: 40 }));
+    assert.equal(full.cleanup, undefined, "dropped whole, not truncated");
+    assert.deepEqual(full, none, "decision data and paging are the same without the line");
+    const short = compactOut({ status: "selected", decision_id: "d1", plan: ["o1:e:0.97:0123456789ab"], plan_total: 1, cleanup: huge });
+    assert.ok(Buffer.byteLength(short) <= 1500);
+    const s = JSON.parse(short);
+    assert.equal(s.cleanup, undefined);
+    assert.equal(s.status, "selected");
+    assert.equal(s.decision_id, "d1");
+    assert.deepEqual(s.plan, ["o1:e:0.97:0123456789ab"]);
+    assert.equal(s.plan_next, undefined);
+    const noList = JSON.parse(compactOut({ status: "ask_user", decision_id: "d1", cleanup: huge }));
+    assert.equal(noList.cleanup, undefined);
+    assert.equal(JSON.parse(compactOut({ status: "ask_user", decision_id: "d1", cleanup: LINE })).cleanup, LINE);
   });
   it("the line is data the cap keeps: a long plan is paged, the line stays", () => {
     const plan = Array.from({ length: 40 }, (_, i) => `option-number-${i}:e:0.9${i % 10}:0123456789ab`);

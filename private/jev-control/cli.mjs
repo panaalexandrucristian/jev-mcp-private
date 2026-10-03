@@ -105,15 +105,29 @@ export function compactOut(object, max = OUT_MAX, { from = {} } = {}) {
       delete o[key];
     }
   }
+  // `cleanup` (R06) is an optional reminder: whole or absent, never shortened (a cut `rm` line could name another file). It is kept
+  // only when the result still fits `max` with every list showing at least one item; otherwise decision data wins and it is dropped.
+  const cleanup = typeof o.cleanup === "string" ? o.cleanup : null;
+  delete o.cleanup;
   shrink(o, max - (Object.keys(lists).length ? 60 : 0));
-  for (const [key, items] of Object.entries(lists)) {
-    const start = from[key] ?? 0;
-    const candidate = (k) => ({ ...o, [key]: items.slice(start, start + k), [`${key}_total`]: items.length, ...(start + k < items.length ? { [`${key}_next`]: start + k } : {}) });
-    let k = 0;
-    while (start + k < items.length && bytes(candidate(k + 1)) <= max) k += 1;
-    Object.assign(o, candidate(k));
+  const build = (base) => {
+    const out = { ...base };
+    let crowded = false;
+    for (const [key, items] of Object.entries(lists)) {
+      const start = from[key] ?? 0;
+      const candidate = (k) => ({ ...out, [key]: items.slice(start, start + k), [`${key}_total`]: items.length, ...(start + k < items.length ? { [`${key}_next`]: start + k } : {}) });
+      let k = 0;
+      while (start + k < items.length && bytes(candidate(k + 1)) <= max) k += 1;
+      if (k === 0 && start < items.length) crowded = true;
+      Object.assign(out, candidate(k));
+    }
+    return { out, crowded };
+  };
+  if (cleanup) {
+    const withLine = build({ ...o, cleanup });
+    if (!withLine.crowded && bytes(withLine.out) <= max) return JSON.stringify(withLine.out);
   }
-  return JSON.stringify(o);
+  return JSON.stringify(build(o).out);
 }
 
 function print(object) {
@@ -342,12 +356,14 @@ async function cmdDecide(flags, ctx) {
 // R06: a dev session wrote six batch files and never removed one (the instruction was in `help decide`, read fifteen turns earlier),
 // so each stayed in the user's tree as an untracked file and counted as an edit. The result that ends a batch says it again, where the
 // model acts: only for a status after which the file is not rerun (selected, ordered, ask_user, incomplete; an expand, a refusal or an
-// invalid batch is fixed and run again) and only for a plain relative path a lone `rm -f` can name. The helper cannot tell
-// who created the file, hence the condition in the text.
+// invalid batch is fixed and run again) and only for a plain relative path a lone `rm -f` can name, short enough that the line
+// (which repeats the path twice) never crowds the plan out of the 1500-byte cap (compactOut drops the line whole if it still does).
+// The helper cannot tell who created the file, hence the condition in the text.
 const CLEANUP_STATUSES = new Set(["selected", "ordered", "ask_user", "incomplete"]);
+const CLEANUP_PATH_MAX = 120;
 const CLEANUP_PATH = /^[A-Za-z0-9_.][A-Za-z0-9_.\/-]*$/;
 export function cleanupLine(file, status) {
-  if (typeof file !== "string" || !CLEANUP_STATUSES.has(status) || !CLEANUP_PATH.test(file) || file.split("/").includes("..")) return null;
+  if (typeof file !== "string" || !CLEANUP_STATUSES.has(status) || !CLEANUP_PATH.test(file) || file.split("/").includes("..") || Buffer.byteLength(file) > CLEANUP_PATH_MAX) return null;
   return `if you wrote ${file} for this decision, remove it now: rm -f ${file}, alone in its own command`;
 }
 

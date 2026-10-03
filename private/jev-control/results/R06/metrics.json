@@ -505,8 +505,8 @@
  "defect_and_change": {
   "defect": "scratch batch files never removed (6 of 6 left, 0 rm)",
   "chosen_with": "jev_decide, 6 candidates, scratch_left 0.95",
-  "change": "decide result carries a cleanup line for selected, ordered, ask_user, incomplete; SKILL.md step 2 mentions it; help decide unchanged (1499 bytes)",
-  "tests": "cli.test.mjs new describe, manifest.test.mjs; 2 new tests fail on the old cli.mjs, the manifest test on the old SKILL.md; 10 of 10 mutations killed, 1 redundant check removed",
+  "change": "decide result carries a cleanup line for selected, ordered, ask_user, incomplete, only for a plain relative path of at most 120 bytes and only when the whole result still fits 1500 bytes with a plan item (otherwise the line is absent, never cut); SKILL.md step 2 mentions it; help decide unchanged (1499 bytes)",
+  "tests": "cli.test.mjs new describe, manifest.test.mjs; 2 new tests fail on the old cli.mjs, the manifest test on the old SKILL.md; 10 of 10 mutations killed, 1 redundant check removed; council fix (R06 ratification round 1): path length limit and whole-or-absent line in compactOut, 2 further tests (length and budget) fail on bb980cb; the live metrics precede this change",
   "not_fixed": [
    "S1 bypass: on, Read and grep in one message; single-variant judgment",
    "/jev:jev-done never run in editing dev sessions (R07)",
