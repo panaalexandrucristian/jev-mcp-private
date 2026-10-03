@@ -11,7 +11,8 @@
 // Budget accounting is NOT done here: helper calls are counted at the client
 // boundary, direct calls by reserve-before-call and transcript reconciliation.
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gitTopLevel } from "../jev-flow/state.mjs";
 import { startRequest } from "./budget.mjs";
 import { cleanupControlRetention, controlSessionDir, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, sessionKey, withControlState } from "./state.mjs";
@@ -35,12 +36,18 @@ export function asksForControl(prompt) {
 
 const capNote = (cap) => `Session capability: pass --session-cap ${cap} to every cli.mjs call, also in subagent prompts.`;
 
+// The plugin root this hook runs from: the skill has the same name as the command, so the Skill tool returns the command text and never SKILL.md (R03).
+const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
 export function reminder(threshold, cap = null) {
-  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; see the jev-control skill. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
+  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; protocol: skills/jev-control/SKILL.md. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
 }
 
-function activation(cap) {
-  return `jev-control was requested by the user for this session. ${capNote(cap)}`;
+function activation(cap, natural = false) {
+  const first = natural
+    ? ` Do first, before any search or edit: node "${PLUGIN_ROOT}/private/jev-control/cli.mjs" on --session-cap ${cap} --priorities "<one line from the request>", then Read ${join(PLUGIN_ROOT, "skills", "jev-control", "SKILL.md")} (the Skill tool returns only the command text, never that file).`
+    : "";
+  return `jev-control was requested by the user for this session.${first} ${capNote(cap)}`;
 }
 
 function repoFor(input) {
@@ -91,7 +98,7 @@ export function handleControlHook(event, input, env = process.env, now = Date.no
     // A mode command is not a new request: the budget keeps counting.
     return additionalContext("UserPromptSubmit", state.mode === "on" ? reminder(state.threshold.value, ensureSessionCap(dir, key)) : activation(ensureSessionCap(dir, key)));
   }
-  if (state.mode !== "on") return asksForControl(prompt) ? additionalContext("UserPromptSubmit", activation(ensureSessionCap(dir, key))) : null;
+  if (state.mode !== "on") return asksForControl(prompt) ? additionalContext("UserPromptSubmit", activation(ensureSessionCap(dir, key), true)) : null;
   withControlState(dir, (s) => startRequest(s, now), now);
   return additionalContext("UserPromptSubmit", reminder(state.threshold.value, ensureSessionCap(dir, key)));
 }

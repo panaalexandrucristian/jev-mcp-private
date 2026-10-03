@@ -54,6 +54,13 @@ describe("skill and command", () => {
     assert.match(text, /never pass a made-up `--session-id`/i);
     assert.match(text, /--session-cap/);
   });
+  it("the command reads SKILL.md itself (the same-named skill is never returned by the Skill tool) and a natural-language request without arguments runs `on`, not `status` (R03)", () => {
+    const text = read("commands", "jev-control.md");
+    assert.match(text, /Read `\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/jev-control\/SKILL\.md`/);
+    assert.match(text, /the Skill tool returns this text and never that file/);
+    assert.doesNotMatch(text, /Load the `jev-control` skill/);
+    assert.match(text, /With no or unknown arguments: when the prompt hook put the line «jev-control was requested by the user for this session» in your context[^.]*run `on` as above; otherwise run `status`/);
+  });
   it("jev-done, jev-locate and the locator have explicit control branches", () => {
     for (const f of [["commands", "jev-done.md"], ["commands", "jev-locate.md"], ["agents", "jev-locator.md"]]) assert.match(read(...f), /jev-control/, f.join("/"));
     assert.match(read("agents", "jev-locator.md"), /no lexical fallback/);

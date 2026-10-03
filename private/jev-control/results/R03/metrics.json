@@ -1,0 +1,461 @@
+{
+  "round": "R03",
+  "kind": "live (2 dev S3) + offline improvement",
+  "live": true,
+  "live_sessions_used": 2,
+  "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
+  "branch": "jev-control-skill",
+  "head_at_launch": "45916c6 (nothing changed between the two sessions)",
+  "ledger": {
+    "lines_before": 5,
+    "lines_after": 7,
+    "cap": 20,
+    "remaining": 13,
+    "roles": {
+      "6": "d-s3a dev S3",
+      "7": "d-s3b dev S3"
+    }
+  },
+  "versions": {
+    "claude_code": "2.1.288",
+    "model": "claude-sonnet-5-5",
+    "node": "v22.23.1",
+    "plugin_jev": "0.7.0 (inline, /Users/apana/Dev/jev-mcp)",
+    "jev_mcp_server": "jev-mcp@0.13.0 (reported by cli.mjs on in d-s3a transcript:29; d-s3b never ran on)"
+  },
+  "plugin_snapshot_sha256": {
+    "plugin.json": "302328d4734fd1645e47575ae3931b15c674be30a06d5f2159cdd43c91be1dd3",
+    "hooks.json": "5cc80abaf62b34e6f9cd7d8cfe05ba1bf346fcf374e3e7c75588583c9d641c15"
+  },
+  "config": {
+    "argv_flags": "as in R02 (D27-D30)",
+    "env_set_by_launcher": {
+      "JEV_PROVIDER": "openrouter",
+      "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+      "JEV_CONTROL_HEADLESS": "1"
+    },
+    "env_removed": "JEV_FLOW and every other JEV_CONTROL* key"
+  },
+  "prompts": {
+    "dev": "\"Let Jev control this session.\\n\\n\" + scenario.prompt (D31)",
+    "sha256": {
+      "d-s3a": "f8d310c3a174837508e33afc889d646bd180d81f41dc267147a9ef777e112f2c",
+      "d-s3b": "f8d310c3a174837508e33afc889d646bd180d81f41dc267147a9ef777e112f2c"
+    },
+    "scenarioPromptSha256": "320b7c1efa0cfb78398e78a5b18006feafc64f8c3337dec9bb432f3fff49ec70",
+    "scenarioHash": {
+      "s3": "4c25541607e177ad472ae78b824b3daf4f88d471be450512dc61c343e2d91317"
+    }
+  },
+  "isolation_D30": {
+    "result": "confirmed in both init messages",
+    "init_stream_line": 3,
+    "mcp_servers": [
+      "plugin:jev:jev connected (source plugin)"
+    ],
+    "claudeai_connectors": 0,
+    "tools_total": 37,
+    "permissionMode": "acceptEdits",
+    "plugins": "jev@inline 0.7.0 plus 3 builtin"
+  },
+  "finalMessage_source": "the `result` field of the final stream event (stream:40 in d-s3a, stream:17 in d-s3b); the raw text stays outside git",
+  "activation_dev": {
+    "hook_context": "hook_additional_context attachment, UserPromptSubmit, transcript:10 in both sessions",
+    "d-s3a": {
+      "skill_call_transcript_line": 20,
+      "skill_args": "on",
+      "skill_result_text_transcript_line": 22,
+      "on_call_transcript_line": 28,
+      "on_result_transcript_line": 29,
+      "on": {
+        "status": "ok",
+        "mode": "on",
+        "threshold": 0.95,
+        "threshold_source": "default",
+        "session": "environment",
+        "audit": "available",
+        "next_line_present": true
+      },
+      "tool_calls_after_on": "Bash grep (transcript:33, failed in the shell: no matches found for --include=*), Bash grep (:36), Read src/upload/retry.mjs (:39)",
+      "decisions_after_on": 0,
+      "searches_after_on": 0,
+      "helper_calls_other_than_on": 0,
+      "direct_jev_calls": 0
+    },
+    "d-s3b": {
+      "skill_call_transcript_line": 20,
+      "skill_args": "none",
+      "skill_result_text_transcript_line": 22,
+      "status_call_transcript_line": 29,
+      "status_result": "mode off",
+      "on_called": false,
+      "decisions": 0,
+      "searches": 0,
+      "direct_jev_calls": 0
+    },
+    "skill_tool_returns": "in both sessions (and in both R02 dev sessions: Skill call transcript:19 / :20, command text :21 / :22) the text returned for jev:jev-control is commands/jev-control.md (\"Run the jev-control command for this request: ...\"); skills/jev-control/SKILL.md was never read, and the session's skill listing has a single jev:jev-control entry carrying the command's description"
+  },
+  "sessions": {
+    "d-s3a": {
+      "ledger_line": "6 2026-10-03T01:08:08Z",
+      "session_id": "b5ae832d-60e1-444d-a75d-e21405288d7c",
+      "scenarioHash": "4c25541607e177ad472ae78b824b3daf4f88d471be450512dc61c343e2d91317",
+      "promptSha256": "f8d310c3a174837508e33afc889d646bd180d81f41dc267147a9ef777e112f2c",
+      "status": {
+        "exit": 0,
+        "timed_out": false,
+        "result_seen": true,
+        "group_gone": true,
+        "wrapper_wall_ms": 15883
+      },
+      "init": {
+        "stream_line": 3,
+        "permissionMode": "acceptEdits",
+        "mcp_servers": [
+          {
+            "name": "plugin:jev:jev",
+            "status": "connected",
+            "source": "plugin"
+          }
+        ],
+        "plugins": [
+          "jev 0.7.0",
+          "cc-plugin-agents-md cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring cc-plugin-plugin-authoring@builtin"
+        ],
+        "tools_total": 37,
+        "jev_mcp_tools": 12
+      },
+      "stream_result": {
+        "line": 40,
+        "is_error": false,
+        "num_turns": 7,
+        "duration_ms": 14572,
+        "duration_api_ms": 12842,
+        "total_cost_usd": 0.0681746,
+        "usage": {
+          "input": 12,
+          "output": 1044,
+          "cache_read": 102473,
+          "cache_creation": 9304
+        },
+        "permission_denials": 0
+      },
+      "transcript": {
+        "file_lines": 46,
+        "tools_by_type": {
+          "Skill": 1,
+          "Bash": 3,
+          "Read": 1
+        },
+        "tool_uses_total": 5,
+        "cli_calls": [
+          {
+            "transcript_line": 28,
+            "sub": "on"
+          }
+        ],
+        "direct_mcp_calls": 0
+      },
+      "permission_denied": [],
+      "measure": {
+        "usage": {
+          "attribution": "known",
+          "parent": {
+            "messages": 6,
+            "attribution": "known",
+            "input_tokens": 12,
+            "output_tokens": 1044,
+            "cache_read_input_tokens": 102473,
+            "cache_creation_input_tokens": 9304
+          },
+          "subagent": {
+            "messages": 0,
+            "attribution": "known",
+            "input_tokens": "unknown",
+            "output_tokens": "unknown",
+            "cache_read_input_tokens": "unknown",
+            "cache_creation_input_tokens": "unknown"
+          },
+          "unattributed": {
+            "messages": 0,
+            "attribution": "unknown",
+            "input_tokens": "unknown",
+            "output_tokens": "unknown",
+            "cache_read_input_tokens": "unknown",
+            "cache_creation_input_tokens": "unknown"
+          },
+          "by_agent": {},
+          "total": {
+            "messages": 6,
+            "attribution": "known",
+            "input_tokens": 12,
+            "output_tokens": 1044,
+            "cache_read_input_tokens": 102473,
+            "cache_creation_input_tokens": 9304
+          },
+          "reported_total": "unknown"
+        },
+        "coverage": {
+          "covered": 0,
+          "uncovered": 3,
+          "share": 0,
+          "reasons": {
+            "no_grant": 3
+          },
+          "protocol": 1,
+          "mechanical": 1
+        },
+        "decisions": 0,
+        "ordering_plans": 0,
+        "helper_attempts": 0,
+        "direct": {
+          "main": 0,
+          "subagent": 0,
+          "by_tool": {}
+        },
+        "finalization": {
+          "done_calls": 0,
+          "edits": 0,
+          "violations": 0,
+          "bash_changes": 0,
+          "possible_changes": 2
+        },
+        "eliminators": {
+          "below_threshold_actions_without_approval": 0,
+          "other_violations": {
+            "budget_exceeded": 0,
+            "unreserved_direct": 0,
+            "finalization": 0
+          },
+          "note": "task correctness comes from the fixture oracle, never from Jev confidence"
+        }
+      },
+      "oracle_pristine_fails": true,
+      "oracle_reference_answer_passes": true,
+      "oracle_final": {
+        "frozen_oracle_pass": true,
+        "detail": {
+          "mentionsPath": true,
+          "wrongPath": false,
+          "overlaps": true,
+          "clean": true
+        },
+        "answer_names_src_upload_retry_mjs": true,
+        "answer_names_function_uploadRetryDelay": true,
+        "answer_range_exactly_6_9": true,
+        "git_status_empty": true,
+        "transcript_edit_attempts": 0
+      }
+    },
+    "d-s3b": {
+      "ledger_line": "7 2026-10-03T01:08:34Z",
+      "session_id": "242a5ebd-4fce-480e-8100-a34e177e06e4",
+      "scenarioHash": "4c25541607e177ad472ae78b824b3daf4f88d471be450512dc61c343e2d91317",
+      "promptSha256": "f8d310c3a174837508e33afc889d646bd180d81f41dc267147a9ef777e112f2c",
+      "status": {
+        "exit": 0,
+        "timed_out": false,
+        "result_seen": true,
+        "group_gone": true,
+        "wrapper_wall_ms": 12141
+      },
+      "init": {
+        "stream_line": 3,
+        "permissionMode": "acceptEdits",
+        "mcp_servers": [
+          {
+            "name": "plugin:jev:jev",
+            "status": "connected",
+            "source": "plugin"
+          }
+        ],
+        "plugins": [
+          "jev 0.7.0",
+          "cc-plugin-agents-md cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring cc-plugin-plugin-authoring@builtin"
+        ],
+        "tools_total": 37,
+        "jev_mcp_tools": 12
+      },
+      "stream_result": {
+        "line": 17,
+        "is_error": false,
+        "num_turns": 4,
+        "duration_ms": 10834,
+        "duration_api_ms": 10125,
+        "total_cost_usd": 0.0489546,
+        "usage": {
+          "input": 6,
+          "output": 736,
+          "cache_read": 45713,
+          "cache_creation": 8110
+        },
+        "permission_denials": 0
+      },
+      "transcript": {
+        "file_lines": 36,
+        "tools_by_type": {
+          "Skill": 1,
+          "Bash": 1
+        },
+        "tool_uses_total": 2,
+        "cli_calls": [
+          {
+            "transcript_line": 29,
+            "sub": "status"
+          }
+        ],
+        "direct_mcp_calls": 0
+      },
+      "permission_denied": [],
+      "measure": {
+        "usage": {
+          "attribution": "known",
+          "parent": {
+            "messages": 3,
+            "attribution": "known",
+            "input_tokens": 6,
+            "output_tokens": 736,
+            "cache_read_input_tokens": 45713,
+            "cache_creation_input_tokens": 8110
+          },
+          "subagent": {
+            "messages": 0,
+            "attribution": "known",
+            "input_tokens": "unknown",
+            "output_tokens": "unknown",
+            "cache_read_input_tokens": "unknown",
+            "cache_creation_input_tokens": "unknown"
+          },
+          "unattributed": {
+            "messages": 0,
+            "attribution": "unknown",
+            "input_tokens": "unknown",
+            "output_tokens": "unknown",
+            "cache_read_input_tokens": "unknown",
+            "cache_creation_input_tokens": "unknown"
+          },
+          "by_agent": {},
+          "total": {
+            "messages": 3,
+            "attribution": "known",
+            "input_tokens": 6,
+            "output_tokens": 736,
+            "cache_read_input_tokens": 45713,
+            "cache_creation_input_tokens": 8110
+          },
+          "reported_total": "unknown"
+        },
+        "coverage": {
+          "covered": 0,
+          "uncovered": 0,
+          "share": "unknown",
+          "reasons": {},
+          "protocol": 1,
+          "mechanical": 1
+        },
+        "decisions": 0,
+        "ordering_plans": 0,
+        "helper_attempts": 0,
+        "direct": {
+          "main": 0,
+          "subagent": 0,
+          "by_tool": {}
+        },
+        "finalization": {
+          "done_calls": 0,
+          "edits": 0,
+          "violations": 0
+        },
+        "eliminators": {
+          "below_threshold_actions_without_approval": 0,
+          "other_violations": {
+            "budget_exceeded": 0,
+            "unreserved_direct": 0,
+            "finalization": 0
+          },
+          "note": "task correctness comes from the fixture oracle, never from Jev confidence"
+        }
+      },
+      "oracle_pristine_fails": true,
+      "oracle_reference_answer_passes": true,
+      "oracle_final": {
+        "frozen_oracle_pass": false,
+        "detail": {
+          "mentionsPath": false,
+          "wrongPath": false,
+          "overlaps": false,
+          "clean": true
+        },
+        "answer_names_src_upload_retry_mjs": false,
+        "answer_names_function_uploadRetryDelay": false,
+        "answer_range_exactly_6_9": false,
+        "git_status_empty": true,
+        "transcript_edit_attempts": 0,
+        "note": "the task was not answered: the model ran `status` (mode off), explained the four commands and asked whether to run `on`; nobody answers in -p"
+      }
+    }
+  },
+  "comparison": {
+    "note": "n=1 per session, same scenario S3, same code snapshot. S3 has no clean baseline: token comparison with a session without the skill is unmeasured. R02 (S1/S2) is a different scenario: side by side only, no causal reading of the `next` line.",
+    "d_s3a_vs_d_s3b": {
+      "stream_turns": [
+        7,
+        4
+      ],
+      "parent_tokens_a": {
+        "input": 12,
+        "output": 1044,
+        "cache_read": 102473,
+        "cache_creation": 9304
+      },
+      "parent_tokens_b": {
+        "input": 6,
+        "output": 736,
+        "cache_read": 45713,
+        "cache_creation": 8110
+      },
+      "note": "b is smaller because it did not do the task"
+    },
+    "r02_dev_parent_tokens_for_reference": {
+      "s1": {
+        "input": 14,
+        "output": 1506,
+        "cache_read": 123812,
+        "cache_creation": 10498
+      },
+      "s2": {
+        "input": 14,
+        "output": 1890,
+        "cache_read": 123608,
+        "cache_creation": 10482
+      }
+    },
+    "subagent_tokens": "unknown (no subagent started)"
+  },
+  "defect_and_change": {
+    "most_important": "the Skill tool never delivers skills/jev-control/SKILL.md: the command commands/jev-control.md has the same name and its text is what `Skill jev:jev-control` returns, with the model's `args` as $ARGUMENTS. The protocol (what Jev decides, the decision loop, search, done) therefore never reached the model in any of the four dev sessions of R02-R03; the model saw only the command text, the hook line and the `next` line. In d-s3b the natural-language request reached the command with no argument, step 3 ran `status`, the mode stayed off, nothing was answered (frozen oracle fails, the first failed correctness result of the campaign). In d-s3a `on` ran (the model passed args \"on\") and then the model searched with its own grep.",
+    "fixed": [
+      "hook.mjs: the activation line for a natural-language request now says to run `cli.mjs on --session-cap <cap> --priorities \"<one line>\"` first and to Read <plugin root>/skills/jev-control/SKILL.md; the command-prompt activation is unchanged (it must not demand `on` for off/status); the ON reminder points at skills/jev-control/SKILL.md instead of \"the jev-control skill\"",
+      "commands/jev-control.md: step 1 reads SKILL.md with Read; step 3 runs `on` (not `status`) for no/unknown arguments when the hook line says the user requested the mode"
+    ],
+    "tests": [
+      "hook.test.mjs: the natural-language activation text (on first, Read SKILL.md, the path exists), command prompts do not demand `on`, reminder text",
+      "manifest.test.mjs: the command reads SKILL.md and treats a hook-requested no-argument call as `on`"
+    ],
+    "mutation": "both new tests fail on the HEAD versions of hook.mjs and commands/jev-control.md and pass on the new ones",
+    "measured_live": "no; no session is left in R03, R04 is the first that can show the effect"
+  },
+  "limits": [
+    "n=1 per session; S3 without a clean baseline",
+    "the effect of the fix is untested live",
+    "the claude -p slash command is not measured (D31)",
+    "provider-internal Jev calls are unknown",
+    "the stream num_turns exceeds the unique assistant messages (7 against 6 unique assistant messages in d-s3a, 4 against 3 in d-s3b; unexplained, as before)",
+    "personal PreToolUse/PostToolUse hooks are not shown absent",
+    "whether another Claude Code version or install path (marketplace cache) resolves the same-named skill differently is unknown"
+  ]
+}

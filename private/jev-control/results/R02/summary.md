@@ -49,3 +49,7 @@ Changed (offline): `cli.mjs on` prints a `next` line right where the model reads
 ## Limits and unknowns
 
 n = 1 per scenario and arm; the fix is untested live; the slash command, subagent capability propagation and Sonnet's protocol adherence beyond two sessions are unmeasured; the in-session values of `JEV_PROVIDER`, `ENABLE_CLAUDEAI_MCP_SERVERS` and `JEV_CONTROL_HEADLESS` are not observable (the init shows the effect of the connector switch only); the stream's `num_turns` exceeds the unique assistant messages (unexplained, as in R01); `measure.mjs` has no baseline mode and counts a denied Bash command as a possible change (both documented in `evaluation.md`).
+
+## Erratum (R03)
+
+"The model loaded the `jev:jev-control` skill (transcript:19 / :20)" above is imprecise: the `Skill` call returned the text of `commands/jev-control.md` (transcript:21 / :22), not `skills/jev-control/SKILL.md`, which was not read in either dev session. See `../R03/summary.md`.

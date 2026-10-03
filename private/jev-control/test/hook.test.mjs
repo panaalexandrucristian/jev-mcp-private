@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { DEV_SCENARIOS } from "../fixtures/scenarios.mjs";
@@ -125,6 +125,22 @@ describe("the control hook: a reminder only, never a block", () => {
     }
     const other = makeRepo({ "a.txt": "a\n" });
     assert.equal(hook("UserPromptSubmit", { prompt: DEV_SCENARIOS[0].prompt }, { env, cwd: other }).text.includes("session-cap"), false);
+  });
+  it("a natural-language request tells the model to run `on` first and to Read SKILL.md (the Skill tool returns the same-named command, R03); a command prompt does not demand `on`", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const natural = hook("UserPromptSubmit", { prompt: "Let Jev control this session.\n\nWhere is the delay computed?" }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
+    assert.match(natural, /Do first, before any search or edit: node "[^"]+\/private\/jev-control\/cli\.mjs" on --session-cap [0-9a-f]{16}\.[0-9a-f]{32} --priorities/);
+    assert.match(natural, /Read \/[^ ]+\/skills\/jev-control\/SKILL\.md \(the Skill tool returns only the command text/);
+    const root = /node "([^"]+)\/private\/jev-control\/cli\.mjs"/.exec(natural)[1];
+    assert.ok(existsSync(join(root, "skills", "jev-control", "SKILL.md")), "the named SKILL.md exists");
+    for (const prompt of ["/jev:jev-control off", "/jev:jev-control status"]) {
+      const text = hook("UserPromptSubmit", { prompt }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
+      assert.doesNotMatch(text, /Do first|cli\.mjs" on/, prompt);
+      assert.match(text, /--session-cap /, prompt);
+    }
+    assert.match(reminder(0.95), /protocol: skills\/jev-control\/SKILL\.md/);
+    assert.doesNotMatch(reminder(0.95), /see the jev-control skill/);
   });
   it("a mode command is not a new request: the budget keeps counting", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
