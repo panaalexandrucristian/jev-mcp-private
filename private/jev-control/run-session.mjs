@@ -23,7 +23,10 @@
 // and status.json is written; only the owner token may update or release it. A
 // lock whose recorded pids are all dead is reported as stale and never removed
 // silently: `release-stale` removes it, and only when every recorded pid is dead.
-//   node run-session.mjs launch --prompt-file f --cwd dir --out-dir dir [--plugin-dir dir]
+//   node run-session.mjs launch --prompt-file f --cwd dir --out-dir dir [--plugin-dir dir] [--threshold x]
+// D33 (R05): `--threshold x` is the one explicit exception to "no JEV_CONTROL* key": for that launch only, JEV_CONTROL_THRESHOLD=x
+// (x valid in (0.5, 1), checked before the lock) reaches the wrapper, through the worker's configuration and in both sessionEnv
+// calls. Without the option a JEV_CONTROL_THRESHOLD of the launcher's environment is removed as before; the prompt is never touched.
 //   node run-session.mjs wait --out-dir dir [--timeout-s n]
 //   node run-session.mjs status --out-dir dir
 //   node run-session.mjs release-stale [--lock-path file]
@@ -32,6 +35,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { THRESHOLD_ENV, parseThreshold } from "./threshold.mjs";
 
 export const BUDGET_DIR = "/Users/apana/Dev/council-runs/2026-10-02/jev-control-budget";
 export const AUTHORIZED_WRAPPER = `${BUDGET_DIR}/bin/claude`;
@@ -63,17 +67,31 @@ export function buildArgs({ prompt, pluginDir = PLUGIN_DIR, maxTurns = LIMITS.ma
  * The environment of the worker and of the wrapper: the given environment with
  * JEV_PROVIDER (D29), ENABLE_CLAUDEAI_MCP_SERVERS=false (D30) and
  * JEV_CONTROL_HEADLESS=1 (D14) fixed, JEV_FLOW and every other JEV_CONTROL* key
- * (the launcher's JEV_CONTROL_LIVE included) removed. The same for baseline and
- * dev: without an active control the headless flag has no effect. Never
- * serialized: it may hold credentials.
+ * (the launcher's JEV_CONTROL_LIVE and any inherited JEV_CONTROL_THRESHOLD
+ * included) removed. The same for baseline and dev: without an active control the
+ * headless flag has no effect. The only exception (D33, R05) is an explicit
+ * `threshold` option, already validated by `thresholdProblem`: it alone adds
+ * JEV_CONTROL_THRESHOLD. Never serialized: it may hold credentials.
  */
-export function sessionEnv(env = process.env) {
+export function sessionEnv(env = process.env, { threshold = null } = {}) {
   const out = {};
   for (const [key, value] of Object.entries(env)) if (key !== "JEV_FLOW" && !key.startsWith("JEV_CONTROL")) out[key] = value;
   out.JEV_PROVIDER = SESSION_PROVIDER;
   out.ENABLE_CLAUDEAI_MCP_SERVERS = CLAUDEAI_MCP_SERVERS;
   out.JEV_CONTROL_HEADLESS = CONTROL_HEADLESS;
+  if (threshold !== null && threshold !== undefined) {
+    if (thresholdProblem(threshold)) throw new Error(`sessionEnv: ${thresholdProblem(threshold)}`);
+    out[THRESHOLD_ENV] = String(threshold).trim();
+  }
   return out;
+}
+
+/** Why an explicit session threshold (D33) is refused, or null: a string number strictly inside (0.5, 1). */
+export function thresholdProblem(threshold) {
+  if (threshold === null || threshold === undefined) return null;
+  if (typeof threshold !== "string") return "the threshold must be given as text such as 0.90";
+  const parsed = parseThreshold(threshold);
+  return parsed.ok ? null : `the threshold ${JSON.stringify(threshold.slice(0, 20))} is not a number strictly between 0.5 and 1 (${parsed.reason})`;
 }
 
 /** `args` without the prompt, the argument of -p: it is text and not a flag. */
@@ -250,8 +268,10 @@ export function releaseStale(lockPath, options = {}) {
 }
 
 /** Why a launch must be refused (empty when it may proceed). `testWrapper` is for the offline tests only. */
-export function launchProblems({ wrapper, args, ledgerPath = LEDGER, lockPath = LOCK_PATH, testWrapper = false, env = process.env }) {
+export function launchProblems({ wrapper, args, ledgerPath = LEDGER, lockPath = LOCK_PATH, testWrapper = false, env = process.env, threshold = null }) {
   const problems = [];
+  const bad = thresholdProblem(threshold);
+  if (bad) problems.push(bad);
   if (!testWrapper) {
     if (wrapper !== AUTHORIZED_WRAPPER) problems.push("only the authorized budget wrapper may start a test session");
     if (env.JEV_CONTROL_LIVE !== "1") problems.push("JEV_CONTROL_LIVE=1 is required: live sessions are not part of T2");
@@ -279,19 +299,19 @@ export function launchProblems({ wrapper, args, ledgerPath = LEDGER, lockPath = 
  * spawns anything and never releases it; the worker does, after the wrapper is gone
  * and status.json is written. Returns {ok, pid} or {ok: false, problems}.
  */
-export function launch({ wrapper = AUTHORIZED_WRAPPER, args, cwd, outDir, timeoutMs = LIMITS.timeoutMs, testWrapper = false, env = process.env, ledgerPath = LEDGER, lockPath = LOCK_PATH }) {
+export function launch({ wrapper = AUTHORIZED_WRAPPER, args, cwd, outDir, timeoutMs = LIMITS.timeoutMs, testWrapper = false, env = process.env, ledgerPath = LEDGER, lockPath = LOCK_PATH, threshold = null }) {
   mkdirSync(outDir, { recursive: true });
-  // The LIVE check reads the launcher's own environment; the child gets sessionEnv(env).
-  const problems = launchProblems({ wrapper, args, ledgerPath, lockPath, testWrapper, env });
+  // The LIVE check reads the launcher's own environment; the child gets sessionEnv(env). An invalid threshold is refused here, before the lock.
+  const problems = launchProblems({ wrapper, args, ledgerPath, lockPath, testWrapper, env, threshold });
   if (problems.length) return { ok: false, problems };
-  const childEnv = sessionEnv(env);
+  const childEnv = sessionEnv(env, { threshold });
   // Contended launches lose here; a loser touches nothing in any out dir.
   const acquired = acquireLock(lockPath, { outDir });
   if (!acquired.ok) return { ok: false, problems: [lockProblem(lockPath) || `the campaign lock ${lockPath} was taken by another launch`] };
   const { token } = acquired.lock;
   let worker = null;
   try {
-    const config = { wrapper, args, cwd, outDir, timeoutMs, lockPath, token };
+    const config = { wrapper, args, cwd, outDir, timeoutMs, lockPath, token, threshold: threshold === null || threshold === undefined ? null : String(threshold).trim() };
     writeFileSync(join(outDir, "launch.json"), JSON.stringify({ ...config, token: undefined, args: args.map((a, i) => (args[i - 1] === "-p" ? "<prompt not stored>" : a)) }));
     const secret = join(outDir, ".launch.private.json");
     writeFileSync(secret, JSON.stringify(config), { mode: 0o600 });
@@ -328,7 +348,7 @@ async function worker(secretPath) {
   } catch {
     // Already removed.
   }
-  const { wrapper, args, cwd, outDir, timeoutMs, lockPath, token } = config;
+  const { wrapper, args, cwd, outDir, timeoutMs, lockPath, token, threshold = null } = config;
   if (!updateLock(lockPath, token, { workerPid: process.pid })) {
     process.stderr.write("the campaign lock is not owned by this worker: no session started\n");
     process.exitCode = 5;
@@ -337,7 +357,7 @@ async function worker(secretPath) {
   const logPath = join(outDir, "session.log");
   const started = Date.now();
   const out = openSync(logPath, "a");
-  const child = spawn(wrapper, args, { cwd, detached: true, stdio: ["ignore", out, out], env: sessionEnv(process.env) });
+  const child = spawn(wrapper, args, { cwd, detached: true, stdio: ["ignore", out, out], env: sessionEnv(process.env, { threshold }) });
   if (isPid(child.pid)) updateLock(lockPath, token, { childPid: child.pid });
   let timedOut = false;
   let killedAt = 0;
@@ -432,7 +452,15 @@ if (isMain) {
       process.exitCode = 4;
     } else {
       const args = buildArgs({ prompt: readFileSync(promptFile, "utf8"), pluginDir: flag("plugin-dir") ?? PLUGIN_DIR });
-      const result = launch({ args, cwd: flag("cwd"), outDir });
+      // D33: one explicit threshold for this launch; a repeated flag or a missing value is refused, never read as the default.
+      const at = rest.indexOf("--threshold");
+      const repeated = rest.filter((a) => a === "--threshold").length > 1;
+      const value = at >= 0 ? rest[at + 1] : null;
+      const result = repeated
+        ? { ok: false, problems: ["--threshold may be given once"] }
+        : at >= 0 && (value === undefined || value.startsWith("--"))
+          ? { ok: false, problems: ["--threshold needs a value such as 0.90"] }
+          : launch({ args, cwd: flag("cwd"), outDir, threshold: value });
       process.stdout.write(`${JSON.stringify(result)}\n`);
       process.exitCode = result.ok ? 0 : 4;
     }

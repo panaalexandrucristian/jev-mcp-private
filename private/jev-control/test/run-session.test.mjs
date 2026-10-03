@@ -4,7 +4,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, CLAUDEAI_MCP_SERVERS, CONTROL_HEADLESS, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, updateLock, waitForTermination } from "../run-session.mjs";
+import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, CLAUDEAI_MCP_SERVERS, CONTROL_HEADLESS, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, thresholdProblem, updateLock, waitForTermination } from "../run-session.mjs";
 import { REPO_ROOT, run, spawnSyncPs, tempDir } from "./helpers.mjs";
 
 const RUN_SESSION = join(REPO_ROOT, "private", "jev-control", "run-session.mjs");
@@ -454,6 +454,87 @@ describe("the campaign-wide lock", () => {
     assert.equal(releaseStale(lockPath).ok, false);
     assert.equal(existsSync(lockPath), true);
     assert.equal(releaseStale(lockPath, { startGraceMs: 0 }).removed, true);
+  });
+});
+
+describe("D33 (R05): the one explicit JEV_CONTROL_THRESHOLD exception", () => {
+  const withInherited = { PATH: "/bin", JEV_CONTROL_THRESHOLD: "0.7", JEV_CONTROL_LIVE: "1", JEV_CONTROL_CACHE: "/c", JEV_FLOW: "on" };
+  it("sessionEnv: without the option an inherited JEV_CONTROL_THRESHOLD is removed; with it only that key is added; nothing else JEV_CONTROL* survives", () => {
+    assert.equal("JEV_CONTROL_THRESHOLD" in sessionEnv(withInherited), false);
+    assert.equal("JEV_CONTROL_THRESHOLD" in sessionEnv(withInherited, {}), false);
+    assert.equal("JEV_CONTROL_THRESHOLD" in sessionEnv(withInherited, { threshold: null }), false);
+    const out = sessionEnv(withInherited, { threshold: "0.90" });
+    assert.equal(out.JEV_CONTROL_THRESHOLD, "0.90", "the explicit value wins over the inherited 0.7");
+    assert.deepEqual(Object.keys(out).filter((k) => k.startsWith("JEV_CONTROL") || k === "JEV_FLOW").sort(), ["JEV_CONTROL_HEADLESS", "JEV_CONTROL_THRESHOLD"]);
+    assert.deepEqual(sessionEnv({}, { threshold: "0.9" }), { JEV_PROVIDER: "openrouter", ENABLE_CLAUDEAI_MCP_SERVERS: "false", JEV_CONTROL_HEADLESS: "1", JEV_CONTROL_THRESHOLD: "0.9" });
+    assert.throws(() => sessionEnv({}, { threshold: "1" }), /strictly between 0.5 and 1/);
+  });
+  it("only a number strictly inside (0.5, 1), given as text, is accepted; anything else refuses the launch before the lock", () => {
+    for (const ok of ["0.90", "0.9", "0.51", "0.999", " 0.9 "]) assert.equal(thresholdProblem(ok), null, ok);
+    assert.equal(thresholdProblem(null), null);
+    assert.equal(thresholdProblem(undefined), null);
+    for (const bad of ["0.5", "1", "1.2", "0", "-0.9", "abc", "", "  ", "0.9x", "1e-1", 0.9, true, {}]) assert.notEqual(thresholdProblem(bad), null, JSON.stringify(bad));
+    const base = { wrapper: "w", ledgerPath: emptyLedger(), lockPath: tempLock(), testWrapper: true };
+    assert.deepEqual(launchProblems({ ...base, args: baseArgs() }), []);
+    assert.deepEqual(launchProblems({ ...base, args: baseArgs(), threshold: "0.90" }), []);
+    assert.match(launchProblems({ ...base, args: baseArgs(), threshold: "1.2" }).join(" "), /strictly between 0.5 and 1/);
+    const dir = tempDir();
+    const lockPath = tempLock();
+    const refused = launch({ wrapper: fakeWrapper(dir), args: baseArgs(), cwd: dir, outDir: join(dir, "out"), testWrapper: true, ledgerPath: emptyLedger(), lockPath, env: { ...process.env, FAKE_ARGV: join(dir, "a.jsonl") }, threshold: "abc" });
+    assert.equal(refused.ok, false);
+    assert.match(refused.problems.join(" "), /strictly between 0.5 and 1/);
+    assert.equal(existsSync(lockPath), false, "no lock was taken");
+    assert.equal(existsSync(join(dir, "a.jsonl")), false, "the wrapper never ran");
+  });
+  it("the option reaches the wrapper through the worker's configuration; the next launch without it does not inherit it; launch.json records it without any environment", async () => {
+    const dir = tempDir();
+    const wrapper = fakeWrapper(dir);
+    const lockPath = tempLock();
+    const ledgerPath = emptyLedger();
+    const env = { ...process.env, FAKE_ARGV: join(dir, "a.jsonl"), FAKE_MODE: "ok", JEV_CONTROL_THRESHOLD: "0.7" };
+    const first = launch({ wrapper, args: baseArgs(), cwd: dir, outDir: join(dir, "o1"), testWrapper: true, ledgerPath, lockPath, env: { ...env, FAKE_ENV: join(dir, "env1.json") }, threshold: "0.90" });
+    assert.equal(first.ok, true, JSON.stringify(first));
+    const done1 = await waitForTermination(join(dir, "o1"), { timeoutMs: 20_000, lockPath });
+    assert.equal(done1.ok, true, JSON.stringify(done1));
+    const seen1 = JSON.parse(readFileSync(join(dir, "env1.json"), "utf8"));
+    assert.equal(seen1.JEV_CONTROL_THRESHOLD, "0.90", "the wrapper's environment carries the explicit threshold, not the inherited 0.7");
+    assert.equal(seen1.JEV_CONTROL_HEADLESS, "1");
+    assert.deepEqual(Object.keys(seen1).filter((k) => k === "JEV_FLOW" || (k.startsWith("JEV_CONTROL") && !["JEV_CONTROL_HEADLESS", "JEV_CONTROL_THRESHOLD"].includes(k))), []);
+    const stored1 = JSON.parse(readFileSync(join(dir, "o1", "launch.json"), "utf8"));
+    assert.equal(stored1.threshold, "0.90");
+    assert.equal(/JEV_PROVIDER|OPENROUTER|JEV_FLOW|JEV_CONTROL|ENABLE_CLAUDEAI/.test(JSON.stringify(stored1)), false, "the environment is never serialized");
+    const second = launch({ wrapper, args: baseArgs(), cwd: dir, outDir: join(dir, "o2"), testWrapper: true, ledgerPath, lockPath, env: { ...env, FAKE_ENV: join(dir, "env2.json") } });
+    assert.equal(second.ok, true, JSON.stringify(second));
+    const done2 = await waitForTermination(join(dir, "o2"), { timeoutMs: 20_000, lockPath });
+    assert.equal(done2.ok, true, JSON.stringify(done2));
+    const seen2 = JSON.parse(readFileSync(join(dir, "env2.json"), "utf8"));
+    assert.equal("JEV_CONTROL_THRESHOLD" in seen2, false, "without the option, even an inherited value is removed");
+    assert.equal(JSON.parse(readFileSync(join(dir, "o2", "launch.json"), "utf8")).threshold, null);
+  });
+  it("the CLI refuses a repeated --threshold, one without a value and an invalid one; none of them touches the real ledger or lock", () => {
+    const before = ledgerCount(LEDGER);
+    const lockBefore = existsSync(LOCK_PATH);
+    const dir = tempDir();
+    const promptFile = join(dir, "p.txt");
+    writeFileSync(promptFile, "x");
+    // No JEV_CONTROL_LIVE: even a regression here can never start (and count) a real session.
+    const env = { ...process.env };
+    delete env.JEV_CONTROL_LIVE;
+    const base = ["launch", "--prompt-file", promptFile, "--cwd", dir];
+    const cases = [
+      [["--threshold", "0.9", "--threshold", "0.8"], /may be given once/],
+      [["--threshold"], /needs a value/],
+      [["--threshold", "--cwd"], /needs a value/],
+      [["--threshold", "1.5"], /strictly between 0.5 and 1/],
+      [["--threshold", "abc"], /strictly between 0.5 and 1/],
+    ];
+    for (const [extra, pattern] of cases) {
+      const r = run(process.execPath, [RUN_SESSION, ...base, "--out-dir", join(dir, "o"), ...extra], { env });
+      assert.equal(r.code, 4, `${extra.join(" ")}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stdout, pattern, extra.join(" "));
+      assert.equal(ledgerCount(LEDGER), before, "the ledger does not change");
+      assert.equal(existsSync(LOCK_PATH), lockBefore, "no lock was taken");
+    }
   });
 });
 
