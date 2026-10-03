@@ -11,7 +11,7 @@ import { runDecision } from "../protocol.mjs";
 import { controlSearch } from "../search.mjs";
 import { REPO_ROOT, stateDir } from "./helpers.mjs";
 
-const DIR = join(REPO_ROOT, "skills", "jev-control", "examples");
+const DIR = join(REPO_ROOT, "skills", "jev-control-mode", "examples");
 const files = readdirSync(DIR).filter((f) => f.endsWith(".md")).sort();
 const read = (f) => readFileSync(join(DIR, f), "utf8");
 

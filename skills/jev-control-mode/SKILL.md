@@ -1,9 +1,9 @@
 ---
-name: jev-control
-description: "Puts an explicitly enabled Claude Code session under Jev control: every choice with 2+ real alternatives (approach, task order, which files to search or read, commands and tests, edit variants, delegation and model, when to ask the user, when the work is done) is decided by Jev judgments at a configurable confidence (default 0.95), with compact helper output to save orchestrator tokens. Use ONLY when the user explicitly asks for it: /jev:jev-control, \"let Jev control this session\", \"Jev decides everything\", \"run this session under Jev\"; in Romanian: \"lasă Jev să controleze sesiunea\", \"sesiune controlată de Jev\", \"Jev să ia toate deciziile\", \"lasa Jev sa controleze sesiunea\". Do NOT use for ordinary coding tasks or for a mere mention of Jev."
+name: jev-control-mode
+description: "Puts an explicitly enabled Claude Code session under Jev control: every choice with 2+ real alternatives (approach, task order, which files to search or read, commands and tests, edit variants, delegation and model, when to ask the user, when the work is done) is decided by Jev judgments at a configurable confidence (default 0.95), with compact helper output to save orchestrator tokens. The mode's command is /jev:jev-control on|off|status|threshold. Use ONLY when the user explicitly asks for it: /jev:jev-control, \"let Jev control this session\", \"Jev decides everything\", \"run this session under Jev\"; in Romanian: \"lasă Jev să controleze sesiunea\", \"sesiune controlată de Jev\", \"Jev să ia toate deciziile\", \"lasa Jev sa controleze sesiunea\". Do NOT use for ordinary coding tasks or for a mere mention of Jev."
 ---
 
-# jev-control
+# jev-control-mode
 
 A mode, not a workflow: while it is **on**, Jev makes the choices and this session carries them out. It uses the eleven documented Jev tools (`jev_audit` is optional) and the helper `private/jev-control/cli.mjs`; the tool conventions of the `jev` skill still apply. Tool names appear as `mcp__jev__*` or `mcp__plugin_jev_jev__*`; accept both. Details: [`reference/protocol.md`](reference/protocol.md), [`reference/tools.md`](reference/tools.md), [`reference/integration.md`](reference/integration.md), [`reference/evaluation.md`](reference/evaluation.md). Worked examples: [`examples/`](examples/).
 

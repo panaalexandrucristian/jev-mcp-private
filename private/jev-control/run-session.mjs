@@ -49,7 +49,12 @@ export const START_GRACE_MS = 30_000;
 // D27-D29: the same isolation, permissions and provider for every campaign session.
 export const PLUGIN_DIR = "/Users/apana/Dev/jev-mcp";
 export const PERMISSION_MODE = "acceptEdits";
-export const ALLOWED_TOOLS = Object.freeze(["Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent"]);
+// D45 (R09): the renamed skill directory, and one Read rule restricted to it, so a session can load the protocol files (SKILL.md, reference/, examples/) the way an
+// interactive one can. `//` is the absolute-path form of a permission rule. No --add-dir (it would make the directory a working directory that acceptEdits may edit),
+// no access to the rest of the plugin (`help` stays reachable through Bash(node:*)). The rule is the last element of the list.
+export const SKILL_DIR = `${PLUGIN_DIR}/skills/jev-control-mode`;
+export const SKILL_READ_RULE = `Read(/${SKILL_DIR}/**)`;
+export const ALLOWED_TOOLS = Object.freeze(["Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent", SKILL_READ_RULE]);
 export const SESSION_PROVIDER = "openrouter";
 // D30: the claude.ai connectors (Gmail, Drive, ...) stay out of every session; D14: nobody answers in -p, so a control that runs out of rounds stops with `Incomplete:`.
 export const CLAUDEAI_MCP_SERVERS = "false";
@@ -138,7 +143,11 @@ export function configProblems(args) {
   if (valueAfter(flags, "--permission-mode") !== PERMISSION_MODE) problems.push(`the session must pass --permission-mode ${PERMISSION_MODE}`);
   const tools = flags.indexOf("--allowedTools");
   const list = tools < 0 ? [] : flags.slice(tools + 1);
-  if (list.length !== ALLOWED_TOOLS.length || list.some((t, i) => t !== ALLOWED_TOOLS[i])) problems.push("--allowedTools must be exactly the D27 list, last on the command line");
+  if (list.length !== ALLOWED_TOOLS.length || list.some((t, i) => t !== ALLOWED_TOOLS[i])) problems.push("--allowedTools must be exactly the D27 list plus the D45 skill Read rule, last on the command line");
+  // Name the widenings that D45 forbids, so the refusal says what to remove (the exact-list check above already refuses them all).
+  const widening = list.filter((t) => /^(?:Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep)\b/.test(t) && !ALLOWED_TOOLS.includes(t));
+  if (widening.length) problems.push(`the only file permission is ${SKILL_READ_RULE}; remove: ${widening.map((t) => t.slice(0, 60)).join(" ")}`);
+  if (flags.includes("--add-dir")) problems.push("--add-dir is not allowed (D45): it would make the directory writable under acceptEdits");
   if (valueAfter(flags, "--setting-sources") !== "project") problems.push("the session must pass --setting-sources project");
   if (valueAfter(flags, "--plugin-dir") !== PLUGIN_DIR) problems.push(`the session must pass --plugin-dir ${PLUGIN_DIR}`);
   if (valueAfter(flags, "--output-format") !== "stream-json" || !flags.includes("--verbose")) problems.push("the session must pass --output-format stream-json --verbose");

@@ -70,6 +70,7 @@ import { parseDecideResult, parseNoulResult, parseRankResult, toolBase } from ".
 import { consumableClaimsName, splitClaims } from "./claimsfile.mjs";
 import { STATUS_ORDER, VERDICT_ORDER } from "../jev-flow/gate-run.mjs";
 import { normalizeBatch } from "./options.mjs";
+import { SKILL_DIR } from "./run-session.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
 /** Decide statuses that stop the plan (no grants). */
@@ -78,6 +79,24 @@ export const STOP_STATUSES = new Set(["expand", "ask_user", "incomplete", "none_
 export const DECIDE_BLOCKING = new Set(["ask_user", "incomplete", "unavailable", "budget_exhausted", "refused", "tie_unresolved"]);
 export const SEARCH_BLOCKING = new Set(["budget_exhausted", "search_budget_exhausted", "unavailable", "refused", "invalid"]);
 const MECHANICAL = new Set(["TodoWrite", "ToolSearch", "Skill", "TaskOutput", "TaskStop", "ExitPlanMode", "EnterPlanMode"]);
+
+// D47 (R09): the protocol files of the renamed skill. A Read with a confirmed result of exactly SKILL_DIR/SKILL.md, SKILL_DIR/reference/<name>.md or
+// SKILL_DIR/examples/<name>.md (an absolute path, no `..`, `.` or empty segment) is the protocol being read, not a task action: it stays outside the coverage
+// denominator and is counted under coverage.exceptions.skill_protocol_read. A refused or result-less Read, any other path or extension and every Write or Edit
+// keep the classification they had. Nothing here proves the whole skill reached the model: the `skill` section reports what the transcript shows.
+const SKILL_FILE = /^(?:SKILL\.md|reference\/[^/]+\.md|examples\/[^/]+\.md)$/;
+const SKILL_NAMES = new Set(["jev:jev-control-mode", "jev-control-mode"]);
+const SKILL_IDENTITY = /(?:^|\s)name:\s*jev-control-mode(?:\s|$)/m;
+const SKILL_LIST_MAX = 40;
+/** The path of a Read below SKILL_DIR as typed, or null; `rel` is the part after SKILL_DIR/, `exact` whether it is one of the protocol files. */
+function skillReadTarget(e) {
+  const raw = e.name === "Read" ? e.input?.file_path : null;
+  if (typeof raw !== "string" || !raw.startsWith(`${SKILL_DIR}/`)) return null;
+  const rel = raw.slice(SKILL_DIR.length + 1);
+  // SKILL_FILE allows no further slash and a name of at least one character before `.md`, so no `..`, `.` or empty segment can pass.
+  return { rel: rel.slice(0, 120), exact: SKILL_FILE.test(rel), partial: e.input.offset !== undefined || e.input.limit !== undefined };
+}
+const clip = (text, n) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, n);
 const ACTIONS = new Set(["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob", "LS", "Agent", "Task", "AskUserQuestion"]);
 const GRANTING = new Set(["decide", "search", "page", "approve"]);
 /** Tools whose calls may change the tree (an unclassified tool counts too): a verification does not survive them. */
@@ -935,6 +954,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
     finalization: { done_calls: 0, last_outcome: null, accepted: false, last_accepted_at: null, edits: 0, incomplete_stops: 0, accepted_without_control: 0, stale_results: 0, per_request: [], unknown: [], violations: [] },
     approvals: { calls: 0, bound: 0, unbound: [], refused: 0 },
     receipts: { receipt_verifications: 0, receipt_refusals: 0, refusals_by_reason: {} },
+    skill: { load: "not_attempted", skill_tool_calls: [], skill_reads: [], uncovered_skill_reads: 0 },
   };
   const latency = { jev_direct: [], helper: [] };
   const grants = [];
@@ -1041,6 +1061,7 @@ export function audit(records, { threshold = 0.95 } = {}) {
     ctxStats(e.ctx).uncovered += 1;
     out.coverage.uncovered_reasons[reason] = (out.coverage.uncovered_reasons[reason] ?? 0) + 1;
     if (out.coverage.uncovered_samples.length < SAMPLES) out.coverage.uncovered_samples.push({ at: e.i, tool: desc.tool, reason });
+    if (skillReadTarget(e)) out.skill.uncovered_skill_reads += 1;
   };
   const unknown = (e, desc, reason) => {
     out.coverage.unknown += 1;
@@ -1444,6 +1465,22 @@ export function audit(records, { threshold = 0.95 } = {}) {
   const batchFiles = auxiliaryBatchFiles(events, classOf);
   const claimFiles = auxiliaryClaimsFiles(events, classOf);
 
+  /** Record a Read below SKILL_DIR in the `skill` section; true when it is exempt from coverage (D47: exact protocol file, confirmed result). */
+  function onSkillRead(e) {
+    const t = skillReadTarget(e);
+    if (!t) return false;
+    const result = !e.result ? "no_result" : e.result.error ? "refused" : "granted";
+    const exempt = t.exact && result === "granted";
+    const text = result === "granted" ? e.result.text : "";
+    if (out.skill.skill_reads.length < SKILL_LIST_MAX) {
+      out.skill.skill_reads.push({ at: e.i, ctx: e.ctx, request: e.req, path: t.rel, result, partial: t.partial, exempt, ...(result === "refused" ? { reason: clip(e.result.text, 120) } : {}), ...(!t.exact ? { why_not_exempt: "not_an_exact_protocol_file" } : {}), ...(t.rel === "SKILL.md" && result === "granted" ? { identity_observed: SKILL_IDENTITY.test(text) } : {}) });
+    }
+    if (!exempt) return false;
+    out.coverage.exceptions.skill_protocol_read = (out.coverage.exceptions.skill_protocol_read ?? 0) + 1;
+    ctxStats(e.ctx).exceptions += 1;
+    return true;
+  }
+
   for (const { use, e } of timeline) {
     const c = classOf(e);
     if (use) {
@@ -1462,8 +1499,14 @@ export function audit(records, { threshold = 0.95 } = {}) {
           finOf(e.req).done_calls += 1;
         }
         if (!e.result && GRANTING.has(c.sub)) scope(e).opaque = true;
-      } else if (c.cat === "mechanical") out.coverage.mechanical += 1;
-      else if (c.cat === "unclassified") {
+      } else if (c.cat === "mechanical") {
+        out.coverage.mechanical += 1;
+        if (e.name === "Skill" && SKILL_NAMES.has(String(e.input?.skill ?? ""))) {
+          const text = e.result && !e.result.error ? e.result.text : "";
+          const level = !e.result ? "no_result" : e.result.error ? "error" : SKILL_IDENTITY.test(text) ? "identity_observed" : "result_without_identity";
+          if (out.skill.skill_tool_calls.length < SKILL_LIST_MAX) out.skill.skill_tool_calls.push({ at: e.i, ctx: e.ctx, request: e.req, skill: String(e.input.skill), level, ...(level === "error" ? { reason: clip(e.result.text, 120) } : {}) });
+        }
+      } else if (c.cat === "unclassified") {
         out.coverage.unclassified += 1;
         noteMutation(e);
       }
@@ -1473,7 +1516,9 @@ export function audit(records, { threshold = 0.95 } = {}) {
         if (batchFiles.files.has(e.id)) out.coverage.protocol_batch_files += 1;
         else if (batchFiles.removals.has(e.id)) out.coverage.protocol_batch_removals += 1;
         else if (claimFiles.files.has(e.id)) out.coverage.protocol_claims_files += 1;
-        else {
+        else if (onSkillRead(e)) {
+          // D47: a confirmed Read of a protocol file of the skill is not a task action (reported in `skill`).
+        } else {
           onAction(e);
           if (MUTATING.has(e.name)) noteMutation(e);
         }
@@ -1536,6 +1581,18 @@ export function audit(records, { threshold = 0.95 } = {}) {
   fin.accepted = tail?.accepted ?? false;
   fin.last_accepted_at = tail?.accepted_at ?? null;
 
+  // What the transcript shows about loading the skill; the identity of the frontmatter is not the delivery of the whole skill.
+  {
+    const calls = out.skill.skill_tool_calls;
+    const reads = out.skill.skill_reads.filter((r) => r.path === "SKILL.md");
+    const sk = out.skill;
+    if (reads.some((r) => r.result === "granted" && !r.partial && r.identity_observed)) sk.load = "full_read_observed";
+    else if (calls.some((c) => c.level === "identity_observed")) sk.load = "identity_observed";
+    else if (calls.some((c) => c.level === "result_without_identity" || c.level === "no_result") || reads.some((r) => r.result !== "refused")) sk.load = "unknown";
+    else if (calls.length || reads.length) sk.load = "refused";
+    sk.note = "load: full_read_observed = a whole-file Read of SKILL.md returned its frontmatter; identity_observed = a Skill result with the frontmatter name only (not proof that the whole skill reached the model); unknown = a call or Read without evidence; refused = every attempt errored; not_attempted = none. uncovered_skill_reads counts Reads below the skill directory that stayed uncovered (refused, result-less or not an exact protocol file)";
+  }
+
   const cov = out.coverage;
   cov.numerator = cov.covered;
   cov.denominator = cov.covered + cov.uncovered;
@@ -1573,6 +1630,7 @@ export function toMarkdown(a, label = "session") {
     `- Ordering: ${a.ordering.plans_descending}/${a.ordering.plans} plans descending or tie-broken; action order ${a.ordering.action_order}: ${a.ordering.order_violations.length} order violations`,
     `- Jev calls: direct ${JSON.stringify(a.jev_calls.direct)}, helper-reported attempts ${a.jev_calls.helper_reported_attempts}, state used ${a.jev_calls.state_used}, reserved direct ${a.jev_calls.reserved_direct}, unreserved direct ${a.jev_calls.unreserved_direct.length}, budget violations ${a.jev_calls.violations.length}, budget approvals bound ${a.budget.approvals_bound} / unbound ${a.budget.approvals_unbound}, reservation source mismatches ${a.jev_calls.reservation_source_mismatch.length}; provider calls unknown`,
     `- Finalization: ${a.finalization.done_calls} done calls, last outcome ${a.finalization.last_outcome ?? "none"}, accepted ${a.finalization.accepted}, ${a.finalization.incomplete_stops} incomplete stops, ${a.finalization.unknown.length} unknown, ${a.finalization.violations.length} violations`,
+    `- Skill: load ${a.skill?.load ?? "unknown"}; ${a.skill?.skill_tool_calls.length ?? 0} Skill calls, ${a.skill?.skill_reads.length ?? 0} Reads below the skill directory (${a.coverage.exceptions.skill_protocol_read ?? 0} exempt from coverage, ${a.skill?.uncovered_skill_reads ?? 0} uncovered)`,
     `- Latency (ms, median): direct ${a.latency_ms.jev_direct_median}, helper ${a.latency_ms.helper_median}`,
     `- Parent tokens: ${tokens(u.parent)} (${u.parent.messages} messages)`,
     `- Subagent tokens: ${tokens(u.subagent)} (${u.subagent.messages} messages)`,

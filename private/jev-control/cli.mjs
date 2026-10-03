@@ -37,6 +37,7 @@ import { helpText } from "./help.mjs";
 import { normalizeBatch } from "./options.mjs";
 import { runDecision } from "./protocol.mjs";
 import { verifyDecisionReceipt, writeDecisionReceipt } from "./receipts.mjs";
+import { PROTOCOL_RULES } from "./rules.mjs";
 import { controlSearch } from "./search.mjs";
 import { controlSessionDir, hasSessionId, loadControlState, oneLine, repoKey, sessionKey, verifySessionCap, withControlState } from "./state.mjs";
 import { DEFAULT_THRESHOLD, parseThreshold, resolveThreshold } from "./threshold.mjs";
@@ -83,6 +84,20 @@ function shrink(o, max) {
     () => { if (Array.isArray(o.unresolved) && o.unresolved.length > 6) o.unresolved = [...o.unresolved.slice(0, 6), `…${o.unresolved.length - 6} more`]; },
     () => { if (typeof o.message === "string") o.message = o.message.slice(0, 80); },
     () => { delete o.problems; },
+    // The `on` result (R09): the rules in `next`, the threshold and the stored priorities are never cut; only descriptive echoes yield, in this order.
+    () => { if (o.next === PROTOCOL_RULES) delete o.flow; },
+    () => { if (o.next === PROTOCOL_RULES && typeof o.audit === "string") o.audit = o.audit.split(" ")[0]; },
+    () => { if (o.next === PROTOCOL_RULES && typeof o.notice === "string") o.notice = o.notice.slice(0, 120); },
+    () => { if (o.next === PROTOCOL_RULES && typeof o.note === "string") o.note = o.note.slice(0, 60); },
+    () => {
+      // Characters are cut by the byte budget (a multibyte priority line can be three times its length in bytes).
+      while (o.next === PROTOCOL_RULES && typeof o.priorities === "string" && o.priorities !== "" && bytes(o) > max) {
+        const chars = Array.from(o.priorities);
+        o.priorities = chars.length <= 8 ? "" : `${chars.slice(0, Math.max(8, Math.floor(chars.length * 0.8)) - 1).join("")}…`;
+      }
+      if (o.next === PROTOCOL_RULES && o.priorities === "") o.priorities = null;
+    },
+    () => { if (o.next === PROTOCOL_RULES && typeof o.notice === "string") delete o.notice; },
   ];
   for (const step of steps) {
     if (bytes(o) <= max) break;
@@ -135,8 +150,7 @@ function print(object) {
   process.stdout.write(`${compactOut(object)}\n`);
 }
 
-// What the model sees right after `on` (R02: two dev sessions switched the mode on and then took no decision and ran no search).
-const NEXT_AFTER_ON = "act only through the helper from now on: several tasks or ways to do one are a decision (decide --file <batch>), a user phrase such as \"choose the order yourself\" hands that choice to Jev, files are found with search, completion is /jev:jev-done or, headless, `help done`; the batch format is in `help decide`, the search form in `help search` (SKILL.md may be unreadable)";
+// What the model sees right after `on` is the compact protocol (R09, D46; rules.mjs): the same text as the hook's activation.
 
 function resolveSession(repoRoot, flags, env) {
   const id = flags["session-id"] ?? env.CLAUDE_CODE_SESSION_ID;
@@ -240,7 +254,7 @@ async function cmdOn(flags, ctx) {
     tool_prefix: check.prefix || null,
     session: ctx.via,
     flow: "jev-flow directives are suppressed while the mode is on",
-    next: NEXT_AFTER_ON,
+    next: PROTOCOL_RULES,
     ...(threshold.notice ? { notice: threshold.notice } : {}),
     ...(!state.priorities ? { note: "priorities not set: pass --priorities \"<one line from the user's request>\" or put them in each batch" } : {}),
   };

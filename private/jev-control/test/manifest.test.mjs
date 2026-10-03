@@ -30,10 +30,12 @@ describe("the plugin ships jev-control as 0.7.0", () => {
 });
 
 describe("skill and command", () => {
-  const skill = read("skills", "jev-control", "SKILL.md");
+  const skill = read("skills", "jev-control-mode", "SKILL.md");
   const fm = frontmatter(skill);
-  it("is named jev-control with explicit-only triggers in English and Romanian", () => {
-    assert.equal(fm.name, "jev-control");
+  it("is named jev-control-mode (R09, D43) with explicit-only triggers in English and Romanian", () => {
+    assert.equal(fm.name, "jev-control-mode");
+    assert.equal(fm.name, "jev-control-mode", "the skill name is its directory name");
+    assert.match(fm.description, /The mode's command is \/jev:jev-control on\|off\|status\|threshold/);
     for (const phrase of ["/jev:jev-control", "let Jev control this session", "lasă Jev să controleze sesiunea", "sesiune controlată de Jev", "Do NOT use for ordinary coding tasks"]) assert.ok(fm.description.includes(phrase), phrase);
     assert.match(fm.description, /ONLY when the user explicitly asks/);
   });
@@ -49,7 +51,7 @@ describe("skill and command", () => {
     assert.match(skill, /Often only the next task is cleared .*never run it because the order seems obvious/);
     assert.equal(skill.includes("outside the repository"), false, "the old instruction (a /tmp file) is gone");
     for (const f of ["01-single-winner", "02-multiple-eligible", "03-extension-then-ask", "05-task-order", "06-unavailable", "07-compact-helper"]) {
-      const text = read("skills", "jev-control", "examples", `${f}.md`);
+      const text = read("skills", "jev-control-mode", "examples", `${f}.md`);
       assert.equal(text.includes("/tmp/jc-batch.json"), false, f);
       assert.ok(text.includes("--file jev-batch.json"), f);
       assert.ok(text.includes("a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, with a lone `rm -f jev-batch.json` in its own command"), f);
@@ -58,7 +60,7 @@ describe("skill and command", () => {
   it("links its references, and they exist", () => {
     for (const ref of ["protocol", "tools", "integration", "evaluation"]) {
       assert.ok(skill.includes(`reference/${ref}.md`), ref);
-      assert.ok(read("skills", "jev-control", "reference", `${ref}.md`).length > 500, ref);
+      assert.ok(read("skills", "jev-control-mode", "reference", `${ref}.md`).length > 500, ref);
     }
   });
   it("the command takes on|off|status|threshold and runs the helper", () => {
@@ -70,12 +72,12 @@ describe("skill and command", () => {
     assert.match(text, /never pass a made-up `--session-id`/i);
     assert.match(text, /--session-cap/);
   });
-  it("the command reads SKILL.md itself (the same-named skill is never returned by the Skill tool) and a natural-language request without arguments runs `on`, not `status` (R03)", () => {
+  it("R09: the command loads the skill by its own name (Skill jev:jev-control-mode), falls back to the exact file, and a natural-language request without arguments runs `on`, not `status` (R03)", () => {
     const text = read("commands", "jev-control.md");
-    assert.match(text, /Read `\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/jev-control\/SKILL\.md`/);
-    assert.match(text, /the Skill tool returns this text and never that file/);
-    // R04: a refused Read must not end the session; the command names the helper's own usage text.
-    assert.match(text, /If the read is refused, do not stop: .*cli\.mjs" help decide` prints the batch format, `help search` the search form/);
+    assert.match(text, /1\. Load the skill with the Skill tool: `jev:jev-control-mode`, and follow it while the mode is on\./);
+    assert.match(text, /If the Skill tool cannot load it, Read `\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/jev-control-mode\/SKILL\.md`; if that is refused too, say so in one line and follow the rules printed by `on`/);
+    assert.match(text, /cli\.mjs" help decide` prints the batch format, `help search` the search form, `help done` the completion gate/);
+    assert.doesNotMatch(text, /same name as this command|never that file|skills\/jev-control\/SKILL/);
     assert.doesNotMatch(text, /Load the `jev-control` skill/);
     // Step 3 tests exactly the line that only hook.mjs emits for a natural-language request (never for a slash command), of the current request.
     const marked = `jev-control was requested by the user ${NATURAL_MARKER.replace(/\.$/, "")}`;
@@ -100,6 +102,41 @@ describe("skill and command", () => {
     assert.match(done, /a file outside the work tree \(`\/tmp`\) and `-` are read as before and never removed/);
     // The upstream procedure text outside the jev-control paragraph keeps the /tmp claims file of steps 4 and 5.
     assert.match(done, /1\. \*\*Freeze the snapshot\.\*\*/);
+  });
+});
+
+describe("R09: the skill and the command no longer share a name (D43)", () => {
+  const dirs = (...p) => readdirSync(join(REPO_ROOT, ...p), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  it("the old skill directory is gone, the new one exists and the command file keeps its name", () => {
+    assert.equal(dirs("skills").includes("jev-control"), false, "skills/jev-control/ must not exist any more");
+    assert.equal(dirs("skills").includes("jev-control-mode"), true);
+    assert.equal(readdirSync(join(REPO_ROOT, "commands")).includes("jev-control.md"), true);
+  });
+  it("no skill name equals a command name (the Skill tool would return the command text, R03)", () => {
+    const skillNames = dirs("skills").filter((d) => readdirSync(join(REPO_ROOT, "skills", d)).includes("SKILL.md")).map((d) => frontmatter(read("skills", d, "SKILL.md")).name);
+    const commandNames = readdirSync(join(REPO_ROOT, "commands")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+    assert.ok(skillNames.includes("jev-control-mode") && commandNames.includes("jev-control"));
+    assert.deepEqual(skillNames.filter((n) => commandNames.includes(n)), []);
+  });
+  it("every skills/<x>/ path that the commands, agents, helper sources and jev-flow skill cite exists, and none cites the old directory", () => {
+    const files = [];
+    for (const d of ["commands", "agents"]) for (const f of readdirSync(join(REPO_ROOT, d))) files.push([d, f]);
+    for (const f of ["cli.mjs", "help.mjs", "hook.mjs", "rules.mjs", "run-session.mjs", "measure.mjs"]) files.push(["private", "jev-control", f]);
+    files.push(["skills", "jev-flow", "SKILL.md"]);
+    const cited = new Set();
+    for (const parts of files) {
+      const text = read(...parts);
+      assert.doesNotMatch(text, /skills\/jev-control(?![-\w])/, `${parts.join("/")} cites the old skill directory`);
+      for (const m of text.matchAll(/skills\/([a-z][a-z-]*)\//g)) cited.add(m[1]);
+    }
+    assert.ok(cited.has("jev-control-mode"));
+    for (const name of cited) assert.equal(dirs("skills").includes(name), true, `skills/${name}/ is cited but missing`);
+  });
+  it("no active file outside the historical reports cites skills/jev-control/ or jev-control/SKILL.md", () => {
+    const out = execFileSync("git", ["grep", "-n", "-E", "skills/jev-control/|jev-control/SKILL\\.md", "--", ".", ":!private/jev-control/results", ":!private/jev-control/test"], { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean);
+    // The only remaining mentions are history written before R09: they name the old path as it was.
+    const live = out.filter((l) => !/^(PRIVATE\.md|skills\/jev-control-mode\/reference\/integration\.md):/.test(l));
+    assert.deepEqual(live, []);
   });
 });
 

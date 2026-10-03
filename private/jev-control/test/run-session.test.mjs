@@ -4,7 +4,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, CLAUDEAI_MCP_SERVERS, CONTROL_HEADLESS, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, thresholdProblem, updateLock, waitForTermination } from "../run-session.mjs";
+import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, SKILL_DIR, SKILL_READ_RULE, CLAUDEAI_MCP_SERVERS, CONTROL_HEADLESS, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, thresholdProblem, updateLock, waitForTermination } from "../run-session.mjs";
 import { REPO_ROOT, run, spawnSyncPs, tempDir } from "./helpers.mjs";
 
 const RUN_SESSION = join(REPO_ROOT, "private", "jev-control", "run-session.mjs");
@@ -83,6 +83,7 @@ describe("launch rules", () => {
       "-p", "p", "--model", "sonnet", "--max-turns", "40", "--output-format", "stream-json", "--verbose",
       "--setting-sources", "project", "--plugin-dir", "/Users/apana/Dev/jev-mcp", "--permission-mode", "acceptEdits",
       "--allowedTools", "Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent",
+      "Read(//Users/apana/Dev/jev-mcp/skills/jev-control-mode/**)",
     ]);
     assert.equal(PLUGIN_DIR, "/Users/apana/Dev/jev-mcp");
     assert.equal(args[1], "p", "the prompt is the argument of -p, before the variadic --allowedTools list");
@@ -168,6 +169,54 @@ describe("launch rules", () => {
     assert.deepEqual(configProblems(good), []);
     assert.deepEqual(configProblems(buildArgs({ prompt: "--settings {}" })), []);
     assert.deepEqual(configProblems(buildArgs({ prompt: "--mcp-config x.json", maxTurns: 5 })), []);
+  });
+  it("R09 (D45): the allowlist is the D27 list plus exactly one Read rule for the renamed skill directory, last, with no --add-dir", () => {
+    assert.equal(SKILL_DIR, `${PLUGIN_DIR}/skills/jev-control-mode`);
+    assert.equal(SKILL_READ_RULE, "Read(//Users/apana/Dev/jev-mcp/skills/jev-control-mode/**)");
+    assert.equal(ALLOWED_TOOLS.at(-1), SKILL_READ_RULE, "the rule is the last element");
+    assert.equal(ALLOWED_TOOLS.filter((t) => /^(?:Read|Edit|Write)\b/.test(t)).length, 1, "the only file permission");
+    assert.deepEqual(ALLOWED_TOOLS.slice(0, -1), ["Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent"], "the D27 list is unchanged");
+    assert.equal(buildArgs({ prompt: "p" }).includes("--add-dir"), false);
+    assert.equal(Object.isFrozen(ALLOWED_TOOLS), true);
+  });
+  it("R09 (D45): any other file permission, a missing, duplicated or moved Read rule and --add-dir are refused by both validators", () => {
+    const base = { wrapper: "w", ledgerPath: emptyLedger(), lockPath: tempLock(), testWrapper: true };
+    const good = baseArgs();
+    const at = good.indexOf("--allowedTools");
+    const head = good.slice(0, at);
+    const list = [...ALLOWED_TOOLS];
+    const variants = {
+      "no Read rule": list.slice(0, -1),
+      "a duplicated rule": [...list, SKILL_READ_RULE],
+      "the rule moved first": [SKILL_READ_RULE, ...list.slice(0, -1)],
+      "another directory": [...list.slice(0, -1), "Read(//Users/apana/Dev/jev-mcp/skills/jev-flow/**)"],
+      "the repository root": [...list.slice(0, -1), "Read(//Users/apana/Dev/jev-mcp/**)"],
+      "the plugin helper directory": [...list, "Read(//Users/apana/Dev/jev-mcp/private/jev-control/**)"],
+      "a bare Read": [...list, "Read"],
+      "Read(*)": [...list, "Read(*)"],
+      "a relative rule": [...list.slice(0, -1), "Read(skills/jev-control-mode/**)"],
+      "a single-slash absolute rule": [...list.slice(0, -1), "Read(/Users/apana/Dev/jev-mcp/skills/jev-control-mode/**)"],
+      "the old directory": [...list.slice(0, -1), "Read(//Users/apana/Dev/jev-mcp/skills/jev-control/**)"],
+      "an Edit rule on the directory": [...list, "Edit(//Users/apana/Dev/jev-mcp/skills/jev-control-mode/**)"],
+      "a Write rule": [...list, "Write(//Users/apana/**)"],
+      "the rule with a trailing space": [...list.slice(0, -1), `${SKILL_READ_RULE} `],
+    };
+    for (const [name, tools] of Object.entries(variants)) {
+      const args = [...head, "--allowedTools", ...tools];
+      assert.match(configProblems(args).join(), /exactly the D27 list plus the D45 skill Read rule/, name);
+      assert.match(launchProblems({ ...base, args }).join(), /exactly the D27 list plus the D45 skill Read rule/, name);
+    }
+    for (const name of ["an Edit rule on the directory", "a Write rule", "another directory", "the repository root", "a bare Read", "Read(*)"]) {
+      assert.match(configProblems([...head, "--allowedTools", ...variants[name]]).join(), /the only file permission is Read\(\/\/Users\/apana\/Dev\/jev-mcp\/skills\/jev-control-mode\/\*\*\); remove:/, name);
+    }
+    for (const extra of [["--add-dir", "/Users/apana/Dev/jev-mcp/skills/jev-control-mode"], ["--add-dir", "/Users/apana/Dev/jev-mcp"]]) {
+      const before = [...good.slice(0, good.indexOf("--setting-sources")), ...extra, ...good.slice(good.indexOf("--setting-sources"))];
+      assert.match(configProblems(before).join(), /--add-dir is not allowed \(D45\)/, extra.join(" "));
+      assert.match(launchProblems({ ...base, args: before }).join(), /outside the allowed flags/, extra.join(" "));
+      const after = [...good, ...extra];
+      assert.match(configProblems(after).join(), /--add-dir is not allowed \(D45\)|exactly the D27 list/, `after the list: ${extra.join(" ")}`);
+    }
+    assert.deepEqual(configProblems(good), []);
   });
   it("only the authorized budget wrapper may start a live session, and only with JEV_CONTROL_LIVE=1", () => {
     const lockPath = tempLock();

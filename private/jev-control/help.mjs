@@ -1,5 +1,5 @@
 // Compact usage text for `cli.mjs help [command]` and `cli.mjs <command> --help` (R04). A session that cannot Read
-// skills/jev-control/SKILL.md (a Read outside the working directory is refused in a headless run) has nothing else that
+// skills/jev-control-mode/SKILL.md (a Read outside the working directory is refused in a headless run) has nothing else that
 // says what a batch looks like: two dev sessions tried `--help`, and one spent five invalid `decide` calls finding the format.
 // No session, repository or Jev call is needed; each topic stays well under the 1.5 KB output cap.
 

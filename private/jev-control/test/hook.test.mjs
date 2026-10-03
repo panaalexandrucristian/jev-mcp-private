@@ -3,7 +3,8 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { DEV_SCENARIOS } from "../fixtures/scenarios.mjs";
-import { NATURAL_MARKER, asksForControl, handleControlHook, mergeOutputs, reminder } from "../hook.mjs";
+import { NATURAL_MARKER, activation, asksForControl, handleControlHook, mergeOutputs, reminder, resumeText } from "../hook.mjs";
+import { PROTOCOL_RULES } from "../rules.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
 import { HOOK_CLI, controlEnv, makeRepo, run } from "./helpers.mjs";
 
@@ -52,12 +53,16 @@ describe("the control hook: a reminder only, never a block", () => {
     assert.equal(state.budget.attempts.helper, 0);
     assert.deepEqual(state.budget.history, [7]);
   });
-  it("SessionStart after a compaction re-injects the reminder and the capability (the same live session)", () => {
+  it("SessionStart after a compaction re-injects the compact rules (R09) and the capability (the same live session)", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv();
     turnOn(repo, env);
     const r = hook("SessionStart", { source: "compact" }, { env, cwd: repo });
     assert.match(r.text, /jev-control ON/);
+    const context = r.json.hookSpecificOutput.additionalContext;
+    assert.ok(context.includes(PROTOCOL_RULES), "the rules themselves, not the reminder line");
+    assert.match(context, /Load Skill jev:jev-control-mode; else Read \/[^ ]+\/skills\/jev-control-mode\/SKILL\.md; if refused, say so once\./);
+    assert.ok(Buffer.byteLength(context) <= 1500, `SessionStart stays within 1500 bytes (${Buffer.byteLength(context)})`);
     const cap = /--session-cap ([0-9a-f]{16}\.[0-9a-f]{32})/.exec(r.text)[1];
     assert.equal(verifySessionCap(repo, cap, env).ok, true);
     assert.equal(loadControlState(controlSessionDir(repo, SESSION, env)).mode, "on");
@@ -126,16 +131,16 @@ describe("the control hook: a reminder only, never a block", () => {
     const other = makeRepo({ "a.txt": "a\n" });
     assert.equal(hook("UserPromptSubmit", { prompt: DEV_SCENARIOS[0].prompt }, { env, cwd: other }).text.includes("session-cap"), false);
   });
-  it("a natural-language request tells the model to run `on` first and to Read SKILL.md (the Skill tool returns the same-named command, R03); a command prompt does not demand `on`", () => {
+  it("R09: a natural-language request tells the model to run `on` first and carries the rules and the way to load the skill; a command prompt does not demand `on`", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv();
     const natural = hook("UserPromptSubmit", { prompt: "Let Jev control this session.\n\nWhere is the delay computed?" }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
-    assert.match(natural, /Do first, before any search or edit: node "[^"]+\/private\/jev-control\/cli\.mjs" on --session-cap [0-9a-f]{16}\.[0-9a-f]{32} --priorities/);
-    assert.match(natural, /Read \/[^ ]+\/skills\/jev-control\/SKILL\.md \(the Skill tool returns only the command text/);
-    // R04: the Read of SKILL.md was refused in both dev sessions (outside the working directory); the line says how to go on without it.
-    assert.match(natural, /If that Read is refused, go on: `cli\.mjs help decide` prints the batch format and `help search` the search form\./);
+    assert.match(natural, /Do first: node "[^"]+\/private\/jev-control\/cli\.mjs" on --session-cap [0-9a-f]{16}\.[0-9a-f]{32} --priorities/);
+    assert.ok(natural.includes(PROTOCOL_RULES), "the compact rules are in the activation text");
+    assert.match(natural, /Load Skill jev:jev-control-mode; else Read \/[^ ]+\/skills\/jev-control-mode\/SKILL\.md; if refused, say so once\./);
+    assert.doesNotMatch(natural, /the Skill tool returns only the command text|skills\/jev-control\/SKILL/);
     const root = /node "([^"]+)\/private\/jev-control\/cli\.mjs"/.exec(natural)[1];
-    assert.ok(existsSync(join(root, "skills", "jev-control", "SKILL.md")), "the named SKILL.md exists");
+    assert.ok(existsSync(join(root, "skills", "jev-control-mode", "SKILL.md")), "the named SKILL.md exists");
     assert.ok(natural.includes(`requested by the user ${NATURAL_MARKER}`), "the natural-language marker");
     for (const prompt of ["/jev:jev-control", "/jev:jev-control foo", "/jev:jev-control off", "/jev:jev-control status", "/jev:jev-control on"]) {
       const text = hook("UserPromptSubmit", { prompt }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
@@ -143,6 +148,7 @@ describe("the control hook: a reminder only, never a block", () => {
       assert.doesNotMatch(text, /in natural language/, `${prompt}: a slash command never carries the natural-language marker`);
       assert.match(text, /requested by the user for this session\./, prompt);
       assert.match(text, /--session-cap /, prompt);
+      assert.ok(text.includes(PROTOCOL_RULES), `${prompt}: a slash command's activation also carries the rules (D46)`);
     }
     for (const scenario of DEV_SCENARIOS.filter((x) => ["s1-bug-several-files", "s3-ambiguous-search"].includes(x.id))) {
       const text = hook("UserPromptSubmit", { prompt: `Let Jev control this session.\n\n${scenario.prompt}` }, { env, cwd: repo }).json.hookSpecificOutput.additionalContext;
@@ -154,7 +160,7 @@ describe("the control hook: a reminder only, never a block", () => {
     const again = hook("UserPromptSubmit", { prompt: "Let Jev control this session." }, { env, cwd: live }).json.hookSpecificOutput.additionalContext;
     assert.doesNotMatch(again, /in natural language/);
     assert.match(again, /^jev-control ON/);
-    assert.match(reminder(0.95), /protocol: skills\/jev-control\/SKILL\.md/);
+    assert.match(reminder(0.95), /protocol: Skill jev:jev-control-mode/);
     assert.doesNotMatch(reminder(0.95), /see the jev-control skill/);
   });
   it("a mode command is not a new request: the budget keeps counting", () => {
@@ -255,4 +261,56 @@ describe("merging outputs", () => {
     assert.equal(mergeOutputs(null, null), null);
     assert.match(reminder(0.95), /^jev-control ON \(T=0\.95\)/);
   });
+});
+
+describe("R09: the compact protocol at activation, at SessionStart and in the reminder (D46)", () => {
+  const CAP = "0123456789abcdef.0123456789abcdef0123456789abcdef";
+  const LONG_ROOT = `/${"r".repeat(119)}`;
+  const REQUIRED = ["decide --file", "search", "strictly above T", "fixed protocol", "ask the user", "Incomplete:", "approve", "/jev:jev-done", "done --claims", "help decide|search|done"];
+  it("the shared rules name every rule, exception and the interactive/headless split", () => {
+    for (const phrase of REQUIRED) assert.ok(PROTOCOL_RULES.includes(phrase), phrase);
+    for (const phrase of ["explicit user instructions", "exact user-named paths", "permission prompts", "a one-variant step", "rg/glob only list candidates", "at most twice", "headless end with Incomplete:", "only an accepted gate permits it"]) assert.ok(PROTOCOL_RULES.includes(phrase), phrase);
+    assert.ok(Buffer.byteLength(PROTOCOL_RULES) < 900);
+  });
+  it("activation, natural and slash, carries the rules byte for byte and stays within 1500 bytes with a 120-byte plugin root and a real capability", () => {
+    assert.equal(Buffer.byteLength(LONG_ROOT), 120);
+    const natural = activation(CAP, true, LONG_ROOT);
+    const slash = activation(CAP, false, LONG_ROOT);
+    for (const [name, text] of [["natural", natural], ["slash", slash]]) {
+      assert.ok(text.includes(PROTOCOL_RULES), name);
+      assert.ok(text.includes(`${LONG_ROOT}/skills/jev-control-mode/SKILL.md`), `${name}: the exact fallback path`);
+      assert.ok(text.includes(`--session-cap ${CAP}`) && text.includes("also in subagent prompts."), `${name}: the capability`);
+      assert.ok(Buffer.byteLength(text) <= 1500, `${name} is ${Buffer.byteLength(text)} bytes`);
+    }
+    assert.ok(natural.includes(`${LONG_ROOT}/private/jev-control/cli.mjs" on --session-cap ${CAP}`), "the natural line keeps the `on` step");
+    assert.ok(natural.includes(NATURAL_MARKER) && !slash.includes(NATURAL_MARKER), "the marker only on the natural-language activation");
+    assert.ok(!slash.includes("Do first"), "a slash command does not demand `on`: the command runs it");
+  });
+  it("SessionStart after a compaction: the rules, the way to the skill and the capability, within 1500 bytes at the longest threshold", () => {
+    const text = resumeText("0.99999", CAP, LONG_ROOT);
+    assert.ok(text.includes(PROTOCOL_RULES));
+    assert.ok(text.includes(`${LONG_ROOT}/skills/jev-control-mode/SKILL.md`) && text.includes(`--session-cap ${CAP}`));
+    assert.ok(Buffer.byteLength(text) <= 1500, `${Buffer.byteLength(text)} bytes`);
+    assert.match(text, /^jev-control ON \(T=0\.99999\)\./);
+  });
+  it("the per-prompt reminder stays one line of at most 400 bytes with a real capability and does not repeat the rules", () => {
+    const text = reminder(0.99999, CAP);
+    assert.ok(Buffer.byteLength(text) <= 400, `${Buffer.byteLength(text)} bytes`);
+    assert.equal(text.includes("\n"), false);
+    assert.ok(text.includes(`--session-cap ${CAP}`) && text.includes("protocol: Skill jev:jev-control-mode"));
+    assert.equal(text.includes(PROTOCOL_RULES), false);
+  });
+  it("the control hook's own output blocks nothing and stays within 1500 bytes (the jev-flow text merged after it by the adapter is not part of it)", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    for (const prompt of ["Let Jev control this session.", "/jev:jev-control on"]) {
+      const out = handleControlHook("UserPromptSubmit", { session_id: SESSION, cwd: repo, prompt }, env);
+      assert.equal(out.decision, undefined, prompt);
+      assert.equal(out.hookSpecificOutput.permissionDecision, undefined, prompt);
+      const text = out.hookSpecificOutput.additionalContext;
+      assert.ok(Buffer.byteLength(text) <= 1500, `${prompt}: ${Buffer.byteLength(text)} bytes`);
+      assert.ok(text.includes(PROTOCOL_RULES), prompt);
+    }
+  });
+
 });

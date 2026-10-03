@@ -9,7 +9,7 @@ An adaptive route through a repository task. It keeps broad exploration out of t
 
 Step contracts, JSON examples, fallback rules and every implementation decision are in [`reference/workflow.md`](reference/workflow.md).
 
-> **jev-control precedence.** While `jev-control` is on for the session (`/jev:jev-control on`), its protocol takes over: jev-flow's directive, hints and Stop redirects are suppressed, and where the two disagree (the few-candidates shortcuts, the lexical fallback, the 0.8 completion floor, the Jev call budget) the `jev-control` skill wins. Without the control mode this skill is unchanged.
+> **jev-control precedence.** While `jev-control` is on for the session (`/jev:jev-control on`), its protocol takes over: jev-flow's directive, hints and Stop redirects are suppressed, and where the two disagree (the few-candidates shortcuts, the lexical fallback, the 0.8 completion floor, the Jev call budget) the `jev-control-mode` skill wins. Without the control mode this skill is unchanged.
 
 ## Route
 

@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitTopLevel } from "../jev-flow/state.mjs";
 import { startRequest } from "./budget.mjs";
+import { PROTOCOL_RULES } from "./rules.mjs";
 import { cleanupControlRetention, controlSessionDir, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, sessionKey, withControlState } from "./state.mjs";
 
 const COMMAND = /^\s*\/(?:jev:)?jev-control\b/i;
@@ -36,21 +37,31 @@ export function asksForControl(prompt) {
 
 const capNote = (cap) => `Session capability: pass --session-cap ${cap} to every cli.mjs call, also in subagent prompts.`;
 
-// The plugin root this hook runs from: the skill has the same name as the command, so the Skill tool returns the command text and never SKILL.md (R03).
+// The plugin root this hook runs from (R03 kept it for the exact fallback path; since R09 the skill is loaded by its own name, jev:jev-control-mode).
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/** The one-line reminder of a prompt (at most 400 bytes with a real 49-character capability); the full rules are in activation() and at SessionStart. */
 export function reminder(threshold, cap = null) {
-  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; protocol: skills/jev-control/SKILL.md. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
+  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; protocol: Skill jev:jev-control-mode. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
 }
 
 export const NATURAL_MARKER = "in natural language for this request.";
 
-function activation(cap, natural = false) {
-  const first = natural
-    ? ` Do first, before any search or edit: node "${PLUGIN_ROOT}/private/jev-control/cli.mjs" on --session-cap ${cap} --priorities "<one line from the request>", then Read ${join(PLUGIN_ROOT, "skills", "jev-control", "SKILL.md")} (the Skill tool returns only the command text, never that file). If that Read is refused, go on: \`cli.mjs help decide\` prints the batch format and \`help search\` the search form.`
-    : "";
+/** How to load the skill, in the order D46 gives: the Skill tool, the exact file, then the rules above and `help`; no step blocks anything. */
+function loadLine(root) {
+  return `Load Skill jev:jev-control-mode; else Read ${join(root, "skills", "jev-control-mode", "SKILL.md")}; if refused, say so once.`;
+}
+
+/** The activation text of a mode request (at most 1500 bytes with a 120-byte plugin root and a real capability): the rules themselves, not a pointer. */
+export function activation(cap, natural = false, root = PLUGIN_ROOT) {
+  const first = natural ? ` Do first: node "${join(root, "private", "jev-control", "cli.mjs")}" on --session-cap ${cap} --priorities "<one line>".` : "";
   // Only the natural-language line carries the marker that step 3 of commands/jev-control.md tests; a slash command never does.
-  return `jev-control was requested by the user ${natural ? NATURAL_MARKER : "for this session."}${first} ${capNote(cap)}`;
+  return `jev-control was requested by the user ${natural ? NATURAL_MARKER : "for this session."}${first} ${PROTOCOL_RULES} ${loadLine(root)} ${capNote(cap)}`;
+}
+
+/** SessionStart after a compaction with the mode ON: the rules again (they may have been compacted away), the way to the skill and the capability. */
+export function resumeText(threshold, cap, root = PLUGIN_ROOT) {
+  return `jev-control ON (T=${threshold}). ${PROTOCOL_RULES} ${loadLine(root)} ${capNote(cap)}`;
 }
 
 function repoFor(input) {
@@ -93,7 +104,7 @@ export function handleControlHook(event, input, env = process.env, now = Date.no
     // Only a compaction continues the same live session; startup, resume, clear and anything unknown start OFF.
     if (input.source !== "compact") resetSession(dir, now);
     const state = loadControlState(dir);
-    return state.mode === "on" ? additionalContext("SessionStart", reminder(state.threshold.value, ensureSessionCap(dir, key))) : null;
+    return state.mode === "on" ? additionalContext("SessionStart", resumeText(state.threshold.value, ensureSessionCap(dir, key))) : null;
   }
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
   const state = loadControlState(dir);

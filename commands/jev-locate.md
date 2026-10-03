@@ -19,4 +19,4 @@ Rules for this delegation:
 
 **jev-control branch.** If `jev-control` is on for this session (`node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" status` prints `"mode":"on"`), the locator follows the control search rules instead of the helper's few-candidates shortcuts: `jev_rerank` always decides eligibility over several files (relevance strictly above the session threshold), `jev_find` only for one location (winner and `exists` both strictly above it), at most 2 logical evaluations, no exact-match "plain read" and no lexical fallback; an exact path you name yourself is read directly. Its Jev calls count in the shared budget of 25 per request. Without the control mode, ignore this paragraph.
 
-Then continue the task with the jev-flow route (see the `jev-flow` skill), or, with the control mode on, with the `jev-control` skill.
+Then continue the task with the jev-flow route (see the `jev-flow` skill), or, with the control mode on, with the `jev-control-mode` skill.

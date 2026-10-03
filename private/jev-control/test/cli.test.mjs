@@ -8,6 +8,7 @@ import { materialize } from "../fixtures/lib.mjs";
 import { ASK_ID, CONTROL_IDS, GATHER_ID, KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { cleanupLine, compactOut } from "../cli.mjs";
+import { PROTOCOL_RULES } from "../rules.mjs";
 import { runControlDone } from "../done.mjs";
 import { classifyClaimsSource, ClaimsRefused, consumableClaimsName, loadClaims, splitClaims } from "../claimsfile.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
@@ -37,14 +38,10 @@ describe("activation (D1, D2, D13, D16)", () => {
     assert.equal(r.json.audit, "available");
     assert.match(r.json.server, /fake-jev@9\.9\.9/);
     // R02: two dev sessions switched the mode on and then decided and searched nothing; the line the model reads next says what to do.
-    assert.match(r.json.next, /decide --file/);
-    assert.match(r.json.next, /choose the order yourself/);
-    assert.match(r.json.next, /search/);
-    assert.match(r.json.next, /\/jev:jev-done/);
-    // R04: SKILL.md can be unreadable (a Read outside the working directory is refused in a headless run); the line says where the batch format is.
-    assert.match(r.json.next, /`help decide`/);
-    assert.match(r.json.next, /`help search`/);
-    assert.ok(r.stdout.trim().length < 900, `the line stays compact (${r.stdout.trim().length} characters)`);
+    // R09 (D46): it is the compact protocol itself, the same constant as the hook's activation text.
+    assert.equal(r.json.next, PROTOCOL_RULES);
+    for (const phrase of ["decide --file", "search", "strictly above T", "fixed protocol", "ask the user", "Incomplete:", "cli.mjs approve", "/jev:jev-done", "done --claims", "help decide|search|done"]) assert.ok(r.json.next.includes(phrase), phrase);
+    assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500, `the line stays within 1500 bytes (${Buffer.byteLength(r.stdout.trim())})`);
     const state = loadControlState(controlSessionDir(repo, "cli-session-1", env));
     assert.equal(state.mode, "on");
     assert.equal(state.request.seq, 1);
@@ -685,8 +682,8 @@ describe("help without SKILL.md (R04)", () => {
     assert.equal(claims.claims.length, 1);
     assert.equal(consumableClaimsName("jev-claims.json"), true);
     const on = cli(["on", ...SID], { env: controlEnv(), cwd: makeRepo({ "a.txt": "a\n" }) });
-    assert.match(on.json.next, /completion is \/jev:jev-done or, headless, `help done`/);
-    assert.ok(on.stdout.trim().length < 900);
+    assert.match(on.json.next, /\/jev:jev-done or cli\.mjs done --claims jev-claims\.json/);
+    assert.ok(Buffer.byteLength(on.stdout.trim()) <= 1500);
   });
   it("`help search`, `search --help`, the other commands and an unknown topic", () => {
     const search = cli(["help", "search"], { env: controlEnv(), cwd: outside() });
@@ -1210,5 +1207,66 @@ describe("compact output never loses decision data silently", () => {
     assert.ok(Buffer.byteLength(stop.stdout.trim()) <= 1500);
     assert.equal(stop.json.scores[0], "o1:0.95", "the exact value, so that .95 is not mistaken for a higher score");
     assert.equal(stop.json.scores_total, 20);
+  });
+});
+
+describe("R09: the rules in the `on` output are never cut (D46)", () => {
+  const RESULT = {
+    status: "ok", mode: "on", threshold: 0.99999, threshold_source: "env", audit: "unavailable (that function is off; the rest works)", server: "a-long-server-name@10.20.30-beta.40",
+    tool_prefix: "mcp__plugin_jev_jev__", session: "capability", flow: "jev-flow directives are suppressed while the mode is on", next: PROTOCOL_RULES,
+  };
+  const lines = {
+    ascii: "x".repeat(300), accented: "é".repeat(300), cjk: "日本語".repeat(100), emoji: "🙂".repeat(300), blank: "", sentence: "fix the delay bug with the smallest change; keep the public API; no new dependency ".repeat(5).slice(0, 300),
+  };
+  const notice = "jev-control: env threshold 9999999999999999999999999999999999999999 is not a number in (0.5, 1) (not a number); using 0.95".padEnd(230, ".");
+  for (const [name, priorities] of Object.entries(lines)) {
+    for (const withNotice of [false, true]) {
+      it(`compactOut keeps the rules, the threshold and valid JSON within 1500 bytes: ${name} priorities${withNotice ? " and a notice" : ""}`, () => {
+        const out = compactOut({ ...RESULT, priorities: priorities || null, ...(withNotice ? { notice } : {}), ...(priorities ? {} : { note: "priorities not set: pass --priorities \"<one line from the user's request>\" or put them in each batch" }) });
+        const parsed = JSON.parse(out);
+        assert.ok(Buffer.byteLength(out) <= 1500, `${Buffer.byteLength(out)} bytes`);
+        assert.equal(parsed.next, PROTOCOL_RULES, "the rules are whole");
+        assert.equal(parsed.threshold, 0.99999);
+        assert.equal(parsed.status, "ok");
+        assert.equal(parsed.mode, "on");
+      });
+    }
+  }
+  it("only descriptive echoes yield, in order: a short result loses nothing", () => {
+    const small = JSON.parse(compactOut({ ...RESULT, priorities: "short" }));
+    assert.equal(small.priorities, "short");
+    assert.equal(small.flow, RESULT.flow);
+    assert.equal(small.audit, RESULT.audit);
+    const crowded = JSON.parse(compactOut({ ...RESULT, priorities: "🙂".repeat(300), notice }));
+    assert.equal(crowded.next, PROTOCOL_RULES);
+    assert.equal(crowded.flow, undefined, "the flow echo goes first");
+    assert.ok(Array.from(crowded.priorities).length < 300 && crowded.priorities.endsWith("…"), "the priorities echo is cut at the end, by bytes");
+    const mild = JSON.parse(compactOut({ ...RESULT, priorities: "x".repeat(300), notice }));
+    assert.equal(mild.priorities.length, 300, "the priorities survive while shortening the notice is enough");
+    assert.ok(mild.notice.length <= 120);
+  });
+  it("the shrink steps are those of the `on` result only: a status result with the same fields is not touched", () => {
+    const status = { ...RESULT, next: undefined, priorities: "x".repeat(300), flow: RESULT.flow };
+    delete status.next;
+    const out = JSON.parse(compactOut(status));
+    assert.equal(out.flow, RESULT.flow);
+    assert.equal(out.priorities.length, 300);
+    // Even when it is over the limit, a result that is not the `on` result is left to the steps it always had.
+    const heavy = JSON.parse(compactOut({ ...status, priorities: "🙂".repeat(300), notice }));
+    assert.equal(Array.from(heavy.priorities).length, 300);
+    assert.equal(heavy.flow, RESULT.flow);
+    assert.equal(heavy.notice, notice);
+  });
+  it("the real `on` command prints the rules whole with the longest accepted priorities, a notice and a multibyte line", () => {
+    for (const priorities of ["日本語".repeat(100), "x".repeat(400)]) {
+      const repo = makeRepo({ "a.txt": "a\n" });
+      const env = controlEnv({ extra: { JEV_CONTROL_THRESHOLD: "not-a-number-".repeat(4) } });
+      const r = cli(["on", ...SID, "--priorities", priorities], { env, cwd: repo });
+      assert.equal(r.code, 0, r.stdout + r.stderr);
+      assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500, `${Buffer.byteLength(r.stdout.trim())} bytes`);
+      assert.equal(r.json.next, PROTOCOL_RULES);
+      assert.equal(r.json.mode, "on");
+      assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).priorities.length > 0, true, "the stored priorities are kept");
+    }
   });
 });

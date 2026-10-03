@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { normalizeBatch } from "../options.mjs";
 import { audit, collectEvents, compareUsage, parseJsonl, STOP_STATUSES, toMarkdown, usageSummary } from "../measure.mjs";
+import { SKILL_DIR } from "../run-session.mjs";
 import { run, tempDir } from "./helpers.mjs";
 
 let n = 0;
@@ -1839,5 +1840,137 @@ describe("latency and the CLI report", () => {
     assert.equal(v.total_delta.cache_read_input_tokens, "unknown");
     const md = run(process.execPath, [join(import.meta.dirname, "..", "measure.mjs"), "--transcript", base, "--format", "markdown"]);
     assert.match(md.stdout, /output unknown \(observed 10, 1 messages missing\)/);
+  });
+});
+
+describe("R09 (D47): the skill's protocol files and the Skill tool", () => {
+  const FRONT = "---\nname: jev-control-mode\ndescription: x\n---\n# jev-control-mode\n";
+  const skillRead = (rel, opts = {}, input = {}) => call(use("Read", { file_path: `${SKILL_DIR}/${rel}`, ...input }), opts.text ?? `     1\t${FRONT}`, opts);
+  const skillCall = (text, opts = {}, name = "jev:jev-control-mode") => call(use("Skill", { skill: name }), text, opts);
+  it("the exempt directory is the runner's: PLUGIN_DIR/skills/jev-control-mode", () => {
+    assert.equal(SKILL_DIR, "/Users/apana/Dev/jev-mcp/skills/jev-control-mode");
+  });
+  it("a confirmed Read of SKILL.md, reference/*.md and examples/*.md is not a task action and is counted under its own exception key", () => {
+    const a = audit([prompt("go"), ...skillRead("SKILL.md"), ...skillRead("reference/protocol.md", { text: "protocol" }), ...skillRead("examples/01-single-winner.md", { text: "example" })]);
+    assert.equal(a.coverage.uncovered, 0);
+    assert.equal(a.coverage.denominator, 0);
+    assert.equal(a.coverage.share, "unknown");
+    assert.equal(a.coverage.exceptions.skill_protocol_read, 3);
+    assert.equal(a.coverage.exceptions.user_named_path, 0);
+    assert.equal(a.coverage.by_context.main.exceptions, 3);
+    assert.equal(a.skill.skill_reads.length, 3);
+    assert.deepEqual(a.skill.skill_reads.map((r) => [r.path, r.result, r.exempt]), [["SKILL.md", "granted", true], ["reference/protocol.md", "granted", true], ["examples/01-single-winner.md", "granted", true]]);
+    assert.equal(a.skill.uncovered_skill_reads, 0);
+    assert.equal(a.skill.load, "full_read_observed");
+    assert.match(toMarkdown(a, "x"), /- Skill: load full_read_observed; 0 Skill calls, 3 Reads below the skill directory \(3 exempt from coverage, 0 uncovered\)/);
+  });
+  it("without a skill read the output keeps its old shape: no skill_protocol_read key", () => {
+    const a = audit([prompt("go"), ...write("src/new.mjs")]);
+    assert.deepEqual(a.coverage.exceptions, { user_named_path: 0 });
+    assert.equal(a.skill.load, "not_attempted");
+    assert.deepEqual([a.skill.skill_tool_calls, a.skill.skill_reads, a.skill.uncovered_skill_reads], [[], [], 0]);
+  });
+  it("a refused or result-less Read stays uncovered and is reported as an uncovered skill Read", () => {
+    const refused = audit([prompt("go"), ...skillRead("SKILL.md", { error: true, text: "Permission to use Read has been denied: outside the working directory" })]);
+    assert.equal(refused.coverage.uncovered, 1);
+    assert.equal(refused.coverage.uncovered_reasons.no_grant, 1);
+    assert.equal(refused.coverage.exceptions.skill_protocol_read, undefined);
+    assert.equal(refused.skill.uncovered_skill_reads, 1);
+    assert.deepEqual([refused.skill.skill_reads[0].result, refused.skill.skill_reads[0].exempt], ["refused", false]);
+    assert.match(refused.skill.skill_reads[0].reason, /denied/);
+    assert.equal(refused.skill.load, "refused");
+    const lost = audit([prompt("go"), asst([use("Read", { file_path: `${SKILL_DIR}/SKILL.md` })])]);
+    assert.equal(lost.coverage.exceptions.skill_protocol_read, undefined);
+    assert.equal(lost.skill.skill_reads[0].result, "no_result");
+    assert.equal(lost.skill.uncovered_skill_reads, 1);
+    assert.equal(lost.skill.load, "unknown");
+  });
+  it("only exact protocol paths are exempt: `..`, empty or dot segments, other directories, files, extensions and prefixes are not", () => {
+    const paths = [
+      `${SKILL_DIR}/../jev-flow/SKILL.md`, `${SKILL_DIR}/reference/../../../src/load.mjs`, `${SKILL_DIR}/reference/../SKILL.md`, `${SKILL_DIR}//SKILL.md`, `${SKILL_DIR}/./SKILL.md`,
+      `${SKILL_DIR}/reference/sub/x.md`, `${SKILL_DIR}/reference/notes.txt`, `${SKILL_DIR}/package.json`, `${SKILL_DIR}/reference/.md`, `${SKILL_DIR}/examples/`, `${SKILL_DIR}/reference`,
+      `${SKILL_DIR}-other/SKILL.md`, "/Users/apana/Dev/jev-mcp/skills/jev-flow/SKILL.md", "/Users/apana/Dev/jev-mcp/skills/jev-control/SKILL.md", "/Users/apana/Dev/jev-mcp/private/jev-control/cli.mjs",
+      "skills/jev-control-mode/SKILL.md", "/other/skills/jev-control-mode/SKILL.md",
+    ];
+    for (const file_path of paths) {
+      const a = audit([prompt("go"), ...call(use("Read", { file_path }), "content")]);
+      assert.equal(a.coverage.exceptions.skill_protocol_read, undefined, file_path);
+      assert.equal(a.coverage.uncovered, 1, file_path);
+    }
+    // The ones that start with SKILL_DIR/ are listed as skill reads that were not exempt; the others are ordinary Reads.
+    const listed = audit([prompt("go"), ...call(use("Read", { file_path: `${SKILL_DIR}/reference/../../../src/load.mjs` }), "content")]);
+    assert.deepEqual([listed.skill.skill_reads[0].exempt, listed.skill.skill_reads[0].why_not_exempt, listed.skill.uncovered_skill_reads], [false, "not_an_exact_protocol_file", 1]);
+    const other = audit([prompt("go"), ...call(use("Read", { file_path: "/Users/apana/Dev/jev-mcp/skills/jev-flow/SKILL.md" }), "content")]);
+    assert.deepEqual([other.skill.skill_reads.length, other.skill.uncovered_skill_reads], [0, 0]);
+    for (const file_path of ["/Users/apana/Dev/jev-mcp/skills/jev-control-mode-other/SKILL.md", `${SKILL_DIR}x/reference/protocol.md`]) {
+      const near = audit([prompt("go"), ...call(use("Read", { file_path }), "content")]);
+      assert.deepEqual([near.skill.skill_reads.length, near.skill.uncovered_skill_reads, near.coverage.uncovered], [0, 0, 1], `${file_path}: a longer name is not the skill directory`);
+    }
+  });
+  it("a Write or Edit inside the skill directory is still an edit and uncovered", () => {
+    const a = audit([prompt("go"), ...write(`${SKILL_DIR}/SKILL.md`), ...call(use("Edit", { file_path: `${SKILL_DIR}/reference/protocol.md`, old_string: "a", new_string: "b" }), "ok")]);
+    assert.equal(a.coverage.uncovered, 2);
+    assert.equal(a.coverage.exceptions.skill_protocol_read, undefined);
+    assert.equal(a.finalization.edits, 2);
+    assert.equal(a.skill.skill_reads.length, 0);
+  });
+  it("a partial Read is exempt like any confirmed Read but is never counted as a full load", () => {
+    const a = audit([prompt("go"), ...skillRead("SKILL.md", {}, { offset: 1, limit: 20 })]);
+    assert.equal(a.coverage.exceptions.skill_protocol_read, 1);
+    assert.deepEqual([a.skill.skill_reads[0].partial, a.skill.skill_reads[0].identity_observed], [true, true]);
+    assert.equal(a.skill.load, "unknown", "a partial Read does not prove the whole skill");
+    const noFront = audit([prompt("go"), ...skillRead("SKILL.md", { text: "something else" })]);
+    assert.equal(noFront.skill.skill_reads[0].identity_observed, false);
+    assert.equal(noFront.skill.load, "unknown");
+  });
+  it("a protocol Read does not disturb the audit of the task: a covered edit stays covered, and a skill Read after a stop is not an action while blocked", () => {
+    const plan = [item("o1", "execute", 0.98, "Edit", "src/a.mjs")];
+    const a = audit([prompt("go"), ...decide(decideOut({ plan })), ...skillRead("SKILL.md"), ...edit("src/a.mjs")]);
+    assert.deepEqual([a.coverage.covered, a.coverage.uncovered, a.coverage.exceptions.skill_protocol_read], [1, 0, 1]);
+    const stopped = audit([prompt("go"), ...decide(decideOut({ status: "incomplete", plan: [] })), ...skillRead("reference/protocol.md", { text: "p" }), ...edit("src/a.mjs")]);
+    assert.equal(stopped.threshold.actions_while_blocked, 1, "only the edit");
+    assert.equal(stopped.coverage.exceptions.skill_protocol_read, 1);
+  });
+  it("Skill calls to jev-control-mode are reported by level; another skill is not", () => {
+    const a = audit([
+      prompt("go"),
+      ...skillCall(`Launching skill: jev:jev-control-mode\n${FRONT}`),
+      ...skillCall("Launching skill: jev:jev-control-mode"),
+      ...skillCall("Run the jev-control command for this request: `on`"),
+      ...skillCall("Unknown skill", { error: true }),
+      asst([use("Skill", { skill: "jev:jev-control-mode" })]),
+      ...skillCall(FRONT, {}, "jev-control-mode"),
+      ...skillCall(FRONT, {}, "jev:jev"),
+      ...skillCall(FRONT, {}, "jev:jev-control"),
+    ]);
+    assert.deepEqual(a.skill.skill_tool_calls.map((c) => c.level), ["identity_observed", "result_without_identity", "result_without_identity", "error", "no_result", "identity_observed"]);
+    assert.equal(a.skill.skill_tool_calls[3].reason, "Unknown skill");
+    assert.equal(a.skill.load, "identity_observed", "the frontmatter identity is not a full read");
+    assert.equal(a.coverage.mechanical, 8, "Skill stays mechanical for coverage");
+    assert.equal(a.coverage.denominator, 0);
+  });
+  it("the Skill outcomes that prove nothing give unknown or refused, never loaded", () => {
+    const generic = audit([prompt("go"), ...skillCall("Launching skill: jev:jev-control-mode")]);
+    assert.equal(generic.skill.load, "unknown");
+    const commandText = audit([prompt("go"), ...skillCall("Run the jev-control command for this request: `on`")]);
+    assert.equal(commandText.skill.load, "unknown");
+    const failed = audit([prompt("go"), ...skillCall("Unknown skill: jev:jev-control-mode", { error: true })]);
+    assert.equal(failed.skill.load, "refused");
+    const missing = audit([prompt("go"), asst([use("Skill", { skill: "jev:jev-control-mode" })])]);
+    assert.equal(missing.skill.load, "unknown");
+    const both = audit([prompt("go"), ...skillCall("Unknown skill", { error: true }), ...skillRead("SKILL.md")]);
+    assert.equal(both.skill.load, "full_read_observed", "the fallback Read after a failed Skill call is a full read");
+  });
+  it("a subagent's Skill call and Read are attributed to that subagent", () => {
+    const a = audit([prompt("go"), ...skillCall(FRONT, { agent: "sub1" }), ...skillRead("SKILL.md", { agent: "sub1" })]);
+    assert.equal(a.skill.skill_tool_calls[0].ctx, "sub1");
+    assert.equal(a.skill.skill_reads[0].ctx, "sub1");
+    assert.equal(a.coverage.by_context.sub1.exceptions, 1);
+  });
+  it("a repeated tool_use id counts once", () => {
+    const block = use("Read", { file_path: `${SKILL_DIR}/SKILL.md` });
+    const a = audit([prompt("go"), asst([block]), asst([block]), res(block, FRONT)]);
+    assert.equal(a.skill.skill_reads.length, 1);
+    assert.equal(a.coverage.exceptions.skill_protocol_read, 1);
   });
 });
