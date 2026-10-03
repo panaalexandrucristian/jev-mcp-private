@@ -465,19 +465,31 @@ async function cmdDone(flags, ctx) {
   return { raw: true, code };
 }
 
+// Flags of the helper (parseFlags and the help detection in main share them).
+const FLAGS = {
+  values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "action-file", "source", "id", "ok", "ms", "n", "question", "claims", "check-timeout"],
+  bools: ["headless", "single", "widen", "dry-run"],
+  multi: ["check"],
+};
+
+/** True when `--help` or `-h` stands as an argument of its own; the value of a flag that takes one (`--query -h`) is not. */
+function asksForHelp(args) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--help" || args[i] === "-h") return true;
+    if (args[i].startsWith("--") && (FLAGS.values.includes(args[i].slice(2)) || FLAGS.multi.includes(args[i].slice(2)))) i++;
+  }
+  return false;
+}
+
 export async function main(argv, env = process.env) {
   const cmd = argv[0];
   // `help [command]`, `<command> --help` and `-h` need no session, repository or Jev call (R04).
-  if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help" || argv.includes("--help") || argv.includes("-h")) {
+  if (!cmd || cmd === "help" || asksForHelp(argv.slice(cmd.startsWith("-") ? 0 : 1))) {
     const topic = cmd === "help" ? argv[1] : cmd?.startsWith("-") ? undefined : cmd;
     process.stdout.write(`${helpText(topic)}\n`);
     return EXIT.ok;
   }
-  const flags = parseFlags(argv.slice(), {
-    values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "action-file", "source", "id", "ok", "ms", "n", "question", "claims", "check-timeout"],
-    bools: ["headless", "single", "widen", "dry-run"],
-    multi: ["check"],
-  });
+  const flags = parseFlags(argv.slice(), FLAGS);
   flags._.shift();
   flags._.unshift(cmd);
   const repoRoot = gitTopLevel(resolve(flags.root ?? "."));

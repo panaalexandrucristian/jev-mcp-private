@@ -5,12 +5,12 @@
 
 const DECIDE = [
   'decide --file <batch.json|-> [--decision-id <id>]. The batch is one JSON object:',
-  '{"decision":"<the question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<lowercase slug>","text":"<what it is>","evidence":["<1-3 concrete lines>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"space_small":false,"new_material":"<expansion rounds only>"}',
-  '- At least 5 distinct real options (or "space_small":true), at most 20.',
-  '- kinds order, command, edit, delegate: every option carries "action", the ONE tool call it stands for, with the arguments that change it (Edit old_string+new_string, Write content, Read offset/limit, Agent prompt+model; command: Bash only, edit: edit tools only, delegate: Agent only). approach, ask, done: optional.',
+  '{"decision":"<the question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<lowercase slug>","text":"<what it is>","evidence":["<1-3 concrete lines>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion rounds only>"}',
+  '- 5 to 18 real options; the limit 20 counts action_gather_evidence and action_ask_user, added if missing. "space_small":true only when fewer real alternatives exist.',
+  '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with its arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash only, edit: edit tools only, delegate: Agent only). Other kinds: optional.',
   '- kind order is for several tasks: one option per task, each with its own action, all in one batch; every eligible one is planned in the order to run. Any other kind runs only the first option.',
-  '- Create the batch file with the Write tool (a heredoc can be refused), delete it afterwards, and run the command as is: a pipe after it voids the grant.',
-  '- status: selected/ordered: do exactly the plan items (e = execute). expand (exit 2): only NEW options or evidence help; add them, set "new_material", rerun with the SAME --decision-id (2 rounds; no --decision-id = a new decision). ask_user: ask, with options and scores. incomplete: end with "Incomplete:" and the scores. invalid: fix what "problems" names.',
+  '- Make the batch file with the Write tool (a heredoc can be refused), delete it after; run the command as is: a pipe after it voids the grant.',
+  '- status: selected/ordered: do exactly the plan items (e = execute). expand: only NEW options or evidence help; add them, set "new_material", rerun with the SAME --decision-id (2 rounds; no --decision-id = a new decision). ask_user: ask the user. incomplete: end with "Incomplete:" and the scores. invalid: fix what "problems" names.',
 ].join("\n");
 
 const SEARCH = [

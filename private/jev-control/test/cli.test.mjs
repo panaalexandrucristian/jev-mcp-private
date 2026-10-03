@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { S3 } from "../fixtures/scenarios.mjs";
 import { materialize } from "../fixtures/lib.mjs";
-import { KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
+import { ASK_ID, CONTROL_IDS, GATHER_ID, KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { compactOut } from "../cli.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
@@ -507,8 +507,7 @@ describe("help without SKILL.md (R04)", () => {
       assert.ok(direct.stdout.includes(word), `mentions ${word}`);
     }
     assert.ok(direct.stdout.includes(KINDS.join("|")), "the kinds are the ones the helper accepts");
-    assert.ok(direct.stdout.includes(`At least ${MIN_OPTIONS} distinct real options`));
-    assert.ok(direct.stdout.includes(`at most ${MAX_OPTIONS}`));
+    assert.ok(direct.stdout.includes(`${MIN_OPTIONS} to ${MAX_OPTIONS - CONTROL_IDS.length} real options`));
     assert.match(direct.stdout, /a pipe after it voids the grant/, "R04: `search ... | head -40` was audited as an ordinary action and granted nothing");
   });
   it("the example batch in `help decide` has the shape the helper accepts", () => {
@@ -517,6 +516,46 @@ describe("help without SKILL.md (R04)", () => {
     const options = ["a", "b", "c", "d", "e"].map((id) => ({ ...example.options[0], id, text: `option ${id}`, evidence: ["a concrete line"], action: { ...example.options[0].action, target: `src/${id}.mjs` } }));
     const checked = normalizeBatch({ ...example, decision: "which file first?", kind: "edit", options, new_material: undefined });
     assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+  });
+  it("the option limit in `help decide` is the one normalizeBatch enforces: 20 counts the two control options, space_small is for a really small space", () => {
+    const text = cli(["help", "decide"], { env: controlEnv(), cwd: outside() }).stdout;
+    const real = MAX_OPTIONS - CONTROL_IDS.length;
+    assert.equal(real, 18);
+    assert.ok(text.includes(`${MIN_OPTIONS} to ${real} real options`), text);
+    assert.ok(text.includes(`the limit ${MAX_OPTIONS} counts ${GATHER_ID} and ${ASK_ID}, added if missing`), text);
+    assert.match(text, /"space_small":true only when fewer real alternatives exist/);
+    const batch = (n) => ({ decision: "which?", kind: "approach", options: Array.from({ length: n }, (_, i) => ({ id: `o${i + 1}`, text: `Option number ${i + 1}`, evidence: ["a concrete line"] })) });
+    assert.equal(normalizeBatch(batch(real)).ok, true, "18 real options plus the two control options = 20");
+    for (const n of [real + 1, MAX_OPTIONS]) {
+      const r = normalizeBatch(batch(n));
+      assert.equal(r.ok, false, `${n} real options`);
+      assert.match(r.problems.join(" "), new RegExp(`at most ${MAX_OPTIONS} options`));
+    }
+    assert.equal(normalizeBatch(batch(MIN_OPTIONS - 1)).ok, false, "fewer than 5 real options without space_small");
+    assert.equal(normalizeBatch({ ...batch(MIN_OPTIONS - 1), space_small: true }).ok, true);
+  });
+  it("--help and -h are help only as flags of their own: as the value of --query, --message, --priorities or any other value flag they stay values (no live call)", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    for (const text of ["--help", "-h"]) {
+      for (const args of [["search", "--query", text], ["decide", "--message", text], ["approve", "--option", text], ["budget", "status", "--tool", text], ["decide", "--file", text], ["on", "--priorities", text]]) {
+        const r = cli([...args, ...SID], { env, cwd: outside() });
+        assert.equal(r.code, 4, `${args.join(" ")}: ${r.stdout}`);
+        assert.deepEqual(r.json, { status: "refused", message: "not a git work tree" }, `${args.join(" ")} is the command, not help`);
+      }
+    }
+    const r = on(repo, env, ["--priorities", "-h"]);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    assert.equal(r.json.status, "ok");
+    assert.equal(r.json.mode, "on", "the mode was switched on, not answered with the usage text");
+    // A flag of its own still asks for help, also after a value flag and in the shape the sessions used.
+    const direct = cli(["help", "decide"], { env, cwd: outside() }).stdout;
+    for (const args of [["decide", "--file", "x", "-h"], ["decide", "--decision-id", "d1", "--help"], ["decide", "--help", "--file", "x"]]) {
+      const h = cli(args, { env, cwd: outside() });
+      assert.equal(h.code, 0, args.join(" "));
+      assert.equal(h.stdout, direct, args.join(" "));
+    }
+    assert.match(cli(["--root", "x", "--help"], { env, cwd: outside() }).stdout, /^Usage: cli\.mjs on\|off\|status/);
   });
   it("`help search`, `search --help`, the other commands and an unknown topic", () => {
     const search = cli(["help", "search"], { env: controlEnv(), cwd: outside() });
