@@ -211,3 +211,54 @@ describe("the audit follows the real receipt, budget and search shapes", () => {
     assert.equal(a.jev_calls.unreserved_direct.length, 1);
   });
 });
+
+describe("the audit reads an approval by the exact id (edit_a is not edit-a)", () => {
+  /** A real decision whose two best options are Write actions of different content, with ids that differ only by _ and -. */
+  const prepare = () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: { noul: [{ p: p7([0.9, 0.8, 0.4, 0.3, 0.2]) }] } });
+    cli(["on", ...SID, "--priorities", "x"], { env, cwd: repo });
+    const batch = batchOf(5, { kind: "edit" });
+    batch.options[0] = { ...batch.options[0], id: "edit_a", action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
+    batch.options[1] = { ...batch.options[1], id: "edit-a", action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
+    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
+    assert.equal(d.json.status, "expand", d.stdout);
+    return { repo, env, d };
+  };
+  const approveCmd = (option, message) => use("Bash", { command: `node "${CLI_PATH}" approve --decision dec9 --option ${option} --message "${message}"` });
+  const decideCmd = use("Bash", { command: `node "${CLI_PATH}" decide --file /tmp/b.json` });
+  const writeCall = (repo, content) => use("Write", { file_path: join(repo, "src/a.txt"), content });
+  it("the exact approval binds and covers its own Write only; the other payload stays uncovered", () => {
+    const { repo, env, d } = prepare();
+    const ok = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit_a", "--message", "Approve edit_a."], { env, cwd: repo });
+    assert.equal(ok.json.override, "user", ok.stdout);
+    const a = audit([prompt(repo, "Approve edit_a."), ...step(repo, decideCmd, lastLine(d)), ...step(repo, approveCmd("edit_a", "Approve edit_a."), lastLine(ok)), ...step(repo, writeCall(repo, "AAA"), "ok"), ...step(repo, writeCall(repo, "BBB"), "ok")]);
+    assert.equal(a.approvals.bound, 1);
+    assert.equal(a.threshold.approvals_unbound, 0);
+    assert.equal(a.coverage.covered, 1, "only the Write the user approved is covered");
+    assert.equal(a.coverage.uncovered, 1);
+  });
+  it("a claimed approval of edit-a on the words «Approve edit_a.» is unbound: no false grant, no false coverage", () => {
+    const { repo, env, d } = prepare();
+    // The real helper refuses the cross approval ...
+    const refused = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit-a", "--message", "Approve edit_a."], { env, cwd: repo });
+    assert.equal(refused.json.reason, "message_not_about_option");
+    // ... so a recorded «ok» for it can only be a claim: the line the helper prints for the genuine approval of edit-a.
+    const other = prepare();
+    const genuine = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit-a", "--message", "Approve edit-a."], { env: other.env, cwd: other.repo });
+    assert.equal(genuine.json.override, "user", genuine.stdout);
+    const claimed = [prompt(repo, "Approve edit_a."), ...step(repo, decideCmd, lastLine(d)), ...step(repo, approveCmd("edit-a", "Approve edit_a."), lastLine(genuine)), ...step(repo, writeCall(repo, "BBB"), "ok"), ...step(repo, writeCall(repo, "AAA"), "ok")];
+    const a = audit(claimed);
+    assert.equal(a.approvals.bound, 0);
+    assert.equal(a.threshold.approvals_unbound, 1);
+    assert.equal(a.coverage.covered, 0, "neither Write is covered");
+    assert.equal(a.coverage.uncovered, 2);
+    assert.equal(a.coverage.grants.created, 0);
+    // The reverse: «Approve edit-a.» does not bind a claimed approval of edit_a.
+    const genuineA = cli(["approve", ...SID, "--decision", "dec9", "--option", "edit_a", "--message", "Approve edit_a."], { env: other.env, cwd: other.repo });
+    const reverse = audit([prompt(repo, "Approve edit-a."), ...step(repo, decideCmd, lastLine(d)), ...step(repo, approveCmd("edit_a", "Approve edit-a."), lastLine(genuineA)), ...step(repo, writeCall(repo, "AAA"), "ok")]);
+    assert.equal(reverse.approvals.bound, 0);
+    assert.equal(reverse.coverage.covered, 0);
+    assert.equal(reverse.coverage.grants.created, 0);
+  });
+});

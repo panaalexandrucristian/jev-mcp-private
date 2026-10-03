@@ -7,8 +7,11 @@
 // process group, all output goes to a persistent log); the next session starts
 // only after the previous one's termination is confirmed (the campaign lock has
 // no live recorded pid AND status.json says done, not merely a `result` message);
-// --model sonnet, --max-turns 40 and one external 20-minute limit, the only
-// automatic stop (a long tool call with a quiet log is legitimate, so there is no
+// --model sonnet, --max-turns 40, D27 permissions (acceptEdits plus an explicit
+// allowlist, never a bypass), D28 isolation (--setting-sources project, the branch
+// plugin via --plugin-dir) and D29 JEV_PROVIDER=openrouter (sessionEnv: no JEV_FLOW,
+// no JEV_CONTROL* key reaches the worker or the wrapper), and one external
+// 20-minute limit, the only automatic stop (a long tool call with a quiet log is legitimate, so there is no
 // no-progress rule); a failed or timed-out session counts. The user's wrapper
 // enforces the 20-session cap and writes the ledger; this runner refuses to start
 // when the ledger is full.
@@ -39,8 +42,49 @@ export const LIMITS = Object.freeze({ maxTurns: 40, timeoutMs: 20 * 60 * 1000, p
 // A lock with no worker pid yet is "starting" (live) for this long, then stale.
 export const START_GRACE_MS = 30_000;
 
-export function buildArgs({ prompt, pluginDir = null, maxTurns = LIMITS.maxTurns }) {
-  return ["-p", prompt, "--model", "sonnet", "--max-turns", String(maxTurns), "--output-format", "stream-json", "--verbose", ...(pluginDir ? ["--plugin-dir", pluginDir] : [])];
+// D27-D29: the same isolation, permissions and provider for every campaign session.
+export const PLUGIN_DIR = "/Users/apana/Dev/jev-mcp";
+export const PERMISSION_MODE = "acceptEdits";
+export const ALLOWED_TOOLS = Object.freeze(["Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent"]);
+export const SESSION_PROVIDER = "openrouter";
+
+// The prompt is the argument of -p, so the variadic --allowedTools list that ends the command cannot swallow it.
+export function buildArgs({ prompt, pluginDir = PLUGIN_DIR, maxTurns = LIMITS.maxTurns }) {
+  return [
+    "-p", prompt, "--model", "sonnet", "--max-turns", String(maxTurns), "--output-format", "stream-json", "--verbose",
+    "--setting-sources", "project", "--plugin-dir", pluginDir, "--permission-mode", PERMISSION_MODE, "--allowedTools", ...ALLOWED_TOOLS,
+  ];
+}
+
+/**
+ * The environment of the worker and of the wrapper: the given environment with
+ * JEV_PROVIDER fixed, JEV_FLOW and every JEV_CONTROL* key (the launcher's
+ * JEV_CONTROL_LIVE included) removed. Never serialized: it may hold credentials.
+ */
+export function sessionEnv(env = process.env) {
+  const out = {};
+  for (const [key, value] of Object.entries(env)) if (key !== "JEV_FLOW" && !key.startsWith("JEV_CONTROL")) out[key] = value;
+  out.JEV_PROVIDER = SESSION_PROVIDER;
+  return out;
+}
+
+const valueAfter = (args, flag) => {
+  const at = args.indexOf(flag);
+  return at < 0 ? undefined : args[at + 1];
+};
+
+/** Why `args` do not carry the mandatory D27/D28 configuration (empty when they do); bypassing permissions is always refused. */
+export function configProblems(args) {
+  const problems = [];
+  if (args.some((a) => /^--(allow-)?dangerously-skip-permissions$/.test(a) || /bypassPermissions/.test(String(a)))) problems.push("bypassing permissions is not allowed in a test session");
+  if (valueAfter(args, "--permission-mode") !== PERMISSION_MODE) problems.push(`the session must pass --permission-mode ${PERMISSION_MODE}`);
+  const tools = args.indexOf("--allowedTools");
+  const list = tools < 0 ? [] : args.slice(tools + 1);
+  if (list.length !== ALLOWED_TOOLS.length || list.some((t, i) => t !== ALLOWED_TOOLS[i])) problems.push("--allowedTools must be exactly the D27 list, last on the command line");
+  if (valueAfter(args, "--setting-sources") !== "project") problems.push("the session must pass --setting-sources project");
+  if (valueAfter(args, "--plugin-dir") !== PLUGIN_DIR) problems.push(`the session must pass --plugin-dir ${PLUGIN_DIR}`);
+  if (valueAfter(args, "--output-format") !== "stream-json" || !args.includes("--verbose")) problems.push("the session must pass --output-format stream-json --verbose");
+  return problems;
 }
 
 export function ledgerCount(path = LEDGER) {
@@ -179,6 +223,7 @@ export function launchProblems({ wrapper, args, ledgerPath = LEDGER, lockPath = 
   if (!args.includes("-p")) problems.push("a headless session needs -p");
   const turns = args.indexOf("--max-turns");
   if (turns < 0 || !(Number(args[turns + 1]) >= 1 && Number(args[turns + 1]) <= LIMITS.maxTurns)) problems.push(`--max-turns must be 1-${LIMITS.maxTurns}`);
+  problems.push(...configProblems(args));
   const count = ledgerCount(ledgerPath);
   if (count === null) problems.push("the ledger cannot be read");
   else if (count >= SESSION_CAP) problems.push(`the ledger already holds ${count}/${SESSION_CAP} sessions`);
@@ -195,8 +240,10 @@ export function launchProblems({ wrapper, args, ledgerPath = LEDGER, lockPath = 
  */
 export function launch({ wrapper = AUTHORIZED_WRAPPER, args, cwd, outDir, timeoutMs = LIMITS.timeoutMs, testWrapper = false, env = process.env, ledgerPath = LEDGER, lockPath = LOCK_PATH }) {
   mkdirSync(outDir, { recursive: true });
+  // The LIVE check reads the launcher's own environment; the child gets sessionEnv(env).
   const problems = launchProblems({ wrapper, args, ledgerPath, lockPath, testWrapper, env });
   if (problems.length) return { ok: false, problems };
+  const childEnv = sessionEnv(env);
   // Contended launches lose here; a loser touches nothing in any out dir.
   const acquired = acquireLock(lockPath, { outDir });
   if (!acquired.ok) return { ok: false, problems: [lockProblem(lockPath) || `the campaign lock ${lockPath} was taken by another launch`] };
@@ -214,7 +261,7 @@ export function launch({ wrapper = AUTHORIZED_WRAPPER, args, cwd, outDir, timeou
     }
     const log = openSync(join(outDir, "session.log"), "a");
     try {
-      worker = spawn(process.execPath, [fileURLToPath(import.meta.url), "_worker", secret], { detached: true, stdio: ["ignore", log, log], env });
+      worker = spawn(process.execPath, [fileURLToPath(import.meta.url), "_worker", secret], { detached: true, stdio: ["ignore", log, log], env: childEnv });
     } finally {
       closeSync(log);
     }
@@ -249,7 +296,7 @@ async function worker(secretPath) {
   const logPath = join(outDir, "session.log");
   const started = Date.now();
   const out = openSync(logPath, "a");
-  const child = spawn(wrapper, args, { cwd, detached: true, stdio: ["ignore", out, out] });
+  const child = spawn(wrapper, args, { cwd, detached: true, stdio: ["ignore", out, out], env: sessionEnv(process.env) });
   if (isPid(child.pid)) updateLock(lockPath, token, { childPid: child.pid });
   let timedOut = false;
   let killedAt = 0;
@@ -343,7 +390,7 @@ if (isMain) {
       process.stderr.write("launch needs --prompt-file, --cwd and --out-dir\n");
       process.exitCode = 4;
     } else {
-      const args = buildArgs({ prompt: readFileSync(promptFile, "utf8"), pluginDir: flag("plugin-dir") ?? null });
+      const args = buildArgs({ prompt: readFileSync(promptFile, "utf8"), pluginDir: flag("plugin-dir") ?? PLUGIN_DIR });
       const result = launch({ args, cwd: flag("cwd"), outDir });
       process.stdout.write(`${JSON.stringify(result)}\n`);
       process.exitCode = result.ok ? 0 : 4;

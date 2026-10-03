@@ -23,6 +23,14 @@ describe("fixtures are disposable and well formed", () => {
       assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" }).trim(), "", s.id);
     }
   });
+  it("only the scenario's files are staged and committed (no git add -A)", () => {
+    for (const s of all) {
+      const dir = materialize(s);
+      const tracked = execFileSync("git", ["ls-files"], { cwd: dir, encoding: "utf8" }).trim().split("\n").sort();
+      assert.deepEqual(tracked, Object.keys(s.files).sort(), s.id);
+    }
+    assert.equal(/git\("add", "-[A.]"/.test(readFileSync(new URL("../fixtures/lib.mjs", import.meta.url), "utf8")), false);
+  });
   it("ids are unique; four dev scenarios and two sealed finals; the kinds are right", () => {
     assert.equal(new Set(all.map((s) => s.id)).size, all.length);
     assert.deepEqual(DEV_SCENARIOS.map((s) => s.kind), ["dev", "dev", "dev", "dev"]);

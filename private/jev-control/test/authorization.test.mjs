@@ -27,7 +27,7 @@ describe("the user's words as an authorization", () => {
   });
   it("an option is approved only by words that name it: approving A is not approving B", () => {
     assert.equal(grants("Yes, use edit_a.", optionScope("edit_a")), true);
-    assert.equal(grants("Yes, use edit a", optionScope("edit_a")), true, "_ and - read as spaces");
+    assert.equal(grants("Yes, use edit a", optionScope("edit_a")), false, "the id is read exactly: «edit a» is not «edit_a»");
     assert.equal(grants("Yes, use edit_a.", optionScope("edit_b")), false);
     assert.equal(grants("Yes, use edit_a_long.", optionScope("edit_a")), false, "a longer id is another option");
     assert.equal(grants("Yes, use a different approach.", optionScope("a")), false, "a one-letter id is also a word: it needs «option a»");
@@ -35,6 +35,49 @@ describe("the user's words as an authorization", () => {
     assert.equal(grants("Use option a, not option b.", optionScope("b")), false, "a negated sentence approves nothing");
     assert.equal(grants("Yes, go with o1", optionScope("o1")), true);
     assert.equal(grants("Yes, go with o10", optionScope("o1")), false);
+  });
+  it("two ids that differ only by _ or - are two options: the id is read exactly, never as spaces", () => {
+    const a = optionScope("edit_a");
+    const b = optionScope("edit-a");
+    const either = "Should we approve edit_a or approve edit-a?";
+    // The exact id approves its own option.
+    assert.equal(grants("Approve edit_a.", a), true);
+    assert.equal(grants("Approve edit-a.", b), true);
+    assert.equal(grants("Yes, use Edit_A", a), true, "case is not identity");
+    // The other one, and the spaced reading, approve neither (in both directions).
+    assert.equal(grants("Approve edit_a.", b), false);
+    assert.equal(grants("Approve edit-a.", a), false);
+    assert.equal(readMessage("Approve edit_a.", b).reason, "object_missing");
+    for (const spaced of ["Approve edit a.", "Yes, use edit a", "Use edit  a please"]) {
+      assert.equal(grants(spaced, a), false, `${spaced} for edit_a`);
+      assert.equal(grants(spaced, b), false, `${spaced} for edit-a`);
+    }
+    // Only a whole identifier counts: a piece of a longer one does not.
+    assert.equal(grants("Approve pre-edit_a.", a), false);
+    assert.equal(grants("Approve edit_a-b.", a), false);
+    assert.equal(grants("Approve edit_a_b.", a), false);
+    // One of the two named, the other put aside, stays exact.
+    assert.equal(grants("Use edit_a over edit-a.", a), true);
+    assert.equal(grants("Use edit_a over edit-a.", b), false);
+    // A short answer is bound to the question for the exact id.
+    assert.equal(grants("yes", a, "Approve edit_a?"), true);
+    assert.equal(grants("yes", b, "Approve edit_a?"), false, "a yes to the question for edit_a approves edit_a only");
+    assert.equal(grants("yes", a, "Approve edit-a?"), false);
+    assert.equal(grants("yes", b, "Approve edit-a?"), true);
+    assert.equal(grants("yes", a, "Approve edit a?"), false, "a question that does not name the exact id completes nothing");
+    // The bare label of an approval question is exact too.
+    assert.equal(grants("edit_a", a, either), true);
+    assert.equal(grants("edit_a", b, either), false);
+    assert.equal(grants("edit-a", b, either), true);
+    assert.equal(grants("edit-a", a, either), false);
+    assert.equal(grants("edit a", a, either), false);
+    // The source-message check agrees: quoting «Approve edit_a.» authorizes edit_a, not edit-a.
+    assert.equal(findAuthorizations("Approve edit_a.", "Approve edit_a.", a).occurrences.length, 1);
+    assert.equal(findAuthorizations("Approve edit_a.", "Approve edit_a.", b).occurrences.length, 0);
+    assert.equal(findAuthorizations("Approve edit_a.", "Approve edit_a.", b).found, true);
+    // Existing ids with separators and ordinary hyphenated words are unaffected.
+    assert.equal(grants("Yes, use edit_a.", optionScope("edit_a")), true);
+    assert.equal(grants("Yes, go-ahead, use o1", optionScope("o1")), true, "ordinary hyphenated words are read as before");
   });
   it("mentioning the object is not authorizing the operation: the grant must be aimed at the budget or the option", () => {
     for (const no of ["Use Jev.", "Use Node 22 for the calls.", "Approve the pull request for calls.", "Yes, the budget.", "Jev is fine.", "Yes, calls are cheap."]) assert.equal(grants(no), false, no);

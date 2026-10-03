@@ -4,7 +4,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { AUTHORIZED_WRAPPER, LEDGER, LIMITS, LOCK_PATH, SESSION_CAP, acquireLock, buildArgs, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, updateLock, waitForTermination } from "../run-session.mjs";
+import { ALLOWED_TOOLS, AUTHORIZED_WRAPPER, LEDGER, LIMITS, LOCK_PATH, PLUGIN_DIR, SESSION_CAP, acquireLock, buildArgs, configProblems, describeLock, launch, launchProblems, ledgerCount, readStatus, releaseLock, releaseStale, sessionEnv, updateLock, waitForTermination } from "../run-session.mjs";
 import { REPO_ROOT, run, spawnSyncPs, tempDir } from "./helpers.mjs";
 
 const RUN_SESSION = join(REPO_ROOT, "private", "jev-control", "run-session.mjs");
@@ -13,8 +13,9 @@ const RUN_SESSION = join(REPO_ROOT, "private", "jev-control", "run-session.mjs")
 function fakeWrapper(dir) {
   const file = join(dir, "fake-claude.mjs");
   writeFileSync(file, `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_ARGV, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (process.env.FAKE_ENV) writeFileSync(process.env.FAKE_ENV, JSON.stringify(process.env));
 const mode = process.env.FAKE_MODE || "ok";
 console.log(JSON.stringify({ type: "system", subtype: "init" }));
 if (mode === "ok") { console.log(JSON.stringify({ type: "result", subtype: "success", usage: { input_tokens: 1 } })); process.exit(0); }
@@ -28,7 +29,7 @@ if (mode === "quiet") setTimeout(() => { console.log(JSON.stringify({ type: "res
   chmodSync(file, 0o755);
   return file;
 }
-const baseArgs = (extra = []) => ["-p", "the prompt", "--model", "sonnet", "--max-turns", "40", ...extra];
+const baseArgs = () => buildArgs({ prompt: "the prompt" });
 const emptyLedger = () => {
   const f = join(tempDir(), "ledger.tsv");
   writeFileSync(f, "");
@@ -76,17 +77,47 @@ process.stdout.write(JSON.stringify(launch({ ...opts.launch, env: process.env })
 }
 
 describe("launch rules", () => {
-  it("builds the session command: sonnet, 40 turns, stream-json, optional plugin dir", () => {
-    const args = buildArgs({ prompt: "p", pluginDir: "/x/plugin" });
-    assert.deepEqual(args.slice(0, 7), ["-p", "p", "--model", "sonnet", "--max-turns", "40", "--output-format"]);
-    assert.ok(args.includes("stream-json"));
-    assert.deepEqual(args.slice(-2), ["--plugin-dir", "/x/plugin"]);
-    assert.equal(buildArgs({ prompt: "p" }).includes("--plugin-dir"), false);
+  it("builds the exact session command: sonnet, 40 turns, stream-json, D28 isolation, D27 permissions", () => {
+    const args = buildArgs({ prompt: "p" });
+    assert.deepEqual(args, [
+      "-p", "p", "--model", "sonnet", "--max-turns", "40", "--output-format", "stream-json", "--verbose",
+      "--setting-sources", "project", "--plugin-dir", "/Users/apana/Dev/jev-mcp", "--permission-mode", "acceptEdits",
+      "--allowedTools", "Bash(node:*)", "Bash(git status:*)", "Bash(git diff:*)", "mcp__jev__*", "mcp__plugin_jev_jev__*", "Agent",
+    ]);
+    assert.equal(PLUGIN_DIR, "/Users/apana/Dev/jev-mcp");
+    assert.equal(args[1], "p", "the prompt is the argument of -p, before the variadic --allowedTools list");
+    assert.equal(args.indexOf("--allowedTools") + ALLOWED_TOOLS.length, args.length - 1, "the allowlist is last");
+    assert.equal(args.some((a) => /bypass|dangerously/i.test(a)), false);
+    assert.deepEqual(configProblems(args), []);
     assert.equal(LIMITS.maxTurns, 40);
     assert.equal(LIMITS.timeoutMs, 20 * 60 * 1000);
     assert.equal("noProgressMs" in LIMITS, false, "the 20-minute limit is the only automatic stop");
     assert.equal(/noProgress|no_progress/.test(readFileSync(RUN_SESSION, "utf8")), false);
     assert.equal(SESSION_CAP, 20);
+  });
+  it("refuses a command without the mandatory configuration or with a permission bypass", () => {
+    const base = { wrapper: "w", ledgerPath: emptyLedger(), lockPath: tempLock(), testWrapper: true };
+    const good = baseArgs();
+    assert.deepEqual(launchProblems({ ...base, args: good }), []);
+    const swap = (flag, value) => good.map((a, i) => (good[i - 1] === flag ? value : a));
+    assert.match(launchProblems({ ...base, args: [...good, "--dangerously-skip-permissions"] }).join(), /bypassing permissions/);
+    assert.match(launchProblems({ ...base, args: swap("--permission-mode", "bypassPermissions") }).join(), /bypassing permissions/);
+    assert.match(launchProblems({ ...base, args: swap("--permission-mode", "default") }).join(), /--permission-mode acceptEdits/);
+    assert.match(launchProblems({ ...base, args: swap("--setting-sources", "user,project") }).join(), /--setting-sources project/);
+    assert.match(launchProblems({ ...base, args: swap("--plugin-dir", "/tmp/other") }).join(), /--plugin-dir/);
+    assert.match(launchProblems({ ...base, args: swap("--output-format", "json") }).join(), /stream-json/);
+    assert.match(launchProblems({ ...base, args: good.filter((a) => a !== "--verbose") }).join(), /stream-json/);
+    assert.match(launchProblems({ ...base, args: good.slice(0, good.indexOf("--allowedTools")) }).join(), /allowedTools/);
+    assert.match(launchProblems({ ...base, args: good.slice(0, -1) }).join(), /allowedTools/);
+    assert.match(launchProblems({ ...base, args: [...good, "Bash(rm:*)"] }).join(), /allowedTools/);
+    assert.match(launchProblems({ ...base, args: [...good.slice(0, good.indexOf("--allowedTools")), "--allowedTools", "Bash(*)"] }).join(), /allowedTools/);
+  });
+  it("sessionEnv fixes JEV_PROVIDER and drops JEV_FLOW and every JEV_CONTROL* key, without touching the input", () => {
+    const input = { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_FLOW: "on", JEV_CONTROL: "on", JEV_CONTROL_LIVE: "1", JEV_CONTROL_CACHE: "/c", JEV_PROVIDER: "openai", JEV_OTHER: "x" };
+    const out = sessionEnv(input);
+    assert.deepEqual(out, { PATH: "/bin", OPENROUTER_API_KEY: "k", JEV_PROVIDER: "openrouter", JEV_OTHER: "x" });
+    assert.equal(input.JEV_FLOW, "on");
+    assert.equal(sessionEnv({}).JEV_PROVIDER, "openrouter");
   });
   it("only the authorized budget wrapper may start a live session, and only with JEV_CONTROL_LIVE=1", () => {
     const lockPath = tempLock();
@@ -126,7 +157,7 @@ describe("a simulated session: detached, sequential, confirmed termination", () 
     const wrapper = fakeWrapper(dir);
     const argvFile = join(dir, "argv.jsonl");
     const lockPath = tempLock();
-    const started = launch({ wrapper, args: baseArgs(), cwd: dir, outDir, testWrapper: true, ledgerPath: emptyLedger(), lockPath, env: { ...process.env, FAKE_ARGV: argvFile, FAKE_MODE: "ok" } });
+    const started = launch({ wrapper, args: baseArgs(), cwd: dir, outDir, testWrapper: true, ledgerPath: emptyLedger(), lockPath, env: { ...process.env, FAKE_ARGV: argvFile, FAKE_MODE: "ok", FAKE_ENV: join(dir, "env.json"), JEV_FLOW: "on", JEV_CONTROL: "on", JEV_CONTROL_LIVE: "1", JEV_CONTROL_CACHE: "/c", JEV_PROVIDER: "openai" } });
     assert.equal(started.ok, true, JSON.stringify(started));
     const done = await waitForTermination(outDir, { timeoutMs: 20_000, lockPath });
     assert.equal(done.ok, true, JSON.stringify(done));
@@ -137,7 +168,13 @@ describe("a simulated session: detached, sequential, confirmed termination", () 
     assert.equal(existsSync(lockPath), false, "the worker released the campaign lock");
     assert.equal(done.status.group_gone, true);
     assert.match(readFileSync(join(outDir, "session.log"), "utf8"), /"type":"result"/);
-    assert.deepEqual(JSON.parse(readFileSync(argvFile, "utf8").trim()), baseArgs());
+    assert.deepEqual(JSON.parse(readFileSync(argvFile, "utf8").trim()), baseArgs(), "the wrapper received exactly the mandatory configuration");
+    const seen = JSON.parse(readFileSync(join(dir, "env.json"), "utf8"));
+    assert.equal(seen.JEV_PROVIDER, "openrouter");
+    assert.deepEqual(Object.keys(seen).filter((k) => k === "JEV_FLOW" || k.startsWith("JEV_CONTROL")), [], "no JEV_FLOW or JEV_CONTROL* key reaches the wrapper");
+    assert.equal(seen.FAKE_MODE, "ok", "the rest of the environment is kept");
+    const stored = readFileSync(join(outDir, "launch.json"), "utf8");
+    assert.equal(/JEV_PROVIDER|OPENROUTER|JEV_FLOW|JEV_CONTROL/.test(stored), false, "the environment is never serialized");
     assert.equal(readFileSync(join(outDir, "launch.json"), "utf8").includes("the prompt"), false, "the prompt is not stored");
   });
   it("the worker leads its own session (fully detached: not in this process group)", async () => {

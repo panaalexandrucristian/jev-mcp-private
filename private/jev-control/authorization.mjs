@@ -84,13 +84,28 @@ function budgetApproval(text) {
 
 const idTokens = (id) => tokensOf(String(id).replace(/[_-]+/g, " "));
 const isShortId = (id) => /^[a-z]{1,2}$/.test(norm(id));
-/** Positions of the id's words in `t`; an id of one or two letters, which is also a word, only after «option». */
-function idPositions(t, id) {
+/** The words of a normalized sentence with their character spans in it. */
+const spansOf = (s) => Array.from(s.matchAll(TOKEN), (m) => ({ tok: m[0], start: m.index, end: m.index + m[0].length }));
+/**
+ * Positions {p, n} of the id in the normalized sentence `s`, in the words of `tokensOf(s)`. The identity is EXACT: the text
+ * must be the id itself, with its own `_` and `-` («edit_a» is not «edit-a» nor «edit a»), and not a piece of a longer
+ * identifier («pre-edit_a»); two ids that differ only by their separators are two options, and a word that names one never
+ * approves the other. An id of one or two letters, which is also a word, only after «option».
+ */
+function idPositions(s, id) {
+  const t = tokensOf(s);
   const idt = idTokens(id);
   const out = [];
   if (idt.length === 0) return out;
+  const spans = spansOf(s);
+  const want = norm(id);
   for (let p = 0; p + idt.length <= t.length; p++) {
     if (!idt.every((w, k) => t[p + k] === w)) continue;
+    const start = spans[p].start;
+    const end = spans[p + idt.length - 1].end;
+    if (s.slice(start, end) !== want) continue;
+    if (/[_-]/.test(s[start - 1] ?? "") && /[\p{L}\p{N}]/u.test(s[start - 2] ?? "")) continue;
+    if (/[_-]/.test(s[end] ?? "") && /[\p{L}\p{N}]/u.test(s[end + 1] ?? "")) continue;
     if (isShortId(id) && !OPTION_TAG.has(t[p - 1])) continue;
     out.push({ p, n: idt.length });
   }
@@ -112,8 +127,9 @@ function chosenPart(text) {
  * is cut off first, so «Approve o1 instead of o2.» approves o1 and nothing else.
  */
 function optionApproval(text, id, label = false) {
-  const t = tokensOf(chosenPart(text));
-  for (const { p, n } of idPositions(t, id)) {
+  const chosen = norm(chosenPart(text));
+  const t = tokensOf(chosen);
+  for (const { p, n } of idPositions(chosen, id)) {
     const before = t.slice(0, p);
     const after = t.slice(p + n);
     if (!before.every((w) => LEAD.has(w) || OPTION_VERB.has(w) || OPTION_FILLER.has(w))) continue;
@@ -256,7 +272,7 @@ const RETRACT = new RegExp(
 // Pure politeness or a closing: the only sentences that may follow an approval and leave it standing (an empty sentence too).
 const POLITE = new Set(["thanks", "thank", "thx", "you", "a", "lot", "mersi", "mulțumesc", "multumesc", "please", "pls", "ok", "okay", "great", "perfect", "cheers", "yes", "yeah", "sure", "da", "te", "rog", "awesome", "good", "nice"]);
 const isPolite = (s) => tokensOf(s).every((w) => POLITE.has(w));
-const mentions = (s, scope) => (scope.kind === "option" ? idPositions(tokensOf(s), scope.id).length > 0 : tokensOf(s).some((w) => BUDGET_NOUN.has(w) || numberOf(w) !== undefined));
+const mentions = (s, scope) => (scope.kind === "option" ? idPositions(norm(s), scope.id).length > 0 : tokensOf(s).some((w) => BUDGET_NOUN.has(w) || numberOf(w) !== undefined));
 /** The quantity as it would be spent: no number at all is the default step. */
 const effectiveQuantity = (q) => (q.kind === "none" ? { kind: "increment", n: BUDGET_LIMIT } : q);
 const sameQuantity = (a, b) => (a.kind === "increment" || a.kind === "total") && a.kind === b.kind && a.n === b.n;

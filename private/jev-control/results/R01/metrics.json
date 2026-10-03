@@ -1,0 +1,299 @@
+{
+  "round": "R01",
+  "kind": "live baseline, 1 of the 2 planned sessions",
+  "live": true,
+  "live_sessions_used": 1,
+  "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
+  "branch": "jev-control-skill",
+  "head_at_launch": "d428b00 plus the uncommitted R01 changes of run-session.mjs and fixtures/lib.mjs (committed in the R01 commit)",
+  "ledger": {
+    "lines_after": 1,
+    "cap": 20,
+    "line": "1\t2026-10-03T00:05:30Z\tsonnet\t/private/var/folders/hj/_v79y2cn7sq81stpsbd_d5p80000gn/T/jev-control-s1-bug-several-files-udRQzt",
+    "remaining": 19
+  },
+  "versions": {
+    "claude_code": "2.1.288",
+    "model": "claude-sonnet-5-5",
+    "node": "v22.23.1",
+    "plugin_jev": "0.7.0",
+    "jev_mcp_server": "unknown (npx @latest; no record in the stream or transcript)"
+  },
+  "plugin_snapshot_sha256": {
+    ".claude-plugin/plugin.json": "302328d4734fd1645e47575ae3931b15c674be30a06d5f2159cdd43c91be1dd3",
+    "hooks/hooks.json": "5cc80abaf62b34e6f9cd7d8cfe05ba1bf346fcf374e3e7c75588583c9d641c15"
+  },
+  "config": {
+    "argv_flags": "buildArgs of run-session.mjs (launch.json)",
+    "JEV_PROVIDER": "openrouter (set by sessionEnv; value not observed in the session)",
+    "JEV_FLOW": "unset",
+    "JEV_CONTROL": "removed by sessionEnv"
+  },
+  "scenarios": {
+    "s1": {
+      "id": "s1-bug-several-files",
+      "scenarioHash": "d134fbb9d686b0cf0e2207d6b06f3fc1e68a801208ab5062ddef4c81ccae42ac",
+      "pristine_oracle": {
+        "pass": false,
+        "detail": "{\"a\":3,\"b\":3,\"c\":1,\"d\":0,\"e\":5,\"f\":\"Page 1 of 3\",\"g\":\"function\"}"
+      },
+      "final_oracle": {
+        "pass": true,
+        "detail": "{\"a\":2,\"b\":3,\"c\":1,\"d\":0,\"e\":5,\"f\":\"Page 1 of 2\",\"g\":\"function\"}",
+        "run_by": "executor, after the session, with the scenario's own oracle (fixtures/scenarios.mjs)"
+      },
+      "session_id": "11badc27-bc86-4422-b46f-fbaa17cceb4a",
+      "out_dir": "/Users/apana/Dev/council-runs/2026-10-02/jev-control-runs/R01/s1",
+      "transcript": "kept outside git: ~/.claude/projects/-private-var-folders-hj--v79y2cn7sq81stpsbd-d5p80000gn-T-jev-control-s1-bug-several-files-udRQzt/11badc27-bc86-4422-b46f-fbaa17cceb4a.jsonl (45 lines)",
+      "fixture_node_test": {
+        "exit": 0,
+        "tests": 2,
+        "pass": 2,
+        "fail": 0
+      },
+      "final_git": {
+        "modified": [
+          "src/pagination.mjs"
+        ],
+        "diffstat": "1 insertion(+), 1 deletion(-)"
+      }
+    },
+    "s2": "not launched (see summary: isolation finding)"
+  },
+  "isolation": {
+    "init": {
+      "line": "stream line 3",
+      "permissionMode": "acceptEdits",
+      "plugins": [
+        "jev@jev@inline 0.7.0 /Users/apana/Dev/jev-mcp",
+        "cc-plugin-agents-md@cc-plugin-agents-md@builtin  builtin",
+        "cc-plugin-telemetry@cc-plugin-telemetry@builtin  builtin",
+        "cc-plugin-plugin-authoring@cc-plugin-plugin-authoring@builtin  builtin"
+      ],
+      "mcp_servers": [
+        {
+          "name": "plugin:jev:jev",
+          "status": "connected",
+          "source": "plugin"
+        },
+        {
+          "name": "claude.ai Claude Docs",
+          "status": "connected",
+          "source": "claudeai"
+        },
+        {
+          "name": "claude.ai Gmail",
+          "status": "connected",
+          "source": "claudeai"
+        },
+        {
+          "name": "claude.ai Google Drive",
+          "status": "connected",
+          "source": "claudeai"
+        },
+        {
+          "name": "claude.ai Google Calendar",
+          "status": "connected",
+          "source": "claudeai"
+        }
+      ],
+      "skills": [
+        "deep-research",
+        "jev:handoff-verify",
+        "jev:jev",
+        "jev:jev-control",
+        "jev:jev-flow",
+        "design",
+        "design-sync",
+        "dataviz",
+        "update-config",
+        "verify",
+        "debug",
+        "code-review",
+        "simplify",
+        "batch",
+        "fewer-permission-prompts",
+        "doctor",
+        "loop",
+        "schedule",
+        "claude-api",
+        "workflow-authoring",
+        "run",
+        "run-skill-generator",
+        "plugin-authoring"
+      ],
+      "agents": [
+        "claude",
+        "Explore",
+        "general-purpose",
+        "jev:jev-locator",
+        "Plan",
+        "statusline-setup"
+      ],
+      "apiKeySource": "none"
+    },
+    "jev_tools_in_init": 12,
+    "tools_total": 95,
+    "hooks_seen": {
+      "stream": [
+        "hook_started SessionStart:startup",
+        "hook_response SessionStart:startup"
+      ],
+      "transcript": [
+        [
+          {
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/jev-flow-hook.mjs\" Stop",
+            "durationMs": 58
+          }
+        ]
+      ]
+    }
+  },
+  "metrics": {
+    "outcome": {
+      "status": {
+        "state": "done",
+        "exit": 0,
+        "signal": null,
+        "error": null,
+        "timed_out": false,
+        "result_seen": true,
+        "group_gone": true,
+        "started": 1790985930135,
+        "ended": 1790985943334,
+        "counted": true
+      },
+      "num_turns_reported": 7,
+      "unique_assistant_messages": 6,
+      "stop_reason": "end_turn",
+      "terminal_reason": "completed",
+      "is_error": false
+    },
+    "duration_ms": {
+      "result_duration_ms": 11259,
+      "duration_api_ms": 10004,
+      "wrapper_wall_ms": 13199
+    },
+    "tools_by_type": {
+      "Bash": 4,
+      "Read": 1,
+      "Edit": 1
+    },
+    "tool_uses_total": 6,
+    "repeated_reads": 0,
+    "reads": 1,
+    "edits_applied": 1,
+    "edit_attempts_denied": 1,
+    "refusals": {
+      "permission_denied_events": [
+        {
+          "stream_line": 12,
+          "tool_use_id": "toolu_011SBbTttx4zxXdgHTvqccrr",
+          "tool": "Bash",
+          "reason_type": "subcommandResults",
+          "message": "This Bash command contains multiple operations. The following part requires approval: sed -i '' 's|Math.floor(items / pageSize) + 1|Math.ceil(items / pageSize)|' src/pagination.mjs && node --test 2>&1"
+        }
+      ],
+      "permission_denials_in_result": [
+        {
+          "tool": "Bash",
+          "tool_use_id": "toolu_011SBbTttx4zxXdgHTvqccrr"
+        }
+      ],
+      "error_results_in_transcript": [
+        {
+          "line": 33,
+          "tool_use_id": "toolu_011SBbTttx4zxXdgHTvqccrr",
+          "text": "This Bash command contains multiple operations. The following part requires approval: sed -i '' 's|Math.floor(items / pageSize) + 1|Math.ceil(items / pageSize)|' src/pagination.mjs && node --test 2>&1"
+        }
+      ]
+    },
+    "tokens": {
+      "attribution": "known",
+      "parent": {
+        "messages": 6,
+        "attribution": "known",
+        "input_tokens": 12,
+        "output_tokens": 796,
+        "cache_read_input_tokens": 113948,
+        "cache_creation_input_tokens": 11597
+      },
+      "subagent": {
+        "messages": 0,
+        "attribution": "known",
+        "input_tokens": "unknown",
+        "output_tokens": "unknown",
+        "cache_read_input_tokens": "unknown",
+        "cache_creation_input_tokens": "unknown"
+      },
+      "unattributed": {
+        "messages": 0,
+        "attribution": "unknown",
+        "input_tokens": "unknown",
+        "output_tokens": "unknown",
+        "cache_read_input_tokens": "unknown",
+        "cache_creation_input_tokens": "unknown"
+      },
+      "by_agent": {},
+      "total": {
+        "messages": 6,
+        "attribution": "known",
+        "input_tokens": 12,
+        "output_tokens": 796,
+        "cache_read_input_tokens": 113948,
+        "cache_creation_input_tokens": 11597
+      },
+      "reported_total": "unknown"
+    },
+    "tokens_reported_by_stream_result": {
+      "input_tokens": 12,
+      "output_tokens": 796,
+      "cache_read_input_tokens": 113948,
+      "cache_creation_input_tokens": 11597
+    },
+    "total_cost_usd_reported_by_stream": 0.07716160000000001,
+    "subagents": 0,
+    "jev_calls": {
+      "direct_main": 0,
+      "direct_subagent": 0,
+      "mcp_tool_uses_in_transcript": 0,
+      "provider_calls": "unknown"
+    },
+    "control_compliance": "not applicable (baseline: the mode was never activated); measure.mjs counters for this session: coverage 0/6 no_grant, finalization 1 violation, describe the absence of the control"
+  },
+  "event_refs": {
+    "init": "stream:3",
+    "permission_denied": "stream:12 (tool_use stream:11, transcript:32; error result transcript:33)",
+    "edit": "transcript:35 (toolu_01BnavURjm4LBfr2TyKdDLtK), result transcript:37",
+    "node_test": "transcript:36 (toolu_01PYgBk3B1CybSCJbKccRMQj), result transcript:38",
+    "final_result": "stream:19",
+    "stop_hook_summary": "transcript:43"
+  },
+  "measure_tool": {
+    "cmd": "node private/jev-control/measure.mjs --transcript <jsonl> --out <external dir>",
+    "output_dir": "/Users/apana/Dev/council-runs/2026-10-02/jev-control-runs/R01/s1/measure",
+    "usage_matches_stream": true
+  },
+  "offline_checks": {
+    "control_suite_before_live": "421 tests, 77 suites, all pass",
+    "flow_suite": "324 tests, 61 suites, all pass",
+    "plugin_validate": "passed (Claude Code 2.1.288)",
+    "seal_verify": "ok",
+    "control_suite_final": "425 tests, 78 suites, all pass (after the authorization fix)",
+    "flow_suite_final": "324 tests, 61 suites, all pass"
+  },
+  "defect_and_change": {
+    "priority_1_runner_or_measurement_defect_that_invalidates_R02_R10": "none shown by the real transcript",
+    "baseline_caveats_not_fixed": [
+      "measure.mjs has no baseline mode: its coverage and finalization counters describe the absence of the control",
+      "measure.mjs counts an attempted but permission-denied Bash command (is_error result, stream permission_denied) as a possible change (bash_changes 1)"
+    ],
+    "fixed": "edit_a/edit-a authorization collision: ids are read exactly in authorization.mjs (idPositions); regressions in authorization, cli and measure-integration tests"
+  },
+  "limits": [
+    "n = 1 baseline; no saving or ranking is claimed",
+    "JEV_PROVIDER inside the session, the Jev MCP server version and per-hook activity are not observable in the stream or transcript (unknown)",
+    "S2 was not launched",
+    "the stream reports 7 turns for 6 unique assistant messages; the difference is not explained here"
+  ]
+}

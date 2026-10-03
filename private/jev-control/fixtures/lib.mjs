@@ -26,7 +26,7 @@ export function materialize(scenario, dest = mkdtempSync(join(tmpdir(), `jev-con
   git("config", "user.name", "fixture");
   git("config", "commit.gpgsign", "false");
   writeFiles(dest, scenario.files);
-  git("add", "-A");
+  git("add", "--", ...Object.keys(scenario.files));
   git("commit", "-q", "-m", "fixture");
   return dest;
 }
