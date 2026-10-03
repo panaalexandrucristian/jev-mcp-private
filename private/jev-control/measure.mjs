@@ -553,15 +553,19 @@ const READ_ONLY = {
   shasum: { flags: [], value: ["-a"] },
   sha256sum: { flags: [] },
 };
-/** One physical line: no newline, no pipe, `;`, `&`, quote, substitution, redirect, backslash, brace, `!` or `#`. */
-const PLAIN_LINE = /^[^\n\r;&|`$()<>\\"'{}!#]*$/;
+/**
+ * One physical line of literal words: no newline, no pipe, `;`, `&`, quote, substitution, redirect, backslash, brace, `!` or `#`, and
+ * no glob (`*`, `?`, `[`): the transcript does not show what a glob expanded to, and an expansion may add an option such as `--pre=sh`.
+ */
+const PLAIN_LINE = /^[^\n\r;&|`$()<>\\"'{}!#*?[\]]*$/;
 /** True when `command` is exactly one plain read: a listed command with listed options and operands that are not options. */
 function readOnlyBash(command) {
   const text = String(command ?? "").trim();
   if (text === "" || !PLAIN_LINE.test(text)) return false;
   const words = text.split(/[ \t]+/);
+  // An own property only: `constructor`, `__proto__` and `toString` are inherited names, not listed commands.
+  if (!Object.hasOwn(READ_ONLY, words[0])) return false;
   const spec = READ_ONLY[words[0]];
-  if (!spec) return false;
   for (let k = 1; k < words.length; k++) {
     const w = words[k];
     if (spec.flags.includes(w)) continue;
@@ -598,7 +602,7 @@ function simpleRm(command, root) {
  *   of the batch's kind, with plan items that name only options of that version, and that version must pass normalizeBatch; the shared ids
  *   alone prove nothing about which version was read.
  * - Calls of unknown effects end every chain of their request when they start and forbid a chain from starting or continuing while
- *   they overlap its write: any Bash that is not ONE plain read (a listed command, listed options, one line: never `rg --pre`) or a lone
+ *   they overlap its write: any Bash that is not ONE plain read (a listed command, listed options, literal operands, one line: never `rg --pre`) or a lone
  *   `rm` of one path that is not an option (node mutate.mjs and node --test may write files), a delegated agent, an unclassified tool, `done` and the flow helpers; so do a MultiEdit or notebook edit of the path, a
  *   write or `rm` of it by another request or context, and a write with no result.
  * - A consumed version is exempt only once the same request and context later removed the file with a lone `rm [-f] <path>` that

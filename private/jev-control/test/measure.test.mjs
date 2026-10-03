@@ -1258,7 +1258,7 @@ describe("only a batch file the transcript proves to be helper input is not an e
   it("a command is a plain read only when it is one line, one listed command and listed options: a second line, rg --pre and the like are unknown effects", () => {
     const run = (...between) => verdict(audit([prompt("go"), ...writeBatch(), ...between, ...decideFile(ordered("o1")), ...remove(), final()]));
     const CLEAR = { files: 1, removals: 1, edits: 0, violations: 0 };
-    for (const cmd of ["cat jev-batch.json", "cat -n jev-batch.json", "ls", "ls -la", "head -n 5 jev-batch.json", "head -5 jev-batch.json", "grep -n option jev-batch.json", "rg -n needle jev-batch.json", "wc -l jev-batch.json", "diff -u a.json b.json", "shasum -a 256 jev-batch.json"]) assert.deepEqual(run(...call(bash(cmd), "ok")), CLEAR, `a plain read: ${cmd}`);
+    for (const cmd of ["cat jev-batch.json", "cat -n jev-batch.json", "ls", "ls -la", "head -n 5 jev-batch.json", "head -5 jev-batch.json", "grep -n option jev-batch.json", "rg -n needle jev-batch.json", "rg needle jev-batch.json src/a.mjs", "wc -l jev-batch.json", "diff -u a.json b.json", "shasum -a 256 jev-batch.json"]) assert.deepEqual(run(...call(bash(cmd), "ok")), CLEAR, `a plain read: ${cmd}`);
     for (const [cmd, why] of [
       ["cat jev-batch.json\nnode mutate.mjs", "a second line runs a script"],
       ["ls\nnode mutate.mjs", "a second line after a bare command"],
@@ -1276,6 +1276,14 @@ describe("only a batch file the transcript proves to be helper input is not an e
       ["/bin/cat jev-batch.json", "a command by path is not the listed one"],
       ["cat jev-batch.json | tee x", "a pipeline"],
       ["cat jev-batch.json > out.json", "a redirect"],
+      ["constructor --help", "an inherited property name is not a listed command"],
+      ["__proto__ --help", "an inherited property name is not a listed command"],
+      ["toString", "an inherited property name is not a listed command"],
+      ["hasOwnProperty x", "an inherited property name is not a listed command"],
+      ["rg * needle jev-batch.json", "a glob may expand to --pre=sh"],
+      ["rg needle ?ev-batch.json", "a glob with ?"],
+      ["rg needle [a-z]ev-batch.json", "a glob with a character class"],
+      ["cat jev-batch.jso*", "a glob in a read of the batch file itself"],
     ]) assert.deepEqual(run(...call(bash(cmd), "ok")), KEPT(0, 1), `${why}: ${JSON.stringify(cmd)}`);
     // The unknown command is still running while the Write finishes: a late Write result cannot start a chain.
     const m = bash("cat jev-batch.json\nnode mutate.mjs");
