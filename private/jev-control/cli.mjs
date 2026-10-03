@@ -334,7 +334,21 @@ async function cmdDecide(flags, ctx) {
       shown.receipt_note = `receipt not written: ${String(error?.message ?? error).slice(0, 80)}`;
     }
   }
+  const cleanup = cleanupLine(flags.file, shown.status);
+  if (cleanup) shown.cleanup = cleanup;
   return shown;
+}
+
+// R06: a dev session wrote six batch files and never removed one (the instruction was in `help decide`, read fifteen turns earlier),
+// so each stayed in the user's tree as an untracked file and counted as an edit. The result that ends a batch says it again, where the
+// model acts: only for a status after which the file is not rerun (selected, ordered, ask_user, incomplete; an expand, a refusal or an
+// invalid batch is fixed and run again) and only for a plain relative path a lone `rm -f` can name. The helper cannot tell
+// who created the file, hence the condition in the text.
+const CLEANUP_STATUSES = new Set(["selected", "ordered", "ask_user", "incomplete"]);
+const CLEANUP_PATH = /^[A-Za-z0-9_.][A-Za-z0-9_.\/-]*$/;
+export function cleanupLine(file, status) {
+  if (typeof file !== "string" || !CLEANUP_STATUSES.has(status) || !CLEANUP_PATH.test(file) || file.split("/").includes("..")) return null;
+  return `if you wrote ${file} for this decision, remove it now: rm -f ${file}, alone in its own command`;
 }
 
 async function cmdSearch(flags, ctx) {

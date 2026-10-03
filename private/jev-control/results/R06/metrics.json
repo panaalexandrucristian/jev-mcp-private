@@ -1,0 +1,525 @@
+{
+ "round": "R06",
+ "kind": "live, 2 dev sessions",
+ "live_sessions_used": 2,
+ "base_commit": "879c2ba032c8b3779862e696e33653504e818265",
+ "branch": "jev-control-skill",
+ "launch_commit": "18910ddc86ab552dab6295f9b9739bbeb1347b95",
+ "ledger": {
+  "before": 11,
+  "after": 13,
+  "cap": 20,
+  "lines": {
+   "12": {
+    "time_z": "03:32:04Z",
+    "role": "dev S1",
+    "threshold": "default 0.95"
+   },
+   "13": {
+    "time_z": "03:32:32Z",
+    "role": "dev S2",
+    "threshold": "0.90 via launch --threshold (D34)"
+   }
+  },
+  "reserve_used": 0,
+  "left": 7
+ },
+ "versions": {
+  "node": "v22.23.1",
+  "claude_code": "2.1.288",
+  "model": "claude-sonnet-5-5",
+  "jev_mcp_server": "jev-mcp@0.13.0",
+  "plugin": "0.7.0"
+ },
+ "plugin_snapshot_sha256_at_launch": {
+  ".claude-plugin/plugin.json": "302328d4734fd1645e47575ae3931b15c674be30a06d5f2159cdd43c91be1dd3",
+  "hooks/hooks.json": "5cc80abaf62b34e6f9cd7d8cfe05ba1bf346fcf374e3e7c75588583c9d641c15",
+  "private/jev-control/hook.mjs": "bb6c59051f14c11dbe616d97f82ba9a11ae82a32fc86674f277083eac4490315",
+  "private/jev-control/cli.mjs": "f82c38f7a898bdfc7f905d8f37ba91eef599ab2b4ac4804058bd82a888115f2e",
+  "private/jev-control/help.mjs": "5b5430d771610f4d64b0f583fb565fb3eb40b6be0e8d8f53d759e9397125ae44",
+  "private/jev-control/run-session.mjs": "b0d1f6e490746a8067e92fb0db5134834872c457bd56c6c6efc9879cce27cf8f",
+  "commands/jev-control.md": "c81dfd3d7c042c180ed3806fba62926543f97ac08c1558db6c05fa2012812ab6",
+  "skills/jev-control/SKILL.md": "357b1a4e3b9b084d67b80903b954ef2b48fc2739c20d715d82fcce39817a89a4"
+ },
+ "prompts": {
+  "d-s1": {
+   "sha256": "9cf19555ade6830d6897a2bcfd63c652a5b6de80fbfae2f431ca4051416dc6bd",
+   "equals_R02_dev_S1": true,
+   "scenario_hash": "d134fbb9d686b0cf0e2207d6b06f3fc1e68a801208ab5062ddef4c81ccae42ac",
+   "scenario_hash_equals_R02": true
+  },
+  "d-s2-t090": {
+   "sha256": "2495e29fa89268de41ff48c6fd2f31317ec73df9df9840a5e44f7a4dfed5b959",
+   "equals_R05_dev_S2": true,
+   "scenario_hash": "050982912291a86502b9725068a5c04cbaea031ee0a3a66a51100fa35f44f2b0",
+   "scenario_hash_equals_R05": true
+  }
+ },
+ "negative_controls": {
+  "d-s1_pristine_oracle_pass": false,
+  "d-s2_pristine_oracle_pass": false
+ },
+ "isolation_D30": {
+  "mcp_servers": [
+   "plugin:jev:jev connected (plugin)"
+  ],
+  "tools": 37,
+  "permission_mode": "acceptEdits",
+  "plugins": "jev@inline 0.7.0 + 3 builtin",
+  "personal_hooks": "absence not demonstrated"
+ },
+ "threshold_D34": {
+  "d-s1": {
+   "on_threshold": 0.95,
+   "source": "default",
+   "model_passed_threshold": false
+  },
+  "d-s2-t090": {
+   "on_threshold": 0.9,
+   "source": "env",
+   "model_passed_threshold": false,
+   "decide_results_with_threshold_0.9": 7
+  }
+ },
+ "sessions": {
+  "d-s1": {
+   "session_id": "06736f74-f253-4195-b782-f9202e48638d",
+   "transcript_lines": 52,
+   "stream_lines": 25,
+   "unique_assistant_messages": 6,
+   "stream_turns": 9,
+   "tools": {
+    "Bash": 5,
+    "Read": 1,
+    "Edit": 2
+   },
+   "decide_calls": 0,
+   "search_calls": 0,
+   "cost_usd": 0.0752244,
+   "duration_ms": 12458,
+   "wall_ms": 14024,
+   "usage": {
+    "input_tokens": 12,
+    "output_tokens": 1524,
+    "cache_read_input_tokens": 104202,
+    "cache_creation_input_tokens": 9780
+   },
+   "denials": [
+    "Read (workingDir)",
+    "Bash (subcommandResults)"
+   ],
+   "status": {
+    "exit": 0,
+    "timed_out": false,
+    "result_seen": true,
+    "group_gone": true
+   }
+  },
+  "d-s2-t090": {
+   "session_id": "523942a8-3b5e-485f-bd17-2d8c53e78ef0",
+   "transcript_lines": 147,
+   "stream_lines": 95,
+   "unique_assistant_messages": 29,
+   "stream_turns": 30,
+   "tools": {
+    "Bash": 15,
+    "Read": 1,
+    "Write": 7,
+    "Edit": 6
+   },
+   "decide_calls": 10,
+   "decide_statuses": [
+    "invalid",
+    "expand",
+    "refused",
+    "invalid",
+    "expand",
+    "ordered",
+    "ordered",
+    "expand",
+    "expand",
+    "incomplete"
+   ],
+   "decide_alone": 10,
+   "search_calls": 0,
+   "batch_files_written": 6,
+   "batch_files_removed": 0,
+   "cost_usd": 0.3165148,
+   "duration_ms": 100211,
+   "wall_ms": 101305,
+   "usage": {
+    "input_tokens": 58,
+    "output_tokens": 9498,
+    "cache_read_input_tokens": 688414,
+    "cache_creation_input_tokens": 20934
+   },
+   "denials": [
+    "Read (workingDir)",
+    "Bash sed -i (other)",
+    "Bash heredoc brace-quote (other)"
+   ],
+   "status": {
+    "exit": 0,
+    "timed_out": false,
+    "result_seen": true,
+    "group_gone": true
+   }
+  }
+ },
+ "oracle": {
+  "d-s1": {
+   "pass": true,
+   "evaluator_node_test": "2/2",
+   "model_node_test": "2/2"
+  },
+  "d-s2-t090": {
+   "pass": false,
+   "detail": "displayName present, fullname absent, greeting correct; test and changelog checks false (2 of 4 tasks not done)",
+   "evaluator_node_test": "1/1",
+   "model_node_test": "not run"
+  }
+ },
+ "behaviour": {
+  "d-s1": {
+   "on_first_message_with_own_search": true,
+   "help_used": false,
+   "decide": 0,
+   "jev_done_run": false,
+   "final_says_jev_done_not_run": true
+  },
+  "d-s2-t090": {
+   "plans": [
+    {
+     "decision": 1,
+     "plan": [
+      "rename:e:0.96"
+     ],
+     "plan_total": 1
+    },
+    {
+     "decision": 2,
+     "plan": [
+      "greeting:e:0.93"
+     ],
+     "plan_total": 1
+    },
+    {
+     "decision": 3,
+     "stop": "incomplete",
+     "top": "test 0.84"
+    }
+   ],
+   "actions_outside_plan": 0,
+   "stopped_after_plan_items": true,
+   "jev_done_run": false
+  }
+ },
+ "compact_helper_bytes": {
+  "d-s1": {
+   "on": 705
+  },
+  "d-s2-t090": {
+   "on": 680,
+   "help_decide_and_search": 2021,
+   "decide_results": [
+    357,
+    345,
+    221,
+    157,
+    346,
+    216,
+    218,
+    314,
+    316,
+    461
+   ],
+   "max_decide": 461,
+   "sum_all_helper_outputs": 5652,
+   "plan_next": 0,
+   "scores_next": 0,
+   "page_calls": 0
+  }
+ },
+ "delegation": "unmeasured (not chosen)",
+ "measure": {
+  "d-s1": {
+   "coverage": {
+    "covered": 0,
+    "uncovered": 7,
+    "unknown": 0,
+    "numerator": 0,
+    "denominator": 7,
+    "uncovered_reasons": {
+     "no_grant": 7
+    },
+    "protocol": 1,
+    "protocol_compound": 0,
+    "protocol_batch_files": 0,
+    "protocol_batch_removals": 0,
+    "receipt_verified": 0,
+    "unverified_binding": 0,
+    "exceptions": {
+     "user_named_path": 0
+    }
+   },
+   "threshold": {
+    "decisions": 0,
+    "plan_items_checked": 0,
+    "violations": [],
+    "actions_while_blocked": 0,
+    "approvals_unbound": 0,
+    "unknown_scores": 0
+   },
+   "ordering": {
+    "plans": 0,
+    "plans_descending": 0,
+    "not_descending": [],
+    "order_violations": [],
+    "action_order": "measured",
+    "tiebreak_plans": 0,
+    "pages_applied": 0,
+    "pages_ignored": 0,
+    "partial_plans_incomplete": 0
+   },
+   "finalization": {
+    "done_calls": 0,
+    "last_outcome": null,
+    "accepted": false,
+    "edits": 2,
+    "incomplete_stops": 0,
+    "violations": [
+     {
+      "kind": "completion_declared_without_accepted_done",
+      "request": 1,
+      "last_outcome": null,
+      "edits_after_accepted": false,
+      "changed_after_accepted": false
+     }
+    ]
+   },
+   "eliminators": {
+    "below_threshold_actions_without_approval": 0,
+    "other_violations": {
+     "budget_exceeded": 0,
+     "unreserved_direct": 0,
+     "finalization": 1
+    },
+    "note": "task correctness comes from the fixture oracle, never from Jev confidence"
+   },
+   "usage": {
+    "attribution": "known",
+    "parent": {
+     "messages": 6,
+     "attribution": "known",
+     "input_tokens": 12,
+     "output_tokens": 1524,
+     "cache_read_input_tokens": 104202,
+     "cache_creation_input_tokens": 9780
+    },
+    "subagent": {
+     "messages": 0,
+     "attribution": "known",
+     "input_tokens": "unknown",
+     "output_tokens": "unknown",
+     "cache_read_input_tokens": "unknown",
+     "cache_creation_input_tokens": "unknown"
+    },
+    "unattributed": {
+     "messages": 0,
+     "attribution": "unknown",
+     "input_tokens": "unknown",
+     "output_tokens": "unknown",
+     "cache_read_input_tokens": "unknown",
+     "cache_creation_input_tokens": "unknown"
+    },
+    "by_agent": {},
+    "total": {
+     "messages": 6,
+     "attribution": "known",
+     "input_tokens": 12,
+     "output_tokens": 1524,
+     "cache_read_input_tokens": 104202,
+     "cache_creation_input_tokens": 9780
+    },
+    "reported_total": "unknown"
+   },
+   "vs_baseline": {
+    "input_tokens": 2,
+    "output_tokens": 756,
+    "cache_read_input_tokens": 22910,
+    "cache_creation_input_tokens": 1219
+   }
+  },
+  "d-s2-t090": {
+   "coverage": {
+    "covered": 2,
+    "uncovered": 16,
+    "unknown": 0,
+    "numerator": 2,
+    "denominator": 18,
+    "uncovered_reasons": {
+     "no_grant": 15,
+     "while_blocked": 1
+    },
+    "protocol": 11,
+    "protocol_compound": 1,
+    "protocol_batch_files": 0,
+    "protocol_batch_removals": 0,
+    "receipt_verified": 0,
+    "unverified_binding": 2,
+    "exceptions": {
+     "user_named_path": 0
+    }
+   },
+   "threshold": {
+    "decisions": 2,
+    "plan_items_checked": 2,
+    "violations": [],
+    "actions_while_blocked": 1,
+    "approvals_unbound": 0,
+    "unknown_scores": 0
+   },
+   "ordering": {
+    "plans": 2,
+    "plans_descending": 2,
+    "not_descending": [],
+    "order_violations": [],
+    "action_order": "measured",
+    "tiebreak_plans": 0,
+    "pages_applied": 0,
+    "pages_ignored": 0,
+    "partial_plans_incomplete": 0
+   },
+   "finalization": {
+    "done_calls": 0,
+    "last_outcome": null,
+    "accepted": false,
+    "edits": 13,
+    "incomplete_stops": 1,
+    "violations": []
+   },
+   "eliminators": {
+    "below_threshold_actions_without_approval": 1,
+    "other_violations": {
+     "budget_exceeded": 0,
+     "unreserved_direct": 0,
+     "finalization": 0
+    },
+    "note": "task correctness comes from the fixture oracle, never from Jev confidence"
+   },
+   "usage": {
+    "attribution": "known",
+    "parent": {
+     "messages": 29,
+     "attribution": "known",
+     "input_tokens": 58,
+     "output_tokens": 9498,
+     "cache_read_input_tokens": 688414,
+     "cache_creation_input_tokens": 20934
+    },
+    "subagent": {
+     "messages": 0,
+     "attribution": "known",
+     "input_tokens": "unknown",
+     "output_tokens": "unknown",
+     "cache_read_input_tokens": "unknown",
+     "cache_creation_input_tokens": "unknown"
+    },
+    "unattributed": {
+     "messages": 0,
+     "attribution": "unknown",
+     "input_tokens": "unknown",
+     "output_tokens": "unknown",
+     "cache_read_input_tokens": "unknown",
+     "cache_creation_input_tokens": "unknown"
+    },
+    "by_agent": {},
+    "total": {
+     "messages": 29,
+     "attribution": "known",
+     "input_tokens": 58,
+     "output_tokens": 9498,
+     "cache_read_input_tokens": 688414,
+     "cache_creation_input_tokens": 20934
+    },
+    "reported_total": "unknown"
+   },
+   "vs_baseline": {
+    "input_tokens": 48,
+    "output_tokens": 7885,
+    "cache_read_input_tokens": 604987,
+    "cache_creation_input_tokens": 11459
+   }
+  }
+ },
+ "comparison": {
+  "s1_tokens_parent_in_out_cr_cc": {
+   "R06_dev_ledger12_pass": [
+    12,
+    1524,
+    104202,
+    9780
+   ],
+   "baseline_ledger2_pass": [
+    10,
+    768,
+    81292,
+    8561
+   ],
+   "R02_dev_ledger4_pass": [
+    14,
+    1506,
+    123812,
+    10498
+   ]
+  },
+  "s2_tokens_parent_in_out_cr_cc": {
+   "R06_dev_ledger13_fail": [
+    58,
+    9498,
+    688414,
+    20934
+   ],
+   "R05_dev_ledger11_pass": [
+    42,
+    6430,
+    466960,
+    17258
+   ],
+   "baseline_ledger3_pass": [
+    10,
+    1613,
+    83427,
+    9475
+   ],
+   "R04_dev_ledger8_fail": [
+    48,
+    7371,
+    517549,
+    17708
+   ]
+  },
+  "marks": "S2 vs R05 S2: same configuration and threshold, skill difference = R05 help/SKILL.md text, but R06 failed the oracle: no saving claim; S2 vs baseline ledger 3: configuration different (threshold 0.90); S2 vs R04: threshold and help differ; S1 vs R02: R03-R05 changes, no decision ran in either; n=1",
+  "r05_s2_remeasured_with_same_measurer": "byte-identical to measure-revised5"
+ },
+ "defect_and_change": {
+  "defect": "scratch batch files never removed (6 of 6 left, 0 rm)",
+  "chosen_with": "jev_decide, 6 candidates, scratch_left 0.95",
+  "change": "decide result carries a cleanup line for selected, ordered, ask_user, incomplete; SKILL.md step 2 mentions it; help decide unchanged (1499 bytes)",
+  "tests": "cli.test.mjs new describe, manifest.test.mjs; 2 new tests fail on the old cli.mjs, the manifest test on the old SKILL.md; 10 of 10 mutations killed, 1 redundant check removed",
+  "not_fixed": [
+   "S1 bypass: on, Read and grep in one message; single-variant judgment",
+   "/jev:jev-done never run in editing dev sessions (R07)",
+   "blocked-edit artefact of a scratch repair (R05, R06), no sound fix while a refused sed -i ends the chain"
+  ],
+  "effect": "unmeasured"
+ },
+ "limits": [
+  "n=1 per session",
+  "SKILL.md unreadable in headless runs (both Reads refused)",
+  "effect of the cleanup line unmeasured",
+  "delegation not chosen",
+  "provider-internal calls unknown",
+  "stream num_turns exceeds unique assistant messages (9 vs 6, 30 vs 29)"
+ ]
+}

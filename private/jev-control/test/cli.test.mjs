@@ -6,7 +6,7 @@ import { S3 } from "../fixtures/scenarios.mjs";
 import { materialize } from "../fixtures/lib.mjs";
 import { ASK_ID, CONTROL_IDS, GATHER_ID, KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
-import { compactOut } from "../cli.mjs";
+import { cleanupLine, compactOut } from "../cli.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
 import { batchOf, cli, CONTROL_CLI, controlEnv, gateAnswer, makeRepo, REPO_ROOT, run, serverLog, tempDir, writeFiles } from "./helpers.mjs";
 
@@ -341,6 +341,73 @@ describe("decide through the CLI", () => {
     const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
     assert.equal(r.code, 4);
     assert.equal(serverLog(env).length, 0);
+  });
+});
+
+describe("the decide result names the scratch batch file to remove (R06)", () => {
+  const FILE = "jev-batch.json";
+  const LINE = "if you wrote jev-batch.json for this decision, remove it now: rm -f jev-batch.json, alone in its own command";
+  const batchIn = (repo, obj) => writeFileSync(join(repo, FILE), JSON.stringify(obj));
+  it("selected carries the line, one line of at most 1500 bytes, naming the file as given", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: { noul: [{ p: p7([0.99, 0.97, 0.5, 0.4, 0.3]) }], decide: [{ selected: "o2", confidence: 0.96 }] } });
+    on(repo, env);
+    batchIn(repo, batchOf(5, { kind: "command" }));
+    const r = cli(["decide", ...SID, "--file", FILE], { env, cwd: repo });
+    assert.equal(r.json.status, "selected", r.stdout);
+    assert.equal(r.json.cleanup, LINE);
+    assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500);
+    assert.equal(r.stdout.trim().split("\n").length, 1);
+  });
+  it("an expand does not ask for removal (the file is fixed and run again); the incomplete that ends the batch does", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const none = { p: p7([0.8, 0.7, 0.6, 0.5, 0.4]) };
+    const env = controlEnv({ script: { noul: [none, none, none] } });
+    on(repo, env);
+    batchIn(repo, batchOf(5));
+    const first = cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", FILE], { env, cwd: repo });
+    assert.equal(first.json.status, "expand");
+    assert.equal(first.json.cleanup, undefined, "an expansion reruns the same file");
+    const b1 = batchOf(5, { extra: { new_material: "n1" } });
+    b1.options[0].evidence = ["new 1"];
+    batchIn(repo, b1);
+    assert.equal(cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", FILE], { env, cwd: repo }).json.cleanup, undefined);
+    const b2 = batchOf(5, { extra: { new_material: "n2" } });
+    b2.options[1].evidence = ["new 2"];
+    batchIn(repo, b2);
+    const last = cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", FILE], { env, cwd: repo });
+    assert.equal(last.json.status, "incomplete");
+    assert.equal(last.json.cleanup, LINE);
+  });
+  it("an invalid batch and a refused repository get no line", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    on(repo, env);
+    batchIn(repo, batchOf(3));
+    const invalid = cli(["decide", ...SID, "--file", FILE], { env, cwd: repo });
+    assert.equal(invalid.json.status, "invalid");
+    assert.equal(invalid.json.cleanup, undefined);
+    writeFileSync(join(repo, ".jev-flow-denylist"), "*\n");
+    const refused = cli(["decide", ...SID, "--file", FILE], { env, cwd: repo });
+    assert.equal(refused.json.status, "refused");
+    assert.equal(refused.json.cleanup, undefined);
+  });
+  it("cleanupLine names only a plain path a lone rm -f can remove, and only for a status that ends a batch", () => {
+    for (const status of ["selected", "ordered", "ask_user", "incomplete"]) assert.equal(cleanupLine(FILE, status), LINE);
+    for (const status of ["expand", "refused", "invalid", "unavailable", "budget_exhausted", "none_eligible", undefined]) assert.equal(cleanupLine(FILE, status), null, String(status));
+    assert.match(cleanupLine("sub/jev-batch.json", "selected"), /rm -f sub\/jev-batch\.json, alone/);
+    for (const bad of ["-", "-f", "--file", "../x.json", "a/../x.json", "a b.json", 'a"b.json', "a'b.json", "a$b.json", "a;b.json", "a|b.json", "a*.json", "/abs/x.json", "~x.json", "a\nb.json", "", "~", undefined, null, 5]) {
+      assert.equal(cleanupLine(bad, "selected"), null, JSON.stringify(bad));
+    }
+  });
+  it("the line is data the cap keeps: a long plan is paged, the line stays", () => {
+    const plan = Array.from({ length: 40 }, (_, i) => `option-number-${i}:e:0.9${i % 10}:0123456789ab`);
+    const line = compactOut({ status: "ordered", decision_id: "d1", plan, plan_total: 40, cleanup: LINE });
+    assert.ok(Buffer.byteLength(line) <= 1500);
+    const o = JSON.parse(line);
+    assert.equal(o.cleanup, LINE);
+    assert.equal(o.plan_total, 40);
+    assert.ok(Number.isInteger(o.plan_next) && o.plan.length === o.plan_next, "the cut plan is paged, never silent");
   });
 });
 

@@ -44,6 +44,7 @@ describe("skill and command", () => {
     assert.match(skill, /to a NEW file in the working directory \(for example `jev-batch\.json` when no file has that name; never overwrite a file you did not create for this; a Write outside the working directory, such as `\/tmp`, is refused in headless runs\)/);
     assert.match(skill, /`cli\.mjs decide --file <that file> \[--decision-id <id>\]` ALONE: a pipe, `;` or `&&` after it makes it an ordinary action that grants nothing/);
     assert.match(skill, /delete ONLY the file you created, with a lone `rm -f <that file>` in its own command/);
+    assert.match(skill, /a result that ends the batch \(`selected`, `ordered`, `ask_user`, `incomplete`\) repeats this in a `cleanup` line, naming the file as you passed it/, "R06: the decide result repeats the removal");
     assert.match(skill, /only when the transcript proves all of it: that Write created the file, a `decide --file` of the request on that path read that very version and succeeded, nothing that may change files ran meanwhile \(not even `node --test`\), and the lone `rm` removed it; a file left in the tree, or removed in a compound command, is an edit/);
     assert.match(skill, /Often only the next task is cleared .*never run it because the order seems obvious/);
     assert.equal(skill.includes("outside the repository"), false, "the old instruction (a /tmp file) is gone");
