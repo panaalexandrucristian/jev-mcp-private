@@ -145,9 +145,10 @@ def context(source_jsonl, handoff_real, version, evaluated_against, bases=()):
     blocks = eligible_blocks(recs, handoff_real, pos); mat, manifest, why = build_material(version["content"], bases)
     return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=blocks, material=mat, material_reason=why, manifest=manifest)
 
-def cmd_prepare(a):
+def prepare_one(a):
+    """The prepare result for one candidate -> (object, exit code); `cmd_prepare` prints it, `cmd_prepare_batch` collects it."""
     import discover as D, versions as V
-    def fail(*reasons, **extra): print(json.dumps(dict(ok=False, reasons=list(reasons), **extra), indent=1, ensure_ascii=False)); return 3
+    def fail(*reasons, **extra): return dict(ok=False, reasons=list(reasons), **extra), 3
     sp, how, amb = D.resolve_session_info(a.source, a.cwd)
     if amb: return fail("source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl")
     if not sp or not os.path.isfile(sp): return fail("source session not found")
@@ -171,16 +172,46 @@ def cmd_prepare(a):
     passage = passage_of(ctx["eligible_blocks"], a.source_quote)
     if passage is None: return fail("the source quote is not (exactly, case-sensitive, whitespace as in the record, inside ONE transcript record) in the eligible source of this version (%s; session_end stops before the verification activity, Jev calls are never source)" % a.evaluated_against)
     sc, ac = claims(a.detail, "R04")
-    print(json.dumps(dict(ok=True, contract="R04", detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
+    return (dict(ok=True, contract="R04", detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
                           version_ref=dict(write_tool_use_id=v["write_tool_use_id"], sha256=v["sha256"], evaluated_against=a.evaluated_against), handoff_source_path=reloc,
                           omission_ref_template=dict(detail=wsnorm(a.detail), source_check_id="<id of the check whose call used source_claim and source_passage>"),
-                          note="Call jev_verify twice: (1) claims=[source_claim], evidence=source_passage (verbatim, the WHOLE passage, nothing added); (2) claims=[absence_claim] (the bare detail, the ONLY claim of that call), evidence=material, verbatim and complete. Both checks carry the same version_ref. Only if (1) is verified > 0.95 AND (2) comes back `unsupported` > 0.95 with action auto, report a finding (type lost_detail): omission_ref, claim = absence_claim, check_id = the absence check, confidence = its confidence, quote_source = the exact quote. If (2) is verified or contradicted the note states the detail: record the check, report NO finding. Anything else stays UNRESOLVED."),
-                     indent=1, ensure_ascii=False)); return 0
+                          note="Call jev_verify twice: (1) claims=[source_claim], evidence=source_passage (verbatim, the WHOLE passage, nothing added); (2) claims=[absence_claim] (the bare detail, the ONLY claim of that call), evidence=material, verbatim and complete. Both checks carry the same version_ref. Only if (1) is verified > 0.95 AND (2) comes back `unsupported` > 0.95 with action auto, report a finding (type lost_detail): omission_ref, claim = absence_claim, check_id = the absence check, confidence = its confidence, quote_source = the exact quote. If (2) is verified or contradicted the note states the detail: record the check, report NO finding. Anything else stays UNRESOLVED."), 0)
+
+def cmd_prepare(a):
+    obj, code = prepare_one(a); print(json.dumps(obj, indent=1, ensure_ascii=False)); return code
+
+BATCH_KEYS = ("source", "file", "write_id", "evaluated_against", "cwd")
+
+def cmd_prepare_batch(a):
+    """Many candidates in ONE process, also across handoffs and versions: each spec item is {detail, source_quote} plus optional source/file/write_id/evaluated_against/cwd
+    overriding the command-line defaults; element i is exactly the object `prepare` prints for item i with those arguments (exit 3 if any element is not ok)."""
+    def bad(reason): print(json.dumps(dict(ok=False, reasons=[reason]), indent=1, ensure_ascii=False)); return 3
+    try: spec = json.load(open(a.spec, encoding="utf-8"))
+    except (OSError, ValueError) as e: return bad("spec unreadable: %s" % e)
+    items = spec.get("candidates") if isinstance(spec, dict) else spec
+    if not isinstance(items, list) or not items: return bad('spec must be a non-empty list (or {"candidates": [...]}) of {"detail", "source_quote"[, %s]}' % ", ".join(BATCH_KEYS))
+    args = []
+    for i, x in enumerate(items):
+        if not isinstance(x, dict) or not isinstance(x.get("detail"), str) or not isinstance(x.get("source_quote"), str): return bad("item %d: detail and source_quote must be strings" % i)
+        unknown = set(x) - {"detail", "source_quote"} - set(BATCH_KEYS)
+        if unknown: return bad("item %d: unknown keys %s" % (i, sorted(unknown)))
+        n = dict(vars(a), **{k: x[k] for k in BATCH_KEYS if k in x}, detail=x["detail"], source_quote=x["source_quote"])
+        if not all(isinstance(n.get(k), str) and n[k] for k in ("file", "write_id", "evaluated_against")): return bad("item %d: file, write_id and evaluated_against are required (item or command line)" % i)
+        if n["evaluated_against"] not in EVALUATED: return bad("item %d: evaluated_against must be one of %s" % (i, list(EVALUATED)))
+        args.append(argparse.Namespace(**n))
+    out, code = [], 0
+    for n in args:
+        obj, c = prepare_one(n); out.append(obj); code = max(code, c)
+    print(json.dumps(out, indent=1, ensure_ascii=False)); return code
 
 def main():
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True); p = sub.add_parser("prepare")
     p.add_argument("--source"); p.add_argument("--file", required=True); p.add_argument("--write-id", required=True, dest="write_id"); p.add_argument("--evaluated-against", choices=EVALUATED, required=True, dest="evaluated_against")
     p.add_argument("--detail", required=True); p.add_argument("--source-quote", required=True, dest="source_quote"); p.add_argument("--cwd")
-    return cmd_prepare(ap.parse_args())
+    b = sub.add_parser("prepare-batch")
+    b.add_argument("--source"); b.add_argument("--file"); b.add_argument("--write-id", dest="write_id"); b.add_argument("--evaluated-against", choices=EVALUATED, dest="evaluated_against")
+    b.add_argument("--spec", required=True); b.add_argument("--cwd")
+    a = ap.parse_args()
+    return cmd_prepare_batch(a) if a.cmd == "prepare-batch" else cmd_prepare(a)
 
 if __name__ == "__main__": sys.exit(main())
