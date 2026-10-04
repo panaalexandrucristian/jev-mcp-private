@@ -161,7 +161,7 @@ By default the Claude Code `Stop` hook only shows a notice when code changed wit
 
 ### Plugin version
 
-`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner, `0.3.0` for the aggregated gate report of round 3, R5/R6, `0.4.0` for the mechanical locator rerank of round 4, R7, `0.5.0` for the opt-in flow, `0.6.0` for the `handoff-verify` skill, `0.7.0` for the `jev-control` skill), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
+`.claude-plugin/plugin.json` and the `jev` entry in `.claude-plugin/marketplace.json` carry the private plugin's own semver (`0.1.0` for the F1–F5 fixes, `0.2.0` for the gate runner, `0.3.0` for the aggregated gate report of round 3, R5/R6, `0.4.0` for the mechanical locator rerank of round 4, R7, `0.5.0` for the opt-in flow, `0.6.0` for the `handoff-verify` skill, `0.7.0` for the `jev-control` skill, `0.7.1` for its positional threshold, documented `priorities` and 3000-byte decision cap), independent of the upstream `package.json` version (which stays untouched). Bump both, to the same value, with every change to the private plugin (skills, commands, agents, hooks, helpers, manifests): Claude Code uses the version to offer the update.
 
 ### Local state and checks
 
