@@ -63,6 +63,27 @@ describe("activation (D1, D2, D13, D16)", () => {
     const plain = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
     assert.equal(plain.json.notices, undefined);
   });
+  it("decide accepts string evidence and returns its normalizer notice; blank string evidence stays invalid", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: noulScript(p7([0.9, 0.5, 0.4, 0.3, 0.2])) });
+    on(repo, env);
+    const batch = batchOf(5);
+    batch.options[0].evidence = "one\ntwo";
+    const d = cli(["decide", ...SID, "--file", writeBatch(batch)], { env, cwd: repo });
+    assert.equal(d.json.status, "ask_user", d.stdout);
+    assert.equal(d.json.ask, "Approve o1?");
+    assert.deepEqual(d.json.notices, ["options[0].evidence: a string read as 2 lines"]);
+    assert.ok(serverLog(env).length > 0, "the batch reached Jev");
+    const repo2 = makeRepo({ "a.txt": "a\n" });
+    const env2 = controlEnv();
+    on(repo2, env2);
+    const blank = batchOf(5);
+    blank.options[0].evidence = "  ";
+    const b = cli(["decide", ...SID, "--file", writeBatch(blank)], { env: env2, cwd: repo2 });
+    assert.equal(b.json.status, "invalid", b.stdout);
+    assert.match(b.json.message, /evidence must have 1-3/);
+    assert.equal(serverLog(env2).length, 0, "nothing is sent for an invalid batch");
+  });
   it("without JEV_CONTROL_BUDGET_LIMIT the budget is 10000 calls per request", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv();

@@ -56,7 +56,7 @@ export function evidenceHash(lines) {
 /**
  * Validate and normalize a raw batch {decision, kind, options: [{id, text, evidence: [..], action?: {tool, target, ...arguments},
  * preconditions?: [{kind, path, sha256?}]}], priorities?, space_small?}. `root` (the repository) makes paths relative.
- * Returns {ok: true, batch, notices} or {ok: false, problems}; a notice names a repair that changed no meaning (merged evidence lines).
+ * Returns {ok: true, batch, notices} or {ok: false, problems}; a notice names a repair that changed no meaning (evidence read from a string, merged evidence lines).
  */
 export function normalizeBatch(raw, { root = null } = {}) {
   const problems = [];
@@ -79,7 +79,10 @@ export function normalizeBatch(raw, { root = null } = {}) {
     if (!SLUG.test(id) || id.length > 64) problems.push(`${where}.id must be a lowercase slug: a-z and 0-9 words joined by single _ or -, at most 64 characters`);
     else if (DECIDE_HATCHES.includes(id)) problems.push(`${where}.id "${id}" collides with a jev_decide escape hatch; use e.g. action_${id}`);
     if (!text || text.length > MAX_TEXT_CHARS) problems.push(`${where}.text must be 1-${MAX_TEXT_CHARS} characters`);
-    let evidence = Array.isArray(o.evidence) ? o.evidence.filter((e) => typeof e === "string" && e.trim() !== "").map((e) => e.trim()) : [];
+    // Evidence given as one string (a real headless session did this for all 5 options of one batch) is read as its non-empty lines.
+    let evidence = Array.isArray(o.evidence) ? o.evidence : typeof o.evidence === "string" ? o.evidence.split("\n") : [];
+    evidence = evidence.filter((e) => typeof e === "string" && e.trim() !== "").map((e) => e.trim());
+    if (typeof o.evidence === "string" && evidence.length && !CONTROL_IDS.includes(id)) notices.push(`${where}.evidence: a string read as ${evidence.length} line${evidence.length === 1 ? "" : "s"}`);
     if (CONTROL_IDS.includes(id)) {
       // The control options are always present; a model-supplied one only has to be well formed.
       if (!ids.has(id)) {

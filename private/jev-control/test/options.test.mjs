@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ASK_ID, GATHER_ID, normalizeBatch, optionActionHash, optionHash } from "../options.mjs";
+import { ASK_ID, evidenceHash, GATHER_ID, normalizeBatch, optionActionHash, optionHash } from "../options.mjs";
 import { batchOf } from "./helpers.mjs";
 
 const problemsOf = (raw) => {
@@ -42,6 +42,74 @@ describe("option batches (D6)", () => {
     const long = batchOf(5);
     long.options[0].evidence = ["a", "b", "c".repeat(400), "d".repeat(400)];
     assert.match(problemsOf(long).join(" "), /evidence must have 1-3 concrete lines \(merging the lines after the second would exceed 600 characters\)/);
+  });
+  it("reads evidence given as one string as its lines, with a notice, instead of refusing the batch", () => {
+    // A real headless session wrote every option's evidence as a single string (106-157 characters each).
+    const one = batchOf(5);
+    one.options[0].evidence = "  measured: 11 of 11 approvals matched the top option  ";
+    one.options[1].evidence = "first fact\n\nsecond fact\nthird fact\nfourth fact";
+    const n = normalizeBatch(one);
+    assert.equal(n.ok, true, JSON.stringify(n.problems));
+    assert.deepEqual(n.batch.options[0].evidence, ["measured: 11 of 11 approvals matched the top option"]);
+    assert.deepEqual(n.batch.options[1].evidence, ["first fact", "second fact", "third fact; fourth fact"]);
+    assert.deepEqual(n.notices, ["options[0].evidence: a string read as 1 line", "options[1].evidence: a string read as 4 lines", "options[1].evidence: 4 lines merged into 3"]);
+    for (const bad of ["", "   ", "x".repeat(601)]) {
+      const b = batchOf(5);
+      b.options[0].evidence = bad;
+      assert.equal(normalizeBatch(b).ok, false, JSON.stringify(bad));
+    }
+  });
+  it("reads CRLF strings and still refuses unsupported evidence values", () => {
+    const crlf = batchOf(5);
+    crlf.options[0].evidence = " first\r\n\r\n second \r\nthird\r\n";
+    const n = normalizeBatch(crlf);
+    assert.equal(n.ok, true, JSON.stringify(n.problems));
+    assert.deepEqual(n.batch.options[0].evidence, ["first", "second", "third"]);
+    assert.deepEqual(n.notices, ["options[0].evidence: a string read as 3 lines"]);
+    for (const bad of [42, { fact: "x" }, null, true, undefined, ["", " "], [1, 2]]) {
+      const b = batchOf(5);
+      b.options[0].evidence = bad;
+      assert.match(problemsOf(b).join(" "), /options\[0\]\.evidence must have 1-3 concrete lines/, JSON.stringify(bad) ?? "undefined");
+    }
+  });
+  it("normalizes supplied control-option strings without notices", () => {
+    const b = batchOf(5);
+    b.options.push({ id: GATHER_ID, text: "Gather", evidence: " g1\n\ng2\ng3\ng4 " }, { id: ASK_ID, text: "Ask", evidence: " a1\na2 " });
+    const n = normalizeBatch(b);
+    assert.equal(n.ok, true, JSON.stringify(n.problems));
+    // The control branch keeps at most three lines, silently (it was already so for arrays).
+    assert.deepEqual(n.batch.options.find((o) => o.id === GATHER_ID).evidence, ["g1", "g2", "g3"]);
+    assert.deepEqual(n.batch.options.find((o) => o.id === ASK_ID).evidence, ["a1", "a2"]);
+    assert.equal(n.batch.options.filter((o) => o.id === GATHER_ID).length, 1);
+    assert.equal(n.batch.options.filter((o) => o.id === ASK_ID).length, 1);
+    assert.deepEqual(n.notices, []);
+  });
+  it("string and array evidence give identical normalized hashes", () => {
+    const str = batchOf(5);
+    str.options[0].evidence = " Fact one \n\n Fact two ";
+    const arr = batchOf(5);
+    arr.options[0].evidence = ["Fact one", "Fact two"];
+    const s = normalizeBatch(str);
+    const a = normalizeBatch(arr);
+    assert.equal(s.ok, true, JSON.stringify(s.problems));
+    assert.equal(a.ok, true, JSON.stringify(a.problems));
+    assert.deepEqual(s.batch.options[0].evidence, a.batch.options[0].evidence);
+    assert.equal(optionHash(s.batch.options[0]), optionHash(a.batch.options[0]));
+    assert.equal(evidenceHash(s.batch.options[0].evidence), evidenceHash(a.batch.options[0].evidence));
+    assert.deepEqual(s.notices, ["options[0].evidence: a string read as 2 lines"]);
+    assert.deepEqual(a.notices, []);
+  });
+  it("reads string evidence before duplicate options merge", () => {
+    // Six options, so that merging one duplicate pair still leaves five distinct real options.
+    const b = batchOf(6);
+    b.options[1].text = b.options[0].text;
+    b.options[0].evidence = "x\ny";
+    b.options[1].evidence = ["z"];
+    const n = normalizeBatch(b);
+    assert.equal(n.ok, true, JSON.stringify(n.problems));
+    assert.deepEqual(n.batch.options[0].evidence, ["x", "y", "z"]);
+    assert.deepEqual(n.batch.options[0].merged, [b.options[1].id]);
+    assert.ok(n.notices.includes("options[0].evidence: a string read as 2 lines"));
   });
   it("refuses ids that collide with jev_decide's escape hatches", () => {
     for (const id of ["ask_user", "investigate", "none"]) {

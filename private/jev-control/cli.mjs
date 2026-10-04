@@ -347,7 +347,7 @@ async function cmdDecide(flags, ctx) {
     await session.close();
   }
   const shown = printable(result);
-  // A repair that changed no meaning (merged evidence lines) is reported, never silent.
+  // A repair that changed no meaning (evidence read from a string, merged evidence lines) is reported, never silent.
   if (normalized.notices?.length) shown.notices = normalized.notices.slice(0, 6);
   if (["selected", "ordered"].includes(shown.status) && result.provenance) {
     try {

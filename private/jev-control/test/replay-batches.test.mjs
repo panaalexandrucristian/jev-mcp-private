@@ -59,6 +59,15 @@ describe("replay-batches: replay", () => {
     assert.equal(after.broken, 0);
   });
 
+  it("replays a recorded invalid string-evidence batch as fixed through the default normalizer", () => {
+    const r = replayBatches([
+      { content: json(batch("one fact")), recorded: "invalid", recorded_problems: ["options[0].evidence must have 1-3 concrete lines"], root: ROOT },
+      { content: json(batch(["one fact"])), recorded: "ask_user", recorded_problems: [], root: ROOT },
+    ]);
+    assert.deepEqual({ replayed: r.replayed, now_invalid: r.now_invalid, fixed: r.fixed, broken: r.broken }, { replayed: 2, now_invalid: 0, fixed: 1, broken: 0 });
+    assert.deepEqual(r.now_problems, {});
+  });
+
   it("counts a batch that is not JSON as invalid now", () => {
     const r = replayBatches([{ content: "{not json", recorded: "invalid", recorded_problems: [] }], () => ({ ok: true }));
     assert.equal(r.now_invalid, 1);

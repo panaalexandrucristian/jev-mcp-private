@@ -5,7 +5,7 @@
 
 const DECIDE = [
   'decide --file <batch.json|-> [--decision-id <id>] [--expand]. One JSON object:',
-  '{"priorities":"<one line from the user\'s request; required unless on --priorities set them>","decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts; more are merged into the third (notices)>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
+  '{"priorities":"<one line from the user\'s request; required unless on --priorities set them>","decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts; more are merged into the third, a single string is read as its lines (notices)>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
   '- 5 to 18 real options; the limit 20 counts action_gather_evidence and action_ask_user, added if missing. "space_small":true only when fewer real alternatives exist.',
   '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash, edit: edit tools, delegate: Agent only). Others: optional.',
   '- order: one option per task, each with its own action. Often only the next task is cleared: do the plan items, then decide again for the rest; never run an option outside the plan. Other kinds: first option only.',

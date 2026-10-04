@@ -1326,6 +1326,16 @@ describe("only a batch file the transcript proves to be helper input is not an e
     assert.equal(a.coverage.uncovered, 0, "the removal is not an action either");
     assert.equal(a.eliminators.below_threshold_actions_without_approval, 0);
   });
+  const STRING_BATCH = () => {
+    const raw = JSON.parse(BATCH());
+    for (const o of raw.options) o.evidence = " a concrete fact ";
+    return json(raw);
+  };
+  it("exempts a string-evidence batch after a successful decide (measure.mjs normalizeBatch on the selected/ordered path)", () => {
+    const a = audit([prompt("go"), ...writeBatch(STRING_BATCH()), ...decideFile(ordered("o1")), ...remove(), final()]);
+    assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 0, violations: 0 });
+    assert.equal(a.coverage.uncovered, 0);
+  });
   describe("a decision the helper did not clear still read the batch, so its versions are helper input (R08)", () => {
     const failed = (code, o) => `Exit code ${code}\n${json(o)}`;
     const expandOut = (o = {}) => failed(2, { status: "expand", decision_id: "d1", kind: "order", threshold: 0.9, round: 0, calls: 1, tiebreaks: 0, reason: "none_above_threshold", expansions_left: 2, plan: [], plan_total: 0, scores: ["o1:0.8", "o2:0.18", "action_gather_evidence:0.15", "action_ask_user:0.12"], scores_total: 4, ...o });
@@ -1342,6 +1352,11 @@ describe("only a batch file the transcript proves to be helper input is not an e
     it("ask_user ends a batch the same way", () => {
       const a = audit([prompt("go"), ...writeBatch(), ...decideErr(failed(2, { status: "ask_user", decision_id: "d1", kind: "order", scores: ["o1:0.5", "action_ask_user:0.4"] })), ...remove(), final()]);
       assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 0, violations: 0 });
+    });
+    it("exempts a string-evidence batch after a scored exit-2 decide (measure.mjs normalizeBatch on the exit-2 path)", () => {
+      const a = audit([prompt("go"), ...writeBatch(STRING_BATCH()), ...decideErr(expandOut()), ...remove(), final()]);
+      assert.deepEqual(verdict(a), { files: 1, removals: 1, edits: 0, violations: 0 });
+      assert.equal(a.coverage.uncovered, 0);
     });
     it("a real edit still counts after such a result, and so does a version nothing read", () => {
       const blocked = audit([prompt("go"), ...writeBatch(), ...decideErr(incompleteOut()), ...edit("src/x.mjs"), ...remove(), final()]);
