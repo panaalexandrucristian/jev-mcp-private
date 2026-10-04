@@ -83,6 +83,40 @@ describe("activation (D1, D2, D13, D16)", () => {
     assert.equal(t.json.threshold, 0.95);
     assert.match(t.json.notice, /using 0\.95/);
   });
+  it("on takes the documented positional threshold (on [threshold]) and refuses an ambiguous one", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const r = on(repo, env, ["0.8"]);
+    assert.equal(r.json.threshold, 0.8);
+    assert.equal(r.json.threshold_source, "session");
+    const bad = on(repo, env, ["95"]);
+    assert.equal(bad.json.threshold, 0.95);
+    assert.match(bad.json.notice, /threshold 95 is not a number in \(0\.5, 1\)/);
+    assert.equal(on(repo, env, ["0.9", "--threshold", "0.9"]).json.threshold, 0.9);
+    assert.equal(on(repo, env, ["0.9", "--threshold", "0.90"]).json.threshold, 0.9, "the same number written two ways is not a conflict");
+    assert.match(cli(["help", "on"], { env, cwd: repo }).stdout, /on \[<x> \| --threshold <x>\]/);
+    const conflict = on(repo, env, ["0.8", "--threshold", "0.9"]);
+    assert.equal(conflict.code, 4);
+    assert.match(conflict.json.message, /differ/);
+    const extra = on(repo, env, ["0.8", "0.9"]);
+    assert.equal(extra.code, 4);
+    assert.match(extra.json.message, /at most one threshold/);
+    assert.equal(cli(["status", ...SID], { env, cwd: repo }).json.threshold, 0.9, "a refused on changes nothing");
+  });
+  it("the docs say what decide enforces: priorities come from on --priorities or the batch, else decide is invalid", () => {
+    const skill = readFileSync(join(REPO_ROOT, "skills", "jev-control-mode", "SKILL.md"), "utf8");
+    assert.match(skill, /`on --priorities "<one line>"`/);
+    assert.match(skill, /without either, `decide` is refused/);
+    const protocol = readFileSync(join(REPO_ROOT, "skills", "jev-control-mode", "reference", "protocol.md"), "utf8");
+    assert.match(protocol, /"priorities": "[^"]*required unless `on --priorities`/);
+    assert.doesNotMatch(protocol, /"priorities": "optional/);
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    assert.equal(cli(["on", ...SID], { env, cwd: repo }).json.priorities, null);
+    const r = cli(["decide", "--file", writeBatch(batchOf(5)), ...SID], { env, cwd: repo });
+    assert.equal(r.code, 4);
+    assert.match(r.json.message, /priorities are required/);
+  });
   it("refuses without a real session identity (nothing is activated)", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv();
@@ -604,8 +638,8 @@ describe("help without SKILL.md (R04)", () => {
       assert.equal(r.code, 0, args.join(" "));
       assert.equal(r.stdout, direct.stdout, args.join(" "));
     }
-    assert.ok(direct.stdout.length < 1500, `fits the output cap (${direct.stdout.length})`);
-    for (const word of ["--file", "--decision-id", "\"decision\"", "\"kind\"", "\"options\"", "\"evidence\"", "\"action\"", "old_string", "space_small", "new_material", "expand", "ask_user", "incomplete"]) {
+    assert.ok(Buffer.byteLength(direct.stdout) < 3000, `fits the decide output cap in bytes (${Buffer.byteLength(direct.stdout)})`);
+    for (const word of ["--file", "--decision-id", "\"priorities\"", "required unless on --priorities", "\"decision\"", "\"kind\"", "\"options\"", "\"evidence\"", "\"action\"", "old_string", "space_small", "new_material", "expand", "ask_user", "incomplete"]) {
       assert.ok(direct.stdout.includes(word), `mentions ${word}`);
     }
     assert.ok(direct.stdout.includes(KINDS.join("|")), "the kinds are the ones the helper accepts");
@@ -665,15 +699,15 @@ describe("help without SKILL.md (R04)", () => {
     assert.match(text, /Run decide alone \(a pipe, ; or && voids the grant\); then a lone rm of only that file, else an audited edit/, "S4: `decide ...; rm -f jev-batch.json` five times, never a genuine helper call");
     assert.match(text, /do the plan items, then decide again for the rest; never run an option outside the plan/, "S2: the changelog edit was not a plan item");
     assert.match(text, /status: selected\/ordered: do exactly the plan items/);
-    assert.ok(text.length < 1500, `fits the output cap (${text.length})`);
+    assert.ok(Buffer.byteLength(text) < 3000, `fits the decide output cap in bytes (${Buffer.byteLength(text)})`);
   });
-  it("R09: `help decide` asks that the final message START with Incomplete: (the audit accepts only /^Incomplete:/), like the rules, and still fits OUT_MAX in bytes through every alias", () => {
+  it("R09: `help decide` asks that the final message START with Incomplete: (the audit accepts only /^Incomplete:/), like the rules, and still fits the decide cap in bytes through every alias", () => {
     const direct = cli(["help", "decide"], { env: controlEnv(), cwd: outside() }).stdout;
     assert.match(direct, /incomplete: start the final message with "Incomplete:" \+ scores/);
     assert.match(direct, /start[^.]*Incomplete:/);
     assert.doesNotMatch(direct, /end with|ending with|finish with/);
     for (const args of [["decide", "--help"], ["decide", "-h"]]) assert.equal(cli(args, { env: controlEnv(), cwd: outside() }).stdout, direct, args.join(" "));
-    assert.ok(Buffer.byteLength(direct) < 1500, `${Buffer.byteLength(direct)} bytes`);
+    assert.ok(Buffer.byteLength(direct) < 3000, `${Buffer.byteLength(direct)} bytes`);
     const rules = PROTOCOL_RULES.match(/headless [^.]*Incomplete:/)[0];
     assert.match(rules, /start the final message with Incomplete:/, "the rules and the help say the same thing");
   });
@@ -1192,12 +1226,18 @@ describe("compact output never loses decision data silently", () => {
     withControlState(dir, (state) => {
       state.decisions.push({ id: "big", req: 1, ts: 1, kind: "order", t: 0.95, status: "ordered", round: 0, opts: longIds.map((id, i) => [id, 0.99 - i * 0.001, "h".repeat(8), "-"]), order: items, calls: 1, tb: 0, snap: null });
     });
+    const whole = cli(["page", ...SID, "--decision", "big", "--from", "0"], { env, cwd: repo });
+    assert.equal(whole.code, 0, whole.stdout);
+    assert.ok(Buffer.byteLength(whole.stdout.trim()) > 1500, `the page needs more than the 1500-byte cap (${Buffer.byteLength(whole.stdout.trim())})`);
+    assert.ok(Buffer.byteLength(whole.stdout.trim()) <= 3000, `and fits the 3000-byte decision cap (${Buffer.byteLength(whole.stdout.trim())})`);
+    assert.deepEqual(whole.json.plan, items, "all 20 long items in one page");
+    assert.equal(whole.json.plan_next, undefined);
     const seen = [];
     let from = 0;
     for (let guard = 0; guard < 10; guard++) {
       const r = cli(["page", ...SID, "--decision", "big", "--from", String(from)], { env, cwd: repo });
       assert.equal(r.code, 0, r.stdout);
-      assert.ok(Buffer.byteLength(r.stdout.trim()) <= 1500);
+      assert.ok(Buffer.byteLength(r.stdout.trim()) <= 3000, "a page of a decision has the decision cap");
       seen.push(...r.json.plan);
       if (r.json.plan_next === undefined) break;
       from = r.json.plan_next;
@@ -1220,9 +1260,27 @@ describe("compact output never loses decision data silently", () => {
     on(repo, none);
     const stop = cli(["decide", ...SID, "--file", writeBatch(batchOf(18)), "--decision-id", "stop1"], { env: none, cwd: repo });
     assert.equal(stop.json.status, "expand");
-    assert.ok(Buffer.byteLength(stop.stdout.trim()) <= 1500);
+    assert.ok(Buffer.byteLength(stop.stdout.trim()) <= 3000, "a decision has the 3000-byte cap");
+    assert.equal(stop.json.scores.length, 20, "all 20 raw scores fit one line: no page call is needed");
+    assert.equal(stop.json.scores_next, undefined);
+    assert.ok(Buffer.byteLength(cli(["status", ...SID], { env: none, cwd: repo }).stdout.trim()) <= 1500, "other commands keep 1500");
     assert.equal(stop.json.scores[0], "o1:0.95", "the exact value, so that .95 is not mistaken for a higher score");
     assert.equal(stop.json.scores_total, 20);
+  });
+  it("a 20-score decide result over 1500 bytes uses the 3000-byte cap", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: { noul: [{ p: [0.9, ...Array(17).fill(0.3), 0.1, 0.1] }] } });
+    on(repo, env);
+    const batch = batchOf(18);
+    batch.options.forEach((o, i) => { o.id = `option_${String(i).padStart(2, "0")}_${"x".repeat(54)}`; }); // 64 characters, the longest id
+    const r = cli(["decide", ...SID, "--file", writeBatch(batch), "--decision-id", "wide1"], { env, cwd: repo });
+    assert.equal(r.json.status, "expand");
+    const bytes = Buffer.byteLength(r.stdout.trim());
+    assert.ok(bytes > 1500, `the result needs more than the 1500-byte cap (${bytes})`);
+    assert.ok(bytes <= 3000, `and fits the 3000-byte decide cap (${bytes})`);
+    assert.equal(r.json.scores.length, 20, "all 20 raw scores in one line");
+    assert.equal(r.json.scores_next, undefined, "no page call is needed");
+    assert.ok(Buffer.byteLength(cli(["status", ...SID], { env, cwd: repo }).stdout.trim()) <= 1500, "other commands keep 1500");
   });
 });
 

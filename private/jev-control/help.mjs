@@ -1,11 +1,11 @@
 // Compact usage text for `cli.mjs help [command]` and `cli.mjs <command> --help` (R04). A session that cannot Read
 // skills/jev-control-mode/SKILL.md (a Read outside the working directory is refused in a headless run) has nothing else that
 // says what a batch looks like: two dev sessions tried `--help`, and one spent five invalid `decide` calls finding the format.
-// No session, repository or Jev call is needed; each topic stays well under the 1.5 KB output cap.
+// No session, repository or Jev call is needed; `help decide` stays under the 3 KB decide cap, every other topic well under 1.5 KB.
 
 const DECIDE = [
   'decide --file <batch.json|-> [--decision-id <id>]. One JSON object:',
-  '{"decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
+  '{"priorities":"<one line from the user\'s request; required unless on --priorities set them>","decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
   '- 5 to 18 real options; the limit 20 counts action_gather_evidence and action_ask_user, added if missing. "space_small":true only when fewer real alternatives exist.',
   '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash, edit: edit tools, delegate: Agent only). Others: optional.',
   '- order: one option per task, each with its own action. Often only the next task is cleared: do the plan items, then decide again for the rest; never run an option outside the plan. Other kinds: first option only.',
@@ -20,7 +20,7 @@ const SEARCH = [
 ].join("\n");
 
 const LINES = {
-  on: "on [--threshold <x>] [--priorities \"<one line>\"]: switch the mode on (the threshold is strictly > T, valid in (0.5, 1), default 0.95).",
+  on: "on [<x> | --threshold <x>] [--priorities \"<one line>\"]: switch the mode on (the threshold is strictly > T, valid in (0.5, 1), default 0.95).",
   off: "off: switch the mode off.",
   status: "status: show the mode, threshold and priorities.",
   threshold: "threshold <x>: change the threshold for later decisions (valid in (0.5, 1); an invalid value gives 0.95).",

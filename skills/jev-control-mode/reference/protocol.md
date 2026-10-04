@@ -15,7 +15,7 @@ The contract of the mode. Everything here is implemented by `private/jev-control
 {
   "decision": "Which module should hold the fix?",
   "kind": "approach",
-  "priorities": "optional one-line override of the session priorities",
+  "priorities": "one line from the user's request; required unless `on --priorities` set them (else decide is invalid: priorities are required)",
   "space_small": false,
   "new_material": "only on an expansion round: what is new",
   "options": [
@@ -41,7 +41,7 @@ The contract of the mode. Everything here is implemented by `private/jev-control
 5. A single eligible option needs no `jev_decide` (it requires at least two candidates). **What Jev reads.** The tie-break (`jev_decide`) gets each tied option's evidence followed by its whole concrete action in its `evidence` (12000 characters in all) and the boundary rerank gets the action in each candidate's text (2000 characters); when the material of the tied options does not fit, the step stops as `tie_unresolved` (reason `action_material_too_large`) and the expansion/ask rule applies: it never chooses on a cut payload. An option whose action sanitizing could not show whole (a suspicious line was dropped) is reported in `unavailable` as `action_material_omitted` and is not scored, so it is never authorized. Credentials are redacted before anything is sent; the receipt, the state and the plan keep only hashes and compact labels.
 6. A control option placed first means nothing is executed: gathering evidence is an expansion round, asking the user stops. Placed later in an `order` plan it becomes a `suspend` point: items after it wait.
 
-Result (one line, ≤ 1.5 KB): `status`, `decision_id`, `kind`, `threshold`, `round`, `calls` (real attempts, retries included), `tiebreaks`, `unavailable?`, `receipt` and the decision lists, which are never cut silently:
+Result (one line, ≤ 3 KB; every other helper output stays ≤ 1.5 KB): `status`, `decision_id`, `kind`, `threshold`, `round`, `calls` (real attempts, retries included), `tiebreaks`, `unavailable?`, `receipt` and the decision lists, which are never cut silently:
 
 - `plan`: items `id:step:score:action-hash`; step `e` execute, `r` ordered reserve, `s` suspend, `x` after a suspend; `score` the **raw** probability (`0.95001` is printed and logged as `0.95001`, never rounded); the hash is the first 12 hex characters of the SHA-256 of the option's action (`-` for none).
 - `scores` (only for a stop such as `expand`, `ask_user`, `incomplete`): `id:raw` strings, descending.

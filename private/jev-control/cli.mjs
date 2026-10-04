@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // jev-control command line (Node 22, standard library plus the jev-flow modules).
 // Jev is called here, outside the model's context, with compact one-line JSON
-// output (at most 1.5 KB). Usage (the plugin root is ${CLAUDE_PLUGIN_ROOT}):
+// output (at most 1.5 KB; 3 KB for a decision: decide and page). Usage (the plugin root is ${CLAUDE_PLUGIN_ROOT}):
 //   cli.mjs help [command]   (also <command> --help: usage and the decide batch format; needs no session)
-//   cli.mjs on [--threshold x] [--priorities "one line"]
+//   cli.mjs on [<x> | --threshold <x>] [--priorities "one line"]
 //   cli.mjs off | status | threshold <x>
 //   cli.mjs decide --file <batch.json|-> [--decision-id id] [--headless] [--source subagent]
 //   cli.mjs search --query <text> [--single] [--exact-path p] [--search-id id --widen] [--source subagent]
@@ -43,6 +43,8 @@ import { controlSessionDir, hasSessionId, loadControlState, oneLine, repoKey, se
 import { DEFAULT_THRESHOLD, parseThreshold, resolveThreshold } from "./threshold.mjs";
 
 const OUT_MAX = 1500;
+// A decision result (and its pages) gets a larger cap: a full 20-option batch (plan + scores + cleanup) fits one line without paging.
+const DECIDE_OUT_MAX = 3000;
 const EXIT = { ok: 0, internal: 1, user: 2, unavailable: 3, invalid: 4 };
 
 const STATUS_EXIT = {
@@ -146,8 +148,8 @@ export function compactOut(object, max = OUT_MAX, { from = {} } = {}) {
   return JSON.stringify(build(o).out);
 }
 
-function print(object) {
-  process.stdout.write(`${compactOut(object)}\n`);
+function print(object, max = OUT_MAX) {
+  process.stdout.write(`${compactOut(object, max)}\n`);
 }
 
 // What the model sees right after `on` is the compact protocol (R09, D46; rules.mjs): the same text as the hook's activation.
@@ -217,7 +219,9 @@ const OFF = { status: "refused", message: "jev-control is off for this session: 
 async function cmdOn(flags, ctx) {
   if (nodeMajor() < 22) return { status: "refused", message: `Node ${process.versions.node} is too old: jev-control needs Node 22 or newer` };
   if (loadDenylist(ctx.repoRoot).disabled) return { status: "refused", message: "the repository opts out of Jev (.jev-flow-denylist): jev-control does not start" };
-  const threshold = resolveThreshold({ session: flags.threshold ?? null, env: ctx.env });
+  if (flags._.length > 2) return { status: "invalid", message: `on takes at most one threshold, got: ${flags._.slice(1).join(" ").slice(0, 60)}` };
+  if (flags.threshold !== undefined && flags._[1] !== undefined && Number(flags.threshold) !== Number(flags._[1])) return { status: "invalid", message: "on: --threshold and the positional threshold differ; give one of them" };
+  const threshold = resolveThreshold({ session: flags.threshold ?? flags._[1] ?? null, env: ctx.env });
   const caller = new BudgetedCaller({ dir: ctx.dir, env: ctx.env });
   const session = await caller.open();
   if (!session.ok) return { status: "refused", message: `Jev unavailable, so the tool contracts cannot be checked and the mode does not start: ${String(session.reason).slice(0, 200)}` };
@@ -372,7 +376,7 @@ async function cmdDecide(flags, ctx) {
 // so each stayed in the user's tree as an untracked file and counted as an edit. The result that ends a batch says it again, where the
 // model acts: only for a status after which the file is not rerun (selected, ordered, ask_user, incomplete; an expand, a refusal or an
 // invalid batch is fixed and run again) and only for a plain relative path a lone `rm -f` can name, short enough that the line
-// (which repeats the path twice) never crowds the plan out of the 1500-byte cap (compactOut drops the line whole if it still does).
+// (which repeats the path twice) never crowds the plan out of the 3000-byte decide cap (compactOut drops the line whole if it still does).
 // The helper cannot tell who created the file, hence the condition in the text.
 const CLEANUP_STATUSES = new Set(["selected", "ordered", "ask_user", "incomplete"]);
 const CLEANUP_PATH_MAX = 120;
@@ -431,7 +435,7 @@ function cmdPage(flags, ctx) {
   if (!decision) return { status: "refused", message: "unknown decision id" };
   const items = part === "plan" ? decision.order : decision.opts.filter((o) => typeof o[1] === "number").sort((a, b) => b[1] - a[1]).map((o) => `${o[0]}:${o[1]}`);
   if (from > items.length) return { status: "invalid", message: `--from is past the end (${items.length} items)` };
-  return { raw: true, line: compactOut({ status: "ok", decision_id: decision.id, part, from, [part]: items }, OUT_MAX, { from: { [part]: from } }) };
+  return { raw: true, line: compactOut({ status: "ok", decision_id: decision.id, part, from, [part]: items }, DECIDE_OUT_MAX, { from: { [part]: from } }) };
 }
 
 const BUDGET_REFUSALS = {
@@ -584,7 +588,7 @@ export async function main(argv, env = process.env) {
     }
     return result.code;
   }
-  print(result);
+  print(result, cmd === "decide" ? DECIDE_OUT_MAX : OUT_MAX);
   if (result.status === "ok") return EXIT.ok;
   return STATUS_EXIT[result.status] ?? EXIT.user;
 }
