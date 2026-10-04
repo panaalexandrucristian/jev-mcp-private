@@ -13,16 +13,16 @@ const frontmatter = (text) => {
   return Object.fromEntries(m[1].split("\n").map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]));
 };
 
-describe("the plugin ships jev-control as 0.7.1", () => {
-  it("both manifests carry 0.7.1", () => {
+describe("the plugin ships jev-control as 0.7.2", () => {
+  it("both manifests carry 0.7.2", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.7.1");
-    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.7.1");
+    assert.equal(plugin.version, "0.7.2");
+    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.7.2");
   });
   it("PRIVATE.md documents the version, the section and the new check", () => {
     const text = read("PRIVATE.md");
-    assert.match(text, /`0\.7\.0` for the `jev-control` skill, `0\.7\.1` for its positional threshold/);
+    assert.match(text, /`0\.7\.0` for the `jev-control` skill, `0\.7\.1` for its positional threshold.*`0\.7\.2` for `handoff-verify`/);
     assert.match(text, /^## Jev control$/m);
     assert.match(text, /node --test private\/jev-control\/test\//);
     assert.match(text, /Nothing has been measured live yet/);
