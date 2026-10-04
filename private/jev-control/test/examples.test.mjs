@@ -38,6 +38,8 @@ function roundsOf(text) {
   const rounds = [];
   let round = null;
   for (const b of blocksOf(text)) {
+    // The documented helper command of a round says whether an expansion was requested (--expand).
+    if (b.lang === "sh" && round && /^\*\*Helper command\*\*/.test(b.label ?? "")) round.expand = /\s--expand(\s|$)/.test(b.body);
     if (b.lang !== "json") continue;
     const label = b.label ?? "";
     if (/: batch\*\*|^\*\*Decision \d+.*: batch/.test(label) || /batch\*\*/.test(label)) {
@@ -99,7 +101,7 @@ describe("the decision examples are executable specifications", () => {
             return { ok: true, result: step.response, attempts: 1 };
           },
         };
-        const result = await runDecision(n.batch, { caller, session: {}, dir, T: 0.95, priorities: "fix it with the smallest correct change", headless: false, decisionId: round.output.decision_id, now: Date.now });
+        const result = await runDecision(n.batch, { caller, session: {}, dir, T: 0.95, priorities: "fix it with the smallest correct change", headless: false, decisionId: round.output.decision_id, expand: round.expand === true, now: Date.now });
         assert.equal(queue.length, 0, `${f} round ${i}: documented calls that were never made`);
         assert.equal(compactOut(printable(result)), JSON.stringify(round.output), `${f} round ${i}: helper output`);
       }

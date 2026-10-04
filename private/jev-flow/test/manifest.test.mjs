@@ -86,8 +86,8 @@ describe("plugin manifests (F5)", () => {
     assert.equal(entry.version, plugin.version);
   });
 
-  it("the opt-in activation (round 5) is still wired in the plugin version 0.7.2 (jev-control)", () => {
-    assert.equal(plugin.version, "0.7.2");
+  it("the opt-in activation (round 5) is still wired in the plugin version 0.7.3 (jev-control)", () => {
+    assert.equal(plugin.version, "0.7.3");
     const hooks = JSON.parse(readFileSync(join(REPO_ROOT, "hooks", "hooks.json"), "utf8")).hooks;
     assert.match(hooks.PostToolUse[0].matcher, /(^|\|)Agent\|Task(\||$)/);
     assert.equal(hooks.SubagentStop[0].matcher, "jev-locator|jev:jev-locator");

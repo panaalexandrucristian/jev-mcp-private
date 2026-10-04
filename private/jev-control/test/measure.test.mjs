@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { normalizeBatch } from "../options.mjs";
-import { audit, collectEvents, compareUsage, parseJsonl, STOP_STATUSES, toMarkdown, usageSummary } from "../measure.mjs";
+import { audit as rawAudit, collectEvents, compareUsage, parseJsonl, STOP_STATUSES, toMarkdown, usageSummary } from "../measure.mjs";
 import { SKILL_DIR } from "../run-session.mjs";
 import { run, tempDir } from "./helpers.mjs";
+
+// These cases exercise the limit itself, so they audit against a small one.
+const audit = (records, opts = {}) => rawAudit(records, { budgetLimit: 25, ...opts });
 
 let n = 0;
 const uid = () => `toolu_${++n}`;
@@ -409,6 +412,11 @@ describe("Jev calls and budget", () => {
     ], "the second request starts at 25 again and its own approval raised it");
     assert.deepEqual(a.jev_calls.violations, [{ kind: "budget_exceeded", request: 1, attempts: 26, limit: 25 }]);
     assert.deepEqual(a.budget, { approvals_bound: 1, approvals_unbound: 0, approvals_over_quantum: 0, unbound: [] });
+  });
+  it("by default the audit limit is 10000 calls per request, so 26 attempts are no violation", () => {
+    const a = rawAudit([prompt("go"), ...decide(decideOut({ calls: 20, status: "expand", scores: [] })), ...call(helper("search", "--query q"), json({ status: "none_eligible", jev_calls: 6 }))]);
+    assert.deepEqual(a.jev_calls.per_request, [{ request: 1, helper_attempts: 26, direct: 0, approved_extra: 0, limit: 10000 }]);
+    assert.deepEqual(a.jev_calls.violations, []);
   });
   it("an invented budget bump (no such user message) keeps the limit at 25, so attempt 26 is a violation", () => {
     const recs = [

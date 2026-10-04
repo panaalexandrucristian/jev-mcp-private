@@ -232,7 +232,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 | the raw `jev_noul` response | 2384 | **no** |
 | the helper's one-line output | 178 | yes |
 
-Calling `jev_noul` directly from the model would put the payload and the raw response in the context and would need a reserve/confirm pair around the call. Through the helper the attempt is counted at the client boundary (1 of 25, source `helper`), the data are sanitized and checked against `.jev-flow-denylist` before anything is sent, and a signed receipt of the decision is kept in the session state (a receipt proves the helper's metadata, not that the action ran).
+Calling `jev_noul` directly from the model would put the payload and the raw response in the context and would need a reserve/confirm pair around the call. Through the helper the attempt is counted at the client boundary (1 of 10000, source `helper`), the data are sanitized and checked against `.jev-flow-denylist` before anything is sent, and a signed receipt of the decision is kept in the session state (a receipt proves the helper's metadata, not that the action ran).
 
 **Action:** run `node --test test/pagination.test.mjs`.
 

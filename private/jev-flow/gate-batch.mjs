@@ -37,6 +37,18 @@ export const BATCH_LIMITS = Object.freeze({
   testsChars: 48_000,
 });
 
+/** Per-call payload budget when the provider accepts less than the tool contract (measured on OpenRouter: 100000 characters
+ * per jev_gate call passed, 150000 failed with HTTP 400). JEV_GATE_PART_CHARS overrides it for every provider. */
+export const OPENROUTER_PART_CHARS = 90_000;
+const MIN_PART_CHARS = 20_000;
+
+/** The per-call character budget for a provider, or null for the tool's own limits. */
+export function partCharsFor(provider, env = process.env) {
+  const raw = env?.JEV_GATE_PART_CHARS;
+  if (typeof raw === "string" && /^\d+$/.test(raw.trim()) && Number(raw) >= MIN_PART_CHARS) return Number(raw);
+  return provider === "openrouter" ? OPENROUTER_PART_CHARS : null;
+}
+
 const LABEL_RE = /^\[jev-flow batch v2 id=([0-9a-f]{32}) part=(\d{1,3})\/(\d{1,3}) slice=(\d{1,3})\/(\d{1,3}) claims=([0-9a-f]{16}) diff=([0-9a-f]{16}) snap=([0-9a-f]{64})\]$/;
 
 function sha256(text) {
@@ -367,8 +379,7 @@ function renderCommand(c) {
 }
 
 /** Evidence items for one catalog entry, split into identified continuations when oversized. */
-function evidenceItems(id, header, body) {
-  const budget = BATCH_LIMITS.evidenceItemChars;
+function evidenceItems(id, header, body, budget = BATCH_LIMITS.evidenceItemChars) {
   const whole = `${header}\n${body}`;
   if (whole.length <= budget) return [{ id, text: whole }];
   const chunks = splitExact(body, Math.max(1000, budget - header.length - 40));
@@ -386,8 +397,14 @@ function evidenceItems(id, header, body) {
  * ok is false, calls is empty: nothing must be sent as if it were complete.
  * Structural pairing does not prove that the evidence supports the claim.
  */
-export function prepareGateBatch(input, { denylist, snapshot }) {
+export function prepareGateBatch(input, { denylist, snapshot, partChars = null }) {
   const problems = [];
+  // An optional budget for each call's whole payload (request, diff slice, tests, claims, evidence): slices, evidence items and
+  // the tests field shrink with it and claims spread over more parts. Without it the tool's own limits apply, as before.
+  const P = Number.isInteger(partChars) && partChars >= MIN_PART_CHARS ? partChars : null;
+  const itemBudget = P ? Math.min(BATCH_LIMITS.evidenceItemChars, Math.floor(P * 0.3)) : BATCH_LIMITS.evidenceItemChars;
+  const sliceBudget = P ? Math.min(BATCH_LIMITS.diffSliceChars, Math.floor(P * 0.3)) : BATCH_LIMITS.diffSliceChars;
+  const testsBudget = P ? Math.min(BATCH_LIMITS.testsChars, Math.floor(P * 0.1)) : BATCH_LIMITS.testsChars;
   const limits = { redactions: [], omitted: [], omitted_lines: 0, uncited_hunks: [], tests_truncated_chars: 0, partitioned: false };
   const fail = () => ({ ok: false, problems, limits, batch: null, hunks: [], calls: [] });
   if (!input || typeof input !== "object") {
@@ -429,7 +446,7 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
   const catalog = new Map();
   const units = diffUnits(cleanDiff);
   const hunks = units.filter((u) => u.kind === "hunk");
-  for (const h of hunks) catalog.set(h.id, evidenceItems(h.id, `[${h.id}] ${h.path ?? "(unknown path)"}`, h.text));
+  for (const h of hunks) catalog.set(h.id, evidenceItems(h.id, `[${h.id}] ${h.path ?? "(unknown path)"}`, h.text, itemBudget));
   commands.forEach((c, i) => {
     const id = `cmd-${i + 1}`;
     if (!c || typeof c.command !== "string" || c.command.trim() === "" || typeof c.output !== "string") {
@@ -439,7 +456,7 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
     if (c.exit !== null && c.exit !== undefined && !Number.isInteger(c.exit)) problems.push(`${id}: exit must be an integer or null (unknown)`);
     const text = absorb(sanitizeText(renderCommand({ ...c, exit: c.exit ?? null })), id);
     const [header, ...body] = text.split("\n");
-    catalog.set(id, evidenceItems(id, `[${id}] ${header}`, body.join("\n")));
+    catalog.set(id, evidenceItems(id, `[${id}] ${header}`, body.join("\n"), itemBudget));
   });
   excerpts.forEach((x, i) => {
     const label = `excerpts[${i}]`;
@@ -456,7 +473,7 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
       return;
     }
     const range = Array.isArray(x.lines) && x.lines.length === 2 ? `:${x.lines[0]}-${x.lines[1]}` : "";
-    catalog.set(x.id, evidenceItems(x.id, `[${x.id}] ${x.path}${range}`, absorb(sanitizeText(x.text), `excerpt ${x.id}`)));
+    catalog.set(x.id, evidenceItems(x.id, `[${x.id}] ${x.path}${range}`, absorb(sanitizeText(x.text), `excerpt ${x.id}`), itemBudget));
   });
 
   // Claims: text, de-duplication, evidence resolution.
@@ -493,11 +510,18 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
   // continues in the next; a file header that does not fit starts a new slice,
   // so it always travels with the beginning of its first hunk.
   const slices = [];
-  const budget = BATCH_LIMITS.diffSliceChars;
-  let cur = { text: "", hunks: new Set() };
+  const budget = sliceBudget;
+  // frags: the piece of each hunk this slice holds, in order (used as that hunk's evidence under a payload budget).
+  let cur = { text: "", hunks: new Set(), frags: [] };
   const flush = () => {
     slices.push(cur);
-    cur = { text: "", hunks: new Set() };
+    cur = { text: "", hunks: new Set(), frags: [] };
+  };
+  const addFrag = (u, piece) => {
+    if (u.kind !== "hunk") return;
+    const last = cur.frags.at(-1);
+    if (last && last.id === u.id) last.text += piece;
+    else cur.frags.push({ id: u.id, path: u.path, text: piece });
   };
   for (const u of units) {
     let text = u.text;
@@ -505,6 +529,7 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
       const room = budget - cur.text.length;
       if (text.length <= room) {
         cur.text += text;
+        addFrag(u, text);
         if (u.id) cur.hunks.add(u.id);
         break;
       }
@@ -517,6 +542,7 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
         cut = room;
       }
       cur.text += text.slice(0, cut);
+      addFrag(u, text.slice(0, cut));
       if (u.id) cur.hunks.add(u.id);
       text = text.slice(cut);
       flush();
@@ -537,8 +563,29 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
   });
   if (problems.length) return fail();
 
-  // Pack each slice's claims into calls within the evidence limits.
-  const itemsOf = (claim) => [...claim.ids].flatMap((id) => catalog.get(id));
+  // Tests field: rendered command output, cut visibly when too long.
+  let tests;
+  const cmdTexts = [...catalog.entries()].filter(([id]) => id.startsWith("cmd-")).map(([, items]) => items.map((it) => it.text).join("\n"));
+  if (cmdTexts.length) {
+    tests = cmdTexts.join("\n\n");
+    if (tests.length > testsBudget) {
+      limits.tests_truncated_chars = tests.length - testsBudget;
+      tests = `${tests.slice(0, testsBudget)}\n[jev-flow: tests field cut, ${limits.tests_truncated_chars} characters omitted here; the full output is in the cmd-* evidence items]`;
+    }
+  }
+
+  // Pack each slice's claims into calls within the evidence limits (and, with a budget, within the call's whole payload).
+  // Room per call: the label and identification header are counted with a margin.
+  const evidenceRoom = (slice) => (P ? P - cleanRequest.length - 400 - (tests?.length ?? 0) - slice.text.length : GATE_LIMITS.evidenceChars);
+  // Under a payload budget a claim's hunk evidence is the part of that hunk the call's own slice holds (a whole hunk can be
+  // larger than one call); command output and excerpts stay whole. Without a budget: whole hunks, as before.
+  const hunkIds = new Set(hunks.map((h) => h.id));
+  const itemsOf = (claim, si) =>
+    [...claim.ids].flatMap((id) => {
+      if (!P || !hunkIds.has(id)) return catalog.get(id);
+      const frags = slices[si].frags.filter((f) => f.id === id);
+      return frags.map((f, k) => ({ id: `${id}@slice${si + 1}${frags.length > 1 ? `#${k + 1}` : ""}`, text: `[${id}] ${f.path ?? "(unknown path)"} (the part in slice ${si + 1})\n${f.text}` }));
+    });
   const calls = [];
   slices.forEach((slice, si) => {
     let part = null;
@@ -546,25 +593,28 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
       part = { slice: si + 1, claims: [], items: new Map(), chars: 0 };
       calls.push(part);
     };
+    const room = Math.min(GATE_LIMITS.evidenceChars, evidenceRoom(slice));
+    const cost = (it) => it.text.length + (P ? it.id.length : 0);
     for (const claim of sliceClaims[si]) {
-      const items = itemsOf(claim);
+      const items = itemsOf(claim, si);
       const own = new Map(items.map((it) => [it.id, it]));
-      const ownChars = [...own.values()].reduce((n, it) => n + it.text.length, 0);
-      if (own.size > GATE_LIMITS.evidenceItems || ownChars > GATE_LIMITS.evidenceChars) {
+      const ownChars = [...own.values()].reduce((n, it) => n + cost(it), 0) + (P ? claim.text.length : 0);
+      if (own.size > GATE_LIMITS.evidenceItems || ownChars > room) {
         problems.push(`claim "${claim.text.slice(0, 80)}" needs ${own.size} evidence items / ${ownChars} characters, above one call's limits; narrow the claim`);
         continue;
       }
       const fits = (p) => {
         if (!p || p.claims.length >= GATE_LIMITS.claims) return false;
         const added = [...own.values()].filter((it) => !p.items.has(it.id));
-        return p.items.size + added.length <= GATE_LIMITS.evidenceItems && p.chars + added.reduce((n, it) => n + it.text.length, 0) <= GATE_LIMITS.evidenceChars;
+        return p.items.size + added.length <= GATE_LIMITS.evidenceItems && p.chars + added.reduce((n, it) => n + cost(it), 0) + (P ? claim.text.length : 0) <= room;
       };
       if (!fits(part)) open();
       part.claims.push(claim.text);
+      if (P) part.chars += claim.text.length;
       for (const it of own.values()) {
         if (!part.items.has(it.id)) {
           part.items.set(it.id, it);
-          part.chars += it.text.length;
+          part.chars += cost(it);
         }
       }
     }
@@ -573,17 +623,6 @@ export function prepareGateBatch(input, { denylist, snapshot }) {
   if (calls.length > BATCH_LIMITS.maxParts) {
     problems.push(`the patch needs ${calls.length} gate calls, above the ${BATCH_LIMITS.maxParts}-part batch limit; split the task`);
     return fail();
-  }
-
-  // Tests field: rendered command output, cut visibly when too long.
-  let tests;
-  const cmdTexts = [...catalog.entries()].filter(([id]) => id.startsWith("cmd-")).map(([, items]) => items.map((it) => it.text).join("\n"));
-  if (cmdTexts.length) {
-    tests = cmdTexts.join("\n\n");
-    if (tests.length > BATCH_LIMITS.testsChars) {
-      limits.tests_truncated_chars = tests.length - BATCH_LIMITS.testsChars;
-      tests = `${tests.slice(0, BATCH_LIMITS.testsChars)}\n[jev-flow: tests field cut, ${limits.tests_truncated_chars} characters omitted here; the full output is in the cmd-* evidence items]`;
-    }
   }
 
   const n = calls.length;

@@ -1,6 +1,6 @@
 # 03 — Nothing above the threshold: expansion, then ask (or stop headless)
 
-Illustrative — not measured. Threshold `T = 0.95`. Nothing is executed below the threshold: after at most **two expansion rounds**, each with genuinely new options or evidence, the session asks the user; in headless mode (`claude -p`) it stops with a report that starts `Incomplete:`.
+Illustrative — not measured. Threshold `T = 0.95`. Nothing is executed below the threshold. By default an interactive round 0 with nothing eligible asks the user at once (`ask_user` with a ready question `"ask":"Approve <top id>?"`; headless keeps the expansion rounds), because an expansion round rarely changes the outcome. This example requests the expansion explicitly with `--expand`, as a session does when it knows where genuinely new evidence is: after at most **two expansion rounds**, each with genuinely new options or evidence, the session asks the user; in headless mode (`claude -p`) it stops with a report that starts `Incomplete:`.
 
 **Request (synthetic):** "Load the configuration files. Pick the parser."
 
@@ -54,7 +54,7 @@ Illustrative — not measured. Threshold `T = 0.95`. Nothing is executed below t
 **Helper command**
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json
+node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch.json --expand
 ```
 
 **Call 1 — jev_noul** (sent by the helper; never in the model's context)
@@ -181,7 +181,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 {"status":"expand","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":0,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","expansions_left":2,"plan":[],"plan_total":0,"scores":["opt_yaml:0.81","action_gather_evidence:0.5","action_ask_user:0.45","opt_json:0.41","opt_toml:0.3","opt_own:0.25","opt_ini:0.2"],"scores_total":7}
 ```
 
-Round 0 comparison: the best probability is 0.81, not above 0.95. Nothing is eligible, so the helper answers `expand` (2 rounds left). The session gathers evidence (it reads `package.json` and `src/load.mjs`) and calls again with the **same decision id** and a `new_material` note; resubmitting the same options is refused (`no_new_material`).
+Round 0 comparison: the best probability is 0.81, not above 0.95. Nothing is eligible and `--expand` was passed, so the helper answers `expand` (2 rounds left; without `--expand` it would answer `ask_user` with `"ask":"Approve opt_yaml?"` and `expansions_left` 2, and a later call with the same decision id and new material would still be expansion 1). The session gathers evidence (it reads `package.json` and `src/load.mjs`) and calls again with the **same decision id** and a `new_material` note; resubmitting the same options is refused (`no_new_material`).
 
 **Round 1 (expansion 1: new evidence from reading the repository): batch** (written to a new file in the working directory, here `jev-batch.json` because no file had that name; only that file is deleted afterwards, with a lone `rm -f jev-batch.json` in its own command)
 
@@ -426,10 +426,10 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 **Helper output** (one line)
 
 ```json
-{"status":"ask_user","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":2,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","report":"no option exceeded T=0.95 after 2 expansion round(s); scores: opt_yaml=0.94, opt_yaml_strict=0.9, action_gather_evidence=0.2, action_ask_user=0.2","plan":[],"plan_total":0,"scores":["opt_yaml:0.94","opt_yaml_strict:0.9","action_gather_evidence:0.2","action_ask_user:0.2"],"scores_total":4}
+{"status":"ask_user","decision_id":"3f9c2a71d4e85b06","kind":"approach","threshold":0.95,"round":2,"calls":1,"tiebreaks":0,"reason":"none_above_threshold","report":"no option exceeded T=0.95 after 2 expansion round(s); scores: opt_yaml=0.94, opt_yaml_strict=0.9, action_gather_evidence=0.2, action_ask_user=0.2","ask":"Approve opt_yaml?","plan":[],"plan_total":0,"scores":["opt_yaml:0.94","opt_yaml_strict:0.9","action_gather_evidence:0.2","action_ask_user:0.2"],"scores_total":4}
 ```
 
-Round 2: 0.94 is still not above 0.95 and no expansion is left, so the status is `ask_user`. Show the user the options and the scores, and wait. The user may approve one option explicitly; that is recorded as an override of exactly that option (`cli.mjs approve --decision 3f9c2a71d4e85b06 --option opt_yaml --message "<the user's words>"`).
+Round 2: 0.94 is still not above 0.95 and no expansion is left, so the status is `ask_user`. Show the user the options and the scores, and wait; `ask` is the one-option question a bare «yes» can answer (`approve ... --question "Approve opt_yaml?"`). The user may approve one option explicitly; that is recorded as an override of exactly that option (`cli.mjs approve --decision 3f9c2a71d4e85b06 --option opt_yaml --message "<the user's words>"`).
 
 **Headless variant** (`--headless`, or `JEV_CONTROL_HEADLESS=1`): the same final round ends with
 

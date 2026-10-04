@@ -276,6 +276,26 @@ describe("gate runner: partitioning, sanitizing, credentials, verdicts", () => {
     assert.ok(r.raw.length <= RUN_LIMITS.summaryChars);
   });
 
+  it("keeps every call within the provider's payload budget (JEV_GATE_PART_CHARS here; 90000 for OpenRouter)", () => {
+    const lines = (tag) => Array.from({ length: 900 }, (_, i) => `export const ${tag}${i} = "${"x".repeat(60)}";`).join("\n") + "\n";
+    const plain = setup();
+    writeFiles(plain.repo, { "a.js": lines("a"), "b.js": lines("b") });
+    assert.equal(plain.gate(CLAIMS()).code, 0);
+    const budgeted = setup();
+    writeFiles(budgeted.repo, { "a.js": lines("a"), "b.js": lines("b") });
+    const r = budgeted.gate(CLAIMS(), [], { JEV_GATE_PART_CHARS: "50000" });
+    assert.equal(r.code, 0, r.raw);
+    const calls = toolCalls(budgeted.log);
+    assert.ok(calls.length > toolCalls(plain.log).length, "a smaller budget spreads the batch over more calls");
+    const chars = (a) => a.request.length + a.diff.length + (a.tests?.length ?? 0) + a.claims.reduce((n, c) => n + c.length, 0) + a.evidence.reduce((n, e) => n + (e.id ?? "").length + e.text.length, 0);
+    for (const c of calls) assert.ok(chars(c.args) <= 50000, `${chars(c.args)} > 50000`);
+    const openrouter = setup();
+    writeFiles(openrouter.repo, { "a.js": lines("a"), "b.js": lines("b") });
+    const ro = openrouter.gate(CLAIMS(), [], { JEV_PROVIDER: "openrouter" });
+    assert.equal(ro.code, 0, ro.raw);
+    for (const c of toolCalls(openrouter.log)) assert.ok(chars(c.args) <= 90000, `${chars(c.args)} > 90000`);
+  });
+
   it("redacts credentials before sending and refuses content the sanitizer must remove", () => {
     const s = setup();
     writeFiles(s.repo, { "a.js": `export const a = 2;\nconst apiKey = "${FAKE_OR_KEY}";\n`, "b.js": "export const b = 3;\n" });
@@ -320,7 +340,7 @@ describe("gate runner: partitioning, sanitizing, credentials, verdicts", () => {
   it("chooses openrouter for the server when only OPENROUTER_API_KEY is set", () => {
     const s = setup();
     change(s.repo);
-    s.gate(CLAIMS());
+    s.gate(CLAIMS(), [], { JEV_PROVIDER: "" });
     assert.equal(toolCalls(s.log)[0].provider, "openrouter");
   });
 

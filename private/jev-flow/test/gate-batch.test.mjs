@@ -12,6 +12,7 @@ import {
   GATE_LIMITS,
   listHunks,
   parseBatchLabel,
+  partCharsFor,
   partDigest,
   prepareGateBatch,
   requestBody,
@@ -31,6 +32,8 @@ function fileDiff(path, lines, { start = 1 } = {}) {
 }
 const bigLines = (tag, n, width = 40) => Array.from({ length: n }, (_, i) => `const ${tag}${i} = "${"x".repeat(width)}";`);
 const prepare = (input, snapshot = SNAP) => prepareGateBatch({ request: "do it", ...input }, { denylist: OPEN, snapshot });
+/** Characters of a call's payload text: request, diff, tests, claims and evidence (ids and texts). */
+const payloadChars = (input) => input.request.length + input.diff.length + (input.tests?.length ?? 0) + input.claims.reduce((n, c) => n + c.length, 0) + input.evidence.reduce((n, e) => n + e.id.length + e.text.length, 0);
 
 describe("gate-batch: limits mirror src/lib.ts", () => {
   it("uses the jev_gate caps and keeps its own budgets below them", () => {
@@ -207,6 +210,55 @@ describe("gate-batch: splitting large patches", () => {
     assert.equal(pieces.map((p) => p.text.slice(p.text.indexOf("\n") + 1)).join("").includes(log.slice(-200)), true);
     assert.ok(out.limits.tests_truncated_chars > 0);
     assert.match(out.calls[0].input.tests, /tests field cut, \d+ characters omitted here; the full output is in the cmd-\* evidence items/);
+  });
+
+  it("a per-call budget (partChars) keeps every call's whole payload within it and still covers the diff exactly", () => {
+    // Measured on OpenRouter: 100000 characters per jev_gate call passed, 150000 failed with HTTP 400.
+    const diff = fileDiff("a.ts", bigLines("a", 1500)) + fileDiff("b.ts", bigLines("b", 1500));
+    const claims = [{ text: "a added", evidence: ["hunk-1"] }, { text: "b added", evidence: ["hunk-2"] }];
+    const plain = prepare({ diff, claims });
+    const P = 40_000;
+    const out = prepareGateBatch({ request: "do it", diff, claims }, { denylist: OPEN, snapshot: SNAP, partChars: P });
+    assert.equal(out.ok, true, JSON.stringify(out.problems));
+    assert.ok(out.calls.length > plain.calls.length, "a smaller budget needs more calls");
+    for (const call of out.calls) assert.ok(payloadChars(call.input) <= P, `call ${call.part}: ${payloadChars(call.input)} > ${P}`);
+    const labels = out.calls.map((c) => parseBatchLabel(c.input.request));
+    const slices = new Map(labels.map((l, i) => [l.slice, out.calls[i].input.diff]));
+    assert.equal([...slices.keys()].sort((a, b) => a - b).map((k) => slices.get(k)).join(""), diff, "slices rebuild the diff");
+    assert.ok(verifyBatchContents(out.calls.map((c) => c.input), { snapshot: SNAP }).ok);
+  });
+  it("with partChars the tests field is cut to a tenth of the budget; the full log stays in the cmd evidence", () => {
+    const log = bigLines("log", 500).join("\n");
+    const P = 60_000;
+    const out = prepareGateBatch({ request: "do it", diff: fileDiff("a.ts", ["x"]), claims: [{ text: "tests passed", evidence: ["hunk-1", "cmd-1"] }], commands: [{ command: "npm test", exit: 0, output: log }] }, { denylist: OPEN, snapshot: SNAP, partChars: P });
+    assert.equal(out.ok, true, JSON.stringify(out.problems));
+    const tests = out.calls[0].input.tests;
+    assert.ok(tests.length <= P / 10 + 200, `tests field ${tests.length}`);
+    assert.match(tests, /tests field cut/);
+    const pieces = out.calls[0].input.evidence.filter((e) => e.id.startsWith("cmd-1"));
+    assert.ok(pieces.map((p) => p.text).join("").includes(log.slice(-200)), "the end of the log is still evidence");
+    for (const call of out.calls) assert.ok(payloadChars(call.input) <= P);
+  });
+  it("under a budget a large hunk is judged by the part each call holds; a command log that cannot fit is a problem, not a silent cut", () => {
+    const big = prepareGateBatch({ request: "do it", diff: fileDiff("a.ts", bigLines("a", 1500)), claims: [{ text: "a added", evidence: ["hunk-1"] }] }, { denylist: OPEN, snapshot: SNAP, partChars: 20_000 });
+    assert.equal(big.ok, true, JSON.stringify(big.problems));
+    for (const call of big.calls) {
+      assert.ok(payloadChars(call.input) <= 20_000);
+      assert.ok(call.input.evidence.every((e) => /^hunk-1@slice\d+/.test(e.id)), "hunk evidence is the slice's own part");
+    }
+    const log = bigLines("log", 2500).join("\n");
+    const out = prepareGateBatch({ request: "do it", diff: fileDiff("a.ts", ["x"]), claims: [{ text: "tests passed", evidence: ["hunk-1", "cmd-1"] }], commands: [{ command: "npm test", exit: 0, output: log }] }, { denylist: OPEN, snapshot: SNAP, partChars: 20_000 });
+    assert.equal(out.ok, false);
+    assert.match(out.problems.join(" "), /above one call's limits; narrow the claim/);
+  });
+  it("partCharsFor: 90000 for OpenRouter, the tool limits otherwise, JEV_GATE_PART_CHARS overrides for every provider", () => {
+    assert.equal(partCharsFor("openrouter", {}), 90_000);
+    assert.equal(partCharsFor("auto", {}), null);
+    assert.equal(partCharsFor("typesafe", {}), null);
+    assert.equal(partCharsFor("typesafe", { JEV_GATE_PART_CHARS: "50000" }), 50_000);
+    assert.equal(partCharsFor("openrouter", { JEV_GATE_PART_CHARS: "120000" }), 120_000);
+    assert.equal(partCharsFor("openrouter", { JEV_GATE_PART_CHARS: "abc" }), 90_000, "an invalid value is ignored");
+    assert.equal(partCharsFor("auto", { JEV_GATE_PART_CHARS: "5000" }), null, "below the 20000 floor is ignored");
   });
 
   it("more than 16 claims on one slice spill into further parts over the same slice", () => {

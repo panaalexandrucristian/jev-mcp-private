@@ -9,6 +9,9 @@ import { CONTROL_ACCEPT_MINIMUMS, gatePolicy, runControlDone } from "../done.mjs
 import { loadControlState } from "../state.mjs";
 import { controlEnv, gateAnswer, makeRepo, serverLog, stateDir, writeFiles } from "./helpers.mjs";
 
+// The in-process budget cases exercise the limit itself; the product default is 10000.
+process.env.JEV_CONTROL_BUDGET_LIMIT = "25";
+
 const CLAIMS = ["a.js exports a = 2", "b.js is a new file exporting b = 3"];
 const input = () => ({ request: "set a to 2 and add b", claims: [{ text: CLAIMS[0], evidence: ["file:a.js"] }, { text: CLAIMS[1], evidence: ["file:b.js"] }] });
 const change = (repo) => writeFiles(repo, { "a.js": "export const a = 2;\n", "b.js": "export const b = 3;\n" });

@@ -14,7 +14,14 @@ import { DEFAULT_THRESHOLD } from "./threshold.mjs";
 export { RETENTION_DAYS, assertMetadataOnly, repoKey, sessionKey, sha256 };
 
 export const STATE_VERSION = 1;
-export const BUDGET_LIMIT = 25;
+export const BUDGET_LIMIT = 10000;
+/** The raise a budget approval grants when the user's words state no quantity. */
+export const DEFAULT_STEP = 25;
+/** The per-request call limit: JEV_CONTROL_BUDGET_LIMIT when it is a positive integer, otherwise BUDGET_LIMIT. */
+export function budgetLimit(env = process.env) {
+  const raw = String(env.JEV_CONTROL_BUDGET_LIMIT ?? "").trim();
+  return /^[1-9]\d*$/.test(raw) ? Number(raw) : BUDGET_LIMIT;
+}
 export const SOURCES = Object.freeze(["main", "subagent", "helper", "gate", "tiebreak", "unknown"]);
 export const LOG_CAP = 100;
 const PENDING_CAP = 64;
@@ -49,8 +56,8 @@ export function controlSessionDirFromKey(repoRoot, key, env = process.env) {
   return join(controlCacheRoot(env), repoKey(repoRoot), key);
 }
 
-export function emptyBudget() {
-  return { limit: BUDGET_LIMIT, extra: 0, attempts: Object.fromEntries(SOURCES.map((s) => [s, 0])), sent: 0, released: 0, approvals: [], history: [] };
+export function emptyBudget(env = process.env) {
+  return { limit: budgetLimit(env), extra: 0, attempts: Object.fromEntries(SOURCES.map((s) => [s, 0])), sent: 0, released: 0, approvals: [], history: [] };
 }
 
 export function emptyControlState(now = Date.now()) {

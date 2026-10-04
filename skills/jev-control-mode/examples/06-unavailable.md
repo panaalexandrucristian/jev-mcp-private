@@ -117,7 +117,7 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" decide --file jev-batch
 {"status":"unavailable","message":"Jev unavailable: MCP server exited (code 3, signal none)","decision_id":"3f9c2a71d4e85b06","calls":2}
 ```
 
-Both attempts carried the **same** arguments (Call 1 above, sent twice); the second one was the single allowed retry, and **both count** in the budget of 25 (2 of 25 used). The result is `unavailable` with the message "Jev unavailable".
+Both attempts carried the **same** arguments (Call 1 above, sent twice); the second one was the single allowed retry, and **both count** in the budget of 10000 (2 of 10000 used). The result is `unavailable` with the message "Jev unavailable".
 
 **What the session does:** stop the controlled step and tell the user plainly: "Jev unavailable". Offer the user exactly two choices: wait or retry later (a new decision call), or turn the mode off with `/jev:jev-control off` and continue **uncontrolled** — an explicit choice of the user, never of the session. Do not pick an option "because Jev cannot be reached".
 

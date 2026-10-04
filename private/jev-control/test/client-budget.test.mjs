@@ -7,6 +7,9 @@ import { BudgetedCaller } from "../client.mjs";
 import { loadControlState, withControlState } from "../state.mjs";
 import { controlEnv, serverLog, stateDir } from "./helpers.mjs";
 
+// The in-process budget cases exercise the limit itself; the product default is 10000.
+process.env.JEV_CONTROL_BUDGET_LIMIT = "25";
+
 const BUDGET = fileURLToPath(new URL("../budget.mjs", import.meta.url));
 const argsNoul = { propositions: ["The first option is right.", "The second option is right."], auto_accept: 0.95 };
 

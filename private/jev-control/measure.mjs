@@ -47,7 +47,7 @@
 // and the order of the actions actually executed. (4) Jev calls: direct calls
 // against open reservations of the SAME agent context (a reserve's --source must
 // match its context's side), helper-reported attempts against the per-request
-// limit of 25, raised only by a `budget approve` whose --message is an authorization
+// limit (BUDGET_LIMIT, 10000), raised only by a `budget approve` whose --message is an authorization
 // the user gave in that request about the budget (once per user sentence, for at most the increment their words state; a total is
 // measured against the limit in force; an ambiguous quantity raises nothing).
 // (5) finalization, per request: every `done` call
@@ -71,6 +71,7 @@ import { consumableClaimsName, splitClaims } from "./claimsfile.mjs";
 import { STATUS_ORDER, VERDICT_ORDER } from "../jev-flow/gate-run.mjs";
 import { normalizeBatch } from "./options.mjs";
 import { SKILL_DIR } from "./run-session.mjs";
+import { BUDGET_LIMIT } from "./state.mjs";
 import { sanitizeText } from "../jev-flow/sanitize.mjs";
 
 const FIELDS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
@@ -136,7 +137,6 @@ const MUTATING = new Set(["Bash", "Agent", "Task", ...EDIT_TOOLS]);
 const REDIRECTION = /(?:^|[^<>&\d|=-])(?:\d?>>?|&>)\s*(?!&|=|\/dev\/null(?![\w/]))\S/;
 const CHANGING_COMMAND = /(?:^|[;&|(]\s*|\s)(?:sudo\s+)?(?:rm|mv|cp|touch|mkdir|rmdir|tee|truncate|chmod|chown|ln|patch|dd|install)(?=\s)|(?:^|[;&|]\s*)(?:sed|perl)(?=\s)[^;&|]*\s-[a-z]*i(?![\w-])|\bgit\s+(?:apply|checkout|restore|reset|clean|commit|add|stash|merge|rebase|cherry-pick|am|rm|mv|pull|revert)\b|\b(?:npm|yarn|pnpm|pip3?|bun)\s+(?:install|add|remove|uninstall|i|ci|update|upgrade)\b/;
 const bashChanges = (command) => typeof command === "string" && (REDIRECTION.test(command) || CHANGING_COMMAND.test(command));
-const BASE_LIMIT = 25;
 const SAMPLES = 10;
 
 export function parseJsonl(text) {
@@ -357,7 +357,7 @@ const HELPER_SUBS = new Set(["on", "off", "status", "threshold", "decide", "sear
 const CLI_SCRIPT = /jev-control\/cli\.mjs$/;
 const FLOW_SCRIPT = /(^|\/)(jev-gate-run|jev-candidates)\.mjs$/;
 /** Helper flags that never take a value. */
-const BOOL_FLAGS = new Set(["dry-run", "headless", "single", "widen"]);
+const BOOL_FLAGS = new Set(["dry-run", "headless", "single", "widen", "expand"]);
 /** The commands that may feed a helper through a pipe: they only print data. */
 const FEEDERS = new Set(["cat", "echo", "printf"]);
 /** Redirections a helper call may carry: stderr only. */
@@ -934,7 +934,8 @@ const median = (xs) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.
 const norm = (text) => collapse(text).toLowerCase();
 
 /** Audit one transcript. `opts.threshold`: the session threshold used when a helper output carries none (default 0.95). */
-export function audit(records, { threshold = 0.95 } = {}) {
+export function audit(records, { threshold = 0.95, budgetLimit = BUDGET_LIMIT } = {}) {
+  const BASE_LIMIT = budgetLimit;
   const { events, requests } = collect(records);
   const out = {
     coverage: {

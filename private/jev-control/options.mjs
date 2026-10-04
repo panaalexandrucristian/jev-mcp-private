@@ -56,10 +56,11 @@ export function evidenceHash(lines) {
 /**
  * Validate and normalize a raw batch {decision, kind, options: [{id, text, evidence: [..], action?: {tool, target, ...arguments},
  * preconditions?: [{kind, path, sha256?}]}], priorities?, space_small?}. `root` (the repository) makes paths relative.
- * Returns {ok: true, batch} or {ok: false, problems}.
+ * Returns {ok: true, batch, notices} or {ok: false, problems}; a notice names a repair that changed no meaning (merged evidence lines).
  */
 export function normalizeBatch(raw, { root = null } = {}) {
   const problems = [];
+  const notices = [];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, problems: ["batch must be a JSON object {decision, kind, options}"] };
   const decision = typeof raw.decision === "string" ? raw.decision.trim() : "";
   if (!decision || decision.length > 1500) problems.push("decision must be a non-empty string of at most 1500 characters");
@@ -78,7 +79,7 @@ export function normalizeBatch(raw, { root = null } = {}) {
     if (!SLUG.test(id) || id.length > 64) problems.push(`${where}.id must be a lowercase slug: a-z and 0-9 words joined by single _ or -, at most 64 characters`);
     else if (DECIDE_HATCHES.includes(id)) problems.push(`${where}.id "${id}" collides with a jev_decide escape hatch; use e.g. action_${id}`);
     if (!text || text.length > MAX_TEXT_CHARS) problems.push(`${where}.text must be 1-${MAX_TEXT_CHARS} characters`);
-    const evidence = Array.isArray(o.evidence) ? o.evidence.filter((e) => typeof e === "string" && e.trim() !== "").map((e) => e.trim()) : [];
+    let evidence = Array.isArray(o.evidence) ? o.evidence.filter((e) => typeof e === "string" && e.trim() !== "").map((e) => e.trim()) : [];
     if (CONTROL_IDS.includes(id)) {
       // The control options are always present; a model-supplied one only has to be well formed.
       if (!ids.has(id)) {
@@ -103,7 +104,21 @@ export function normalizeBatch(raw, { root = null } = {}) {
     if (action?.tool === "Bash" && /jev-control\/cli\.mjs/.test(action.target)) problems.push(`${where}.action must not be a control step: the helper is not an option`);
     const pre = normalizePreconditions(o.preconditions, root);
     if (!pre.ok) problems.push(...pre.problems.map((m) => `${where}.${m}`));
-    if (evidence.length < 1 || evidence.length > MAX_EVIDENCE_LINES) problems.push(`${where}.evidence must have 1-${MAX_EVIDENCE_LINES} concrete lines`);
+    // Lines beyond the third are merged into the third rather than refused: a refusal cost a retry, and the fix often dropped evidence.
+    let overflow = false;
+    if (evidence.length > MAX_EVIDENCE_LINES) {
+      const tail = evidence.slice(MAX_EVIDENCE_LINES - 1).join("; ");
+      if (tail.length <= MAX_EVIDENCE_LINE_CHARS) {
+        notices.push(`${where}.evidence: ${evidence.length} lines merged into ${MAX_EVIDENCE_LINES}`);
+        evidence = [...evidence.slice(0, MAX_EVIDENCE_LINES - 1), tail];
+      } else {
+        overflow = true;
+        problems.push(`${where}.evidence must have 1-${MAX_EVIDENCE_LINES} concrete lines (merging the lines after the second would exceed ${MAX_EVIDENCE_LINE_CHARS} characters)`);
+      }
+    }
+    if (overflow) {
+      // Already reported.
+    } else if (evidence.length < 1) problems.push(`${where}.evidence must have 1-${MAX_EVIDENCE_LINES} concrete lines`);
     else if (evidence.some((e) => e.length > MAX_EVIDENCE_LINE_CHARS)) problems.push(`${where}.evidence lines must be at most ${MAX_EVIDENCE_LINE_CHARS} characters`);
     if (ids.has(id)) {
       problems.push(`${where}.id "${id}" is repeated`);
@@ -132,6 +147,7 @@ export function normalizeBatch(raw, { root = null } = {}) {
   if (problems.length) return { ok: false, problems };
   return {
     ok: true,
+    notices,
     batch: {
       decision,
       kind: raw.kind,

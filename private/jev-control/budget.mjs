@@ -1,4 +1,4 @@
-// The shared Jev call budget of one user request (D15, D26): at most 25 MCP
+// The shared Jev call budget of one user request (D15, D26): at most 10000 MCP
 // tools/call ATTEMPTS from every source (main thread, subagents, helpers, gate
 // runner parts, tie-breaks), retries included. A slot is reserved atomically
 // BEFORE the request is sent, so a retry at the limit cannot become call 26.

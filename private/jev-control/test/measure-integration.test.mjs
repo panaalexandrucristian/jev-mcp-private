@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { audit } from "../measure.mjs";
+import { audit as rawAudit } from "../measure.mjs";
 import { actionFor, batchOf, cli, controlEnv, makeRepo, tempDir } from "./helpers.mjs";
+
+// The helpers run with JEV_CONTROL_BUDGET_LIMIT=25 (controlEnv), so the audit uses the same limit.
+const audit = (records, opts = {}) => rawAudit(records, { budgetLimit: 25, ...opts });
 
 // The audit reads what the REAL helper prints: these tests run the real CLI against the fake
 // server and feed its actual output lines into a transcript, so the formats cannot drift apart.
@@ -221,7 +224,7 @@ describe("the audit reads an approval by the exact id (edit_a is not edit-a)", (
     const batch = batchOf(5, { kind: "edit" });
     batch.options[0] = { ...batch.options[0], id: ids[0], action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
     batch.options[1] = { ...batch.options[1], id: ids[1], action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
-    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
+    const d = cli(["decide", ...SID, "--expand", "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d.json.status, "expand", d.stdout);
     return { repo, env, d };
   };

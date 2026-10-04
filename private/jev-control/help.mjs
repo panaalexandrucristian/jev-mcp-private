@@ -4,13 +4,13 @@
 // No session, repository or Jev call is needed; `help decide` stays under the 3 KB decide cap, every other topic well under 1.5 KB.
 
 const DECIDE = [
-  'decide --file <batch.json|-> [--decision-id <id>]. One JSON object:',
-  '{"priorities":"<one line from the user\'s request; required unless on --priorities set them>","decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
+  'decide --file <batch.json|-> [--decision-id <id>] [--expand]. One JSON object:',
+  '{"priorities":"<one line from the user\'s request; required unless on --priorities set them>","decision":"<question>","kind":"order|approach|command|edit|delegate|ask|done","options":[{"id":"<slug>","text":"<text>","evidence":["<1-3 concrete facts; more are merged into the third (notices)>"],"action":{"tool":"Edit","target":"<path>","old_string":"..","new_string":".."}}],"new_material":"<expansion only>"}',
   '- 5 to 18 real options; the limit 20 counts action_gather_evidence and action_ask_user, added if missing. "space_small":true only when fewer real alternatives exist.',
   '- kinds order, command, edit, delegate: each option needs "action", the ONE tool call it stands for, with arguments (Edit old_string+new_string, Write content, Agent prompt+model; command: Bash, edit: edit tools, delegate: Agent only). Others: optional.',
   '- order: one option per task, each with its own action. Often only the next task is cleared: do the plan items, then decide again for the rest; never run an option outside the plan. Other kinds: first option only.',
   '- Write the batch to a NEW file in the working directory (e.g. jev-batch.json if free; elsewhere or heredoc: refused). Run decide alone (a pipe, ; or && voids the grant); then a lone rm of only that file, else an audited edit.',
-  '- status: selected/ordered: do exactly the plan items. expand: add only NEW options or evidence, set "new_material", rerun with the SAME --decision-id (2 rounds; else a new decision). ask_user: ask. incomplete: start the final message with "Incomplete:" + scores. invalid: fix "problems".',
+  '- status: selected/ordered: do exactly the plan items. ask_user: ask; "ask" is the one-option question ("Approve <id>?"); label choice options exactly "Approve <id>". Nothing above T in round 0 asks at once (headless: expands); --expand runs an expansion round instead (only with genuinely new evidence in reach). expand: add only NEW options or evidence, set "new_material", rerun with the SAME --decision-id (2 rounds). incomplete: start the final message with "Incomplete:" + scores. invalid: fix "problems".',
 ].join("\n");
 
 const SEARCH = [
@@ -26,7 +26,7 @@ const LINES = {
   threshold: "threshold <x>: change the threshold for later decisions (valid in (0.5, 1); an invalid value gives 0.95).",
   page: "page --decision <id> [--part plan|scores] [--from <n>]: the rest of a plan or score list the printed line cut (plan_next / scores_next).",
   approve: "approve --decision <id> --option <id> --message \"<the user's own words naming the option>\" [--question \"<the question a short answer answers>\"]: record a user approval of a below-threshold option.",
-  budget: "budget status | reserve --tool <name> [--source main|subagent] | confirm --id <id> | release --id <id> | approve --message \"<the user's words>\": the 25 tools/call attempts per request.",
+  budget: "budget status | reserve --tool <name> [--source main|subagent] | confirm --id <id> | release --id <id> | approve --message \"<the user's words>\": the 10000 tools/call attempts per request (JEV_CONTROL_BUDGET_LIMIT overrides).",
   receipt: "receipt verify --id <receipt> --option <id> (--action-file <file|-> | --tool T --target t) [--dry-run]: check an option's action right before running it.",
 };
 

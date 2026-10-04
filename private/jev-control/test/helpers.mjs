@@ -27,6 +27,8 @@ export function controlEnv({ script = null, extra = {} } = {}) {
     OPENROUTER_API_KEY: "sk-or-v1-test-fake",
     FAKE_MCP_LOG: join(home, "mcp.jsonl"),
     FAKE_CONTROL_STATE: join(home, "fake-state.json"),
+    // The budget tests exercise the limit itself; the product default is 10000.
+    JEV_CONTROL_BUDGET_LIMIT: "25",
     ...extra,
   };
   if (script) {

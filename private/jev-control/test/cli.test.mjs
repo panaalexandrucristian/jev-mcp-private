@@ -50,6 +50,26 @@ describe("activation (D1, D2, D13, D16)", () => {
     assert.equal(state.request.seq, 1);
     assert.equal(serverLog(env).length, 0, "activation spends no tools/call");
   });
+  it("decide repairs evidence beyond three lines and says so in notices; early ask names the top option", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv({ script: noulScript(p7([0.9, 0.5, 0.4, 0.3, 0.2])) });
+    on(repo, env);
+    const batch = batchOf(5);
+    batch.options[0].evidence = ["one", "two", "three", "four"];
+    const d = cli(["decide", ...SID, "--file", writeBatch(batch)], { env, cwd: repo });
+    assert.equal(d.json.status, "ask_user", d.stdout);
+    assert.deepEqual(d.json.notices, ["options[0].evidence: 4 lines merged into 3"]);
+    assert.equal(d.json.ask, "Approve o1?");
+    const plain = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    assert.equal(plain.json.notices, undefined);
+  });
+  it("without JEV_CONTROL_BUDGET_LIMIT the budget is 10000 calls per request", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    delete env.JEV_CONTROL_BUDGET_LIMIT;
+    on(repo, env);
+    assert.equal(cli(["budget", "status", ...SID], { env, cwd: repo }).json.limit, 10000);
+  });
   it("status, off and a changed threshold (later decisions only)", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv({ script: noulScript(p7([0.9, 0.5, 0.4, 0.3, 0.2])) });
@@ -58,7 +78,7 @@ describe("activation (D1, D2, D13, D16)", () => {
     assert.equal(status.json.mode, "on");
     assert.equal(status.json.budget.limit, 25);
     assert.equal(status.json.budget.provider_calls, "unknown");
-    const decided = cli(["decide", ...SID, "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    const decided = cli(["decide", ...SID, "--expand", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
     assert.equal(decided.json.status, "expand", "0.9 is not above 0.95");
     const t = cli(["threshold", "0.85", ...SID], { env, cwd: repo });
     assert.equal(t.json.threshold, 0.85);
@@ -277,7 +297,7 @@ describe("decide through the CLI", () => {
     const stale = cli(args, { env, cwd: repo });
     assert.match(stale.json.message, /receipt_stale_snapshot|precondition_failed/);
     assert.equal(stale.json.authorized, false);
-    const d2 = cli(["decide", ...SID, "--decision-id", "p2", "--file", writeBatch(batch)], { env, cwd: repo });
+    const d2 = cli(["decide", ...SID, "--expand", "--decision-id", "p2", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d2.json.status, "expand", "the option is unavailable now: its precondition is false");
     assert.deepEqual(d2.json.unavailable, ["o1:path_exists_missing"]);
   });
@@ -347,7 +367,7 @@ describe("decide through the CLI", () => {
     const none = { p: p7([0.8, 0.7, 0.6, 0.5, 0.4]) };
     const env = controlEnv({ script: { noul: [none, none, none] } });
     on(repo, env);
-    const run1 = cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    const run1 = cli(["decide", ...SID, "--expand", "--headless", "--decision-id", "dec1", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
     assert.equal(run1.json.status, "expand");
     const b1 = batchOf(5, { extra: { new_material: "n1" } });
     b1.options[0].evidence = ["new 1"];
@@ -402,7 +422,7 @@ describe("the decide result names the scratch batch file to remove (R06)", () =>
     const env = controlEnv({ script: { noul: [none, none, none] } });
     on(repo, env);
     batchIn(repo, batchOf(5));
-    const first = cli(["decide", ...SID, "--headless", "--decision-id", "dec1", "--file", FILE], { env, cwd: repo });
+    const first = cli(["decide", ...SID, "--expand", "--headless", "--decision-id", "dec1", "--file", FILE], { env, cwd: repo });
     assert.equal(first.json.status, "expand");
     assert.equal(first.json.cleanup, undefined, "an expansion reruns the same file");
     const b1 = batchOf(5, { extra: { new_material: "n1" } });
@@ -485,7 +505,7 @@ describe("approvals, budget and direct calls", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
     const env = controlEnv({ script: noulScript(p7([0.9, 0.5, 0.4, 0.3, 0.2])) });
     on(repo, env);
-    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
+    const d = cli(["decide", ...SID, "--expand", "--decision-id", "dec9", "--file", writeBatch(batchOf(5))], { env, cwd: repo });
     assert.equal(d.json.status, "expand");
     const ok = cli(["approve", ...SID, "--decision", "dec9", "--option", "o1", "--message", "yes, use o1"], { env, cwd: repo });
     assert.equal(ok.json.override, "user");
@@ -529,7 +549,7 @@ describe("approvals, budget and direct calls", () => {
     const batch = batchOf(5, { kind: "edit" });
     batch.options[0] = { ...batch.options[0], id: "edit_a", action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
     batch.options[1] = { ...batch.options[1], id: "edit-a", action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
-    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
+    const d = cli(["decide", ...SID, "--expand", "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d.json.status, "expand", d.stdout);
     const approve = (option, message, question) => cli(["approve", ...SID, "--decision", "dec9", "--option", option, "--message", message, ...(question ? ["--question", question] : [])], { env, cwd: repo });
     const approved = () => loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.map((a) => a.option);
@@ -557,7 +577,7 @@ describe("approvals, budget and direct calls", () => {
     const batch = batchOf(5, { kind: "edit" });
     batch.options[0] = { ...batch.options[0], id: "edit_a", action: { tool: "Write", target: "src/a.txt", content: "AAA" } };
     batch.options[1] = { ...batch.options[1], id: "edit_a_b", action: { tool: "Write", target: "src/a.txt", content: "BBB" } };
-    const d = cli(["decide", ...SID, "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
+    const d = cli(["decide", ...SID, "--expand", "--decision-id", "dec9", "--file", writeBatch(batch)], { env, cwd: repo });
     assert.equal(d.json.status, "expand", d.stdout);
     const approve = (option, message, question) => cli(["approve", ...SID, "--decision", "dec9", "--option", option, "--message", message, ...(question ? ["--question", question] : [])], { env, cwd: repo });
     const approved = () => loadControlState(controlSessionDir(repo, "cli-session-1", env)).approvals.map((a) => a.option);
@@ -1254,11 +1274,11 @@ describe("compact output never loses decision data silently", () => {
     const probs = [0.95001, ...Array(17).fill(0.3), 0.1, 0.1];
     const env = controlEnv({ script: { noul: [{ p: probs }] } });
     on(repo, env);
-    const r = cli(["decide", ...SID, "--file", writeBatch(batchOf(18))], { env, cwd: repo });
+    const r = cli(["decide", ...SID, "--expand", "--file", writeBatch(batchOf(18))], { env, cwd: repo });
     assert.equal(r.json.status, "selected", "0.95001 is above 0.95");
     const none = controlEnv({ script: { noul: [{ p: [0.95, ...Array(17).fill(0.3), 0.1, 0.1] }] } });
     on(repo, none);
-    const stop = cli(["decide", ...SID, "--file", writeBatch(batchOf(18)), "--decision-id", "stop1"], { env: none, cwd: repo });
+    const stop = cli(["decide", ...SID, "--expand", "--file", writeBatch(batchOf(18)), "--decision-id", "stop1"], { env: none, cwd: repo });
     assert.equal(stop.json.status, "expand");
     assert.ok(Buffer.byteLength(stop.stdout.trim()) <= 3000, "a decision has the 3000-byte cap");
     assert.equal(stop.json.scores.length, 20, "all 20 raw scores fit one line: no page call is needed");
@@ -1273,7 +1293,7 @@ describe("compact output never loses decision data silently", () => {
     on(repo, env);
     const batch = batchOf(18);
     batch.options.forEach((o, i) => { o.id = `option_${String(i).padStart(2, "0")}_${"x".repeat(54)}`; }); // 64 characters, the longest id
-    const r = cli(["decide", ...SID, "--file", writeBatch(batch), "--decision-id", "wide1"], { env, cwd: repo });
+    const r = cli(["decide", ...SID, "--expand", "--file", writeBatch(batch), "--decision-id", "wide1"], { env, cwd: repo });
     assert.equal(r.json.status, "expand");
     const bytes = Buffer.byteLength(r.stdout.trim());
     assert.ok(bytes > 1500, `the result needs more than the 1500-byte cap (${bytes})`);

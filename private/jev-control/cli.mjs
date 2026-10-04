@@ -5,7 +5,7 @@
 //   cli.mjs help [command]   (also <command> --help: usage and the decide batch format; needs no session)
 //   cli.mjs on [<x> | --threshold <x>] [--priorities "one line"]
 //   cli.mjs off | status | threshold <x>
-//   cli.mjs decide --file <batch.json|-> [--decision-id id] [--headless] [--source subagent]
+//   cli.mjs decide --file <batch.json|-> [--decision-id id] [--expand] [--headless] [--source subagent]
 //   cli.mjs search --query <text> [--single] [--exact-path p] [--search-id id --widen] [--source subagent]
 //   cli.mjs page --decision id [--part plan|scores] [--from n]
 //   cli.mjs approve --decision id --option id --message "<the user's words naming the option>" [--question "<the question a short answer answers>"]
@@ -337,6 +337,7 @@ async function cmdDecide(flags, ctx) {
       priorities,
       headless: flags.headless === true || ctx.env.JEV_CONTROL_HEADLESS === "1",
       decisionId: flags["decision-id"],
+      expand: flags.expand === true,
       repoRoot: ctx.repoRoot,
       now: Date.now,
       snapshot,
@@ -346,6 +347,8 @@ async function cmdDecide(flags, ctx) {
     await session.close();
   }
   const shown = printable(result);
+  // A repair that changed no meaning (merged evidence lines) is reported, never silent.
+  if (normalized.notices?.length) shown.notices = normalized.notices.slice(0, 6);
   if (["selected", "ordered"].includes(shown.status) && result.provenance) {
     try {
       shown.receipt = writeDecisionReceipt(ctx.dir, {
@@ -534,7 +537,7 @@ async function cmdDone(flags, ctx) {
 // Flags of the helper (parseFlags and the help detection in main share them).
 const FLAGS = {
   values: ["root", "session-id", "session-cap", "threshold", "part", "from", "target", "priorities", "file", "decision-id", "query", "exact-path", "search-id", "decision", "option", "message", "tool", "action-file", "source", "id", "ok", "ms", "n", "question", "claims", "check-timeout"],
-  bools: ["headless", "single", "widen", "dry-run"],
+  bools: ["headless", "single", "widen", "dry-run", "expand"],
   multi: ["check"],
 };
 

@@ -22,8 +22,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { listHunks, prepareGateBatch } from "./gate-batch.mjs";
-import { callWithRetry, openJev } from "./mcp-client.mjs";
+import { listHunks, partCharsFor, prepareGateBatch } from "./gate-batch.mjs";
+import { callWithRetry, openJev, resolveJevEnv } from "./mcp-client.mjs";
 import { FIXED_PHRASES, interpretGate, validateGateResult } from "./policy.mjs";
 import { newReceiptId, readReceiptKey, sessionDirFromKey, writeReceipt } from "./runner-receipt.mjs";
 import { sanitizeDiff, sanitizeText } from "./sanitize.mjs";
@@ -624,7 +624,8 @@ export async function runGate(opts) {
         })),
         excerpts,
       },
-      { denylist, snapshot: s0 },
+      // The provider's payload budget per call (OpenRouter rejects a jev_gate call far below the tool's own limits).
+      { denylist, snapshot: s0, partChars: partCharsFor(resolveJevEnv(env).provider, env) },
     );
   } catch (error) {
     handle.close({ tests: checkRecords, input });

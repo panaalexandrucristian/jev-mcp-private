@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ControlBusyError, cleanupControlRetention, controlCacheRoot, controlSessionDir, controlSessionDirFromKey, emptyControlState, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, saveControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
+import { BUDGET_LIMIT, budgetLimit, ControlBusyError, DEFAULT_STEP, emptyBudget, cleanupControlRetention, controlCacheRoot, controlSessionDir, controlSessionDirFromKey, emptyControlState, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, saveControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
 import { makeRepo, tempDir } from "./helpers.mjs";
 
 const STATE = fileURLToPath(new URL("../state.mjs", import.meta.url));
@@ -153,5 +153,17 @@ describe("the per-session capability (hook -> CLI)", () => {
     assert.equal(statSync(join(dir, "cap.json")).mode & 0o777, 0o600);
     withControlState(dir, (s) => { s.mode = "on"; });
     assert.equal(readFileSync(join(dir, "state.json"), "utf8").includes(caps[0].split(".")[1]), false);
+  });
+});
+
+describe("state: budget limit", () => {
+  it("defaults to 10000 calls per request; JEV_CONTROL_BUDGET_LIMIT (a positive integer) overrides it", () => {
+    assert.equal(BUDGET_LIMIT, 10000);
+    assert.equal(DEFAULT_STEP, 25);
+    assert.equal(budgetLimit({}), 10000);
+    assert.equal(budgetLimit({ JEV_CONTROL_BUDGET_LIMIT: "25" }), 25);
+    for (const bad of ["0", "-3", "2.5", "abc", ""]) assert.equal(budgetLimit({ JEV_CONTROL_BUDGET_LIMIT: bad }), 10000, bad);
+    assert.equal(emptyBudget({}).limit, 10000);
+    assert.equal(emptyBudget({ JEV_CONTROL_BUDGET_LIMIT: "7" }).limit, 7);
   });
 });

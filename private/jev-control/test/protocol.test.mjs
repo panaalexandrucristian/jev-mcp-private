@@ -37,7 +37,8 @@ describe("eligibility is strictly above the threshold, on the raw probability", 
   });
   it("0.95 is not eligible at T = 0.95, 0.951 is; the tool's label never decides", async () => {
     const at = await go(batchOf(5), [noul(probs([0.95, 0.9, 0.5, 0.4, 0.3]))]);
-    assert.equal(at.result.status, "expand");
+    // Not eligible: round 0 asks at once (early ask), nothing is planned.
+    assert.equal(at.result.status, "ask_user");
     assert.deepEqual(at.result.plan, []);
     const above = await go(batchOf(5), [noul(probs([0.951, 0.9, 0.5, 0.4, 0.3]))]);
     assert.equal(above.result.status, "selected");
@@ -147,7 +148,7 @@ describe("nothing eligible: expansion rounds (D7)", () => {
   const none = noul(probs([0.81, 0.77, 0.6, 0.4, 0.3]));
   it("the first none-eligible round expands; two more genuine rounds then ask", async () => {
     const dir = stateDir();
-    const r0 = await go(batchOf(5), [none], { dir });
+    const r0 = await go(batchOf(5), [none], { dir, expand: true });
     assert.equal(r0.result.status, "expand");
     assert.equal(r0.result.expansions_left, 2);
     const fresh = (note, evidence) => {
@@ -169,7 +170,7 @@ describe("nothing eligible: expansion rounds (D7)", () => {
   });
   it("headless ends with a report that starts Incomplete: and lists the scores", async () => {
     const dir = stateDir();
-    await go(batchOf(5), [none], { dir, headless: true });
+    await go(batchOf(5), [none], { dir, headless: true, expand: true });
     const b1 = batchOf(5, { extra: { new_material: "new" } });
     b1.options[1].evidence = ["new evidence 1"];
     await go(b1, [none], { dir, headless: true });
@@ -201,6 +202,53 @@ describe("nothing eligible: expansion rounds (D7)", () => {
     assert.equal(mid.result.status, "ordered");
     assert.deepEqual(mid.result.plan.map((p) => `${p.id}:${p.action}`), ["o1:execute", "action_gather_evidence:suspend"]);
     assert.equal(mid.result.suspend_at, "action_gather_evidence");
+  });
+});
+
+describe("early ask: nothing eligible in round 0 asks at once in an interactive session unless an expansion is requested", () => {
+  const none = noul(probs([0.81, 0.77, 0.6, 0.4, 0.3]));
+  it("asks the user with a ready one-option approval question for the top real option", async () => {
+    const { result, caller } = await go(batchOf(5), [none]);
+    assert.equal(result.status, "ask_user");
+    assert.equal(result.reason, "none_above_threshold");
+    assert.equal(result.ask, "Approve o1?");
+    assert.equal(result.expansions_left, 2);
+    assert.match(result.report, /^no option exceeded T=0.95 after 0 expansion round/);
+    assert.deepEqual(result.plan, []);
+    assert.equal(caller.calls.length, 1);
+  });
+  it("headless keeps the expansion rounds: nobody can answer, and in real headless runs an expansion did reach a plan", async () => {
+    const { result } = await go(batchOf(5), [none], { headless: true });
+    assert.equal(result.status, "expand");
+    assert.equal(result.expansions_left, 2);
+    assert.equal(result.ask, undefined);
+  });
+  it("a later call with the same decision id and new material is still an expansion round", async () => {
+    const dir = stateDir();
+    await go(batchOf(5), [none], { dir });
+    const b = batchOf(5, { extra: { new_material: "the user asked for more evidence" } });
+    b.options[0].evidence = ["measured: 11 of 11 approvals matched the top option"];
+    const r1 = await go(b, [none], { dir });
+    assert.equal(r1.result.status, "expand");
+    assert.equal(r1.result.round, 1);
+    assert.equal(r1.result.expansions_left, 1);
+  });
+  it("the ask after the last expansion round also names the top option", async () => {
+    const dir = stateDir();
+    await go(batchOf(5), [none], { dir, expand: true });
+    const fresh = (note, evidence) => {
+      const b = batchOf(5, { extra: { new_material: note } });
+      b.options[1].evidence = [evidence];
+      return b;
+    };
+    await go(fresh("one", "new fact one"), [none], { dir });
+    const last = await go(fresh("two", "new fact two"), [noul(probs([0.5, 0.88, 0.6, 0.4, 0.3]))], { dir });
+    assert.equal(last.result.status, "ask_user");
+    assert.equal(last.result.ask, "Approve o2?");
+  });
+  it("Jev choosing to gather evidence still expands without the flag", async () => {
+    const { result } = await go(batchOf(5), [noul(probs([0.5, 0.5, 0.5, 0.5, 0.5], [0.99, 0.1]))]);
+    assert.equal(result.status, "expand");
   });
 });
 
@@ -254,11 +302,12 @@ describe("raw scores, concrete actions and availability", () => {
     const state = loadControlState(stateDirOf(result)).decisions;
     assert.equal(state.length, 1);
     const at = await go(batchOf(5), [noul(probs([0.95, 0.9, 0.5, 0.4, 0.3]))]);
-    assert.equal(at.result.status, "expand");
+    // Not eligible: round 0 asks at once (early ask), nothing is planned.
+    assert.equal(at.result.status, "ask_user");
     assert.equal(at.result.scores.o1, 0.95);
     const near = await go(batchOf(5), [noul(probs([0.949999, 0.9, 0.5, 0.4, 0.3]))]);
     assert.equal(near.result.scores.o1, 0.949999);
-    assert.match(near.result.status, /expand/);
+    assert.equal(near.result.status, "ask_user");
   });
   it("a plan item carries the option's raw score and the hash of its concrete action; the receipt provenance has the full records", async () => {
     const { result, caller } = await go(batchOf(5, { kind: "command" }), [noul(probs([0.981234, 0.6, 0.4, 0.3, 0.2]))]);

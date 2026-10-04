@@ -66,9 +66,12 @@ export function sandboxEnv(extra = {}) {
   };
 }
 
-/** Environment extras for the local fake MCP server (a fake key: no network is ever used). */
+/**
+ * Environment extras for the local fake MCP server (a fake key: no network is ever used). JEV_PROVIDER is typesafe so the
+ * gate packs by the tool's own limits; a test of the OpenRouter payload budget passes JEV_PROVIDER: "openrouter".
+ */
 export function fakeJevEnv(mode = "accepted", extra = {}) {
-  return { JEV_FLOW_MCP_COMMAND: JSON.stringify([process.execPath, FAKE_MCP_SERVER]), FAKE_MCP_MODE: mode, OPENROUTER_API_KEY: "sk-or-v1-test-fake", ...extra };
+  return { JEV_FLOW_MCP_COMMAND: JSON.stringify([process.execPath, FAKE_MCP_SERVER]), FAKE_MCP_MODE: mode, OPENROUTER_API_KEY: "sk-or-v1-test-fake", JEV_PROVIDER: "typesafe", ...extra };
 }
 
 export function run(command, args, { cwd = REPO_ROOT, env = sandboxEnv(), input } = {}) {

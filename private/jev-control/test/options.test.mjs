@@ -28,9 +28,20 @@ describe("option batches (D6)", () => {
     const none = batchOf(5);
     none.options[0].evidence = [];
     assert.match(problemsOf(none).join(" "), /evidence must have 1-3/);
+  });
+  it("merges evidence lines beyond the third into the third, with a notice, instead of refusing the batch", () => {
     const four = batchOf(5);
-    four.options[0].evidence = ["a", "b", "c", "d"];
-    assert.match(problemsOf(four).join(" "), /evidence must have 1-3/);
+    four.options[0].evidence = ["a", "b", "c", "d", "e"];
+    const n = normalizeBatch(four);
+    assert.equal(n.ok, true, JSON.stringify(n.problems));
+    assert.deepEqual(n.batch.options[0].evidence, ["a", "b", "c; d; e"]);
+    assert.deepEqual(n.notices, ["options[0].evidence: 5 lines merged into 3"]);
+    assert.deepEqual(normalizeBatch(batchOf(5)).notices, []);
+  });
+  it("keeps refusing evidence whose merged third line would be too long, saying why", () => {
+    const long = batchOf(5);
+    long.options[0].evidence = ["a", "b", "c".repeat(400), "d".repeat(400)];
+    assert.match(problemsOf(long).join(" "), /evidence must have 1-3 concrete lines \(merging the lines after the second would exceed 600 characters\)/);
   });
   it("refuses ids that collide with jev_decide's escape hatches", () => {
     for (const id of ["ask_user", "investigate", "none"]) {

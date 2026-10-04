@@ -6,7 +6,7 @@
 // Romanian; a heuristic on purpose: it errs towards "not an authorization", so a doubtful approval is reported, never silently
 // accepted. An authorization has a SCOPE: the budget (words about the budget, the limit or calls) or one option (words that
 // name it); a short answer («yes») counts only together with the concrete question it answers.
-import { BUDGET_LIMIT } from "./state.mjs";
+import { DEFAULT_STEP } from "./state.mjs";
 
 /** The most one approval can raise the budget by (budget.mjs caps it too). */
 export const MAX_QUANTUM = 100;
@@ -199,7 +199,7 @@ export function incrementFor(quantity, limit) {
   if (quantity.kind === "ambiguous") return { ok: false, reason: "quantum_ambiguous" };
   if (quantity.kind === "invalid") return { ok: false, reason: "quantum_invalid" };
   if (quantity.kind === "increment" && quantity.n < 1) return { ok: false, reason: "quantum_zero" };
-  const n = quantity.kind === "increment" ? quantity.n : quantity.kind === "total" ? quantity.n - limit : BUDGET_LIMIT;
+  const n = quantity.kind === "increment" ? quantity.n : quantity.kind === "total" ? quantity.n - limit : DEFAULT_STEP;
   if (!(n >= 1)) return { ok: false, reason: "limit_not_raised" };
   return { ok: true, allowed: Math.min(n, MAX_QUANTUM) };
 }
@@ -276,7 +276,7 @@ const POLITE = new Set(["thanks", "thank", "thx", "you", "a", "lot", "mersi", "m
 const isPolite = (s) => tokensOf(s).every((w) => POLITE.has(w));
 const mentions = (s, scope) => (scope.kind === "option" ? idPositions(norm(s), scope.id).length > 0 : tokensOf(s).some((w) => BUDGET_NOUN.has(w) || numberOf(w) !== undefined));
 /** The quantity as it would be spent: no number at all is the default step. */
-const effectiveQuantity = (q) => (q.kind === "none" ? { kind: "increment", n: BUDGET_LIMIT } : q);
+const effectiveQuantity = (q) => (q.kind === "none" ? { kind: "increment", n: DEFAULT_STEP } : q);
 const sameQuantity = (a, b) => (a.kind === "increment" || a.kind === "total") && a.kind === b.kind && a.n === b.n;
 /**
  * May the approval found in the sentences `approval` (indexes) stand in the context of the WHOLE message? Every other

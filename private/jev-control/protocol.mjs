@@ -5,9 +5,11 @@
 // mutually exclusive top options go to successive jev_decide selections over at
 // most six options, each accepted only with confidence strictly above the
 // threshold; a cut at six with a tie on the boundary goes through a jev_rerank
-// "should come first" pass over all the tied options. Nothing eligible: at most
-// two expansion rounds with genuinely new material, then ask the user (headless:
-// stop with a report that starts "Incomplete:"). Nothing below the threshold is
+// "should come first" pass over all the tied options. Nothing eligible in round 0
+// of an interactive session: ask the user at once with a one-option question,
+// unless an expansion is requested (--expand, or the same decision id with new
+// material). Headless, and after a requested expansion: at most two expansion
+// rounds, then ask (headless: stop with a report that starts "Incomplete:"). Nothing below the threshold is
 // executed without a recorded user approval. Jev unavailable (after the single
 // identical retry) stops the step; there is no silent continuation.
 import { sanitizeText } from "../jev-flow/sanitize.mjs";
@@ -276,9 +278,20 @@ async function decideOnce(batch, ctx) {
   const expansionsLeft = MAX_EXPANSIONS - round;
   const stopForUser = (reason, extra = {}) => {
     const status = ctx.headless ? "incomplete" : "ask_user";
-    return finish(status, { reason, report: reportFor(ctx.headless, T, round, scoreOf), ...extra }, scoreOf);
+    // The one-option question a bare "yes" can answer (approve needs a question naming ONE option).
+    const top = Object.entries(scoreOf).filter(([id]) => !CONTROL_IDS.includes(id)).sort((a, b) => b[1] - a[1])[0];
+    const ask = !ctx.headless && top ? { ask: `Approve ${top[0]}?` } : {};
+    return finish(status, { reason, report: reportFor(ctx.headless, T, round, scoreOf), ...ask, ...extra }, scoreOf);
   };
-  const expandOrAsk = (reason, extra = {}) => (expansionsLeft > 0 ? finish("expand", { reason, expansions_left: expansionsLeft, ...extra }, scoreOf) : stopForUser(reason, extra));
+  // Early ask (interactive only): in real sessions an expansion round almost never lifted an option above T nor changed
+  // the winner, so a round 0 with nothing eligible asks at once; an expansion is still available with --expand, or later
+  // with the same decision id and new material. Headless keeps the rounds: nobody can answer, and there an expansion did
+  // reach a plan. Jev choosing to gather evidence, and an unresolved tie, still expand.
+  const expandOrAsk = (reason, extra = {}) => {
+    if (expansionsLeft <= 0) return stopForUser(reason, extra);
+    if (reason === "none_above_threshold" && round === 0 && !ctx.headless && ctx.expand !== true) return stopForUser(reason, { expansions_left: expansionsLeft, ...extra });
+    return finish("expand", { reason, expansions_left: expansionsLeft, ...extra }, scoreOf);
+  };
   let scoreOf = {};
   if (!usable.some((o) => !o.control)) return expandOrAsk("all_options_unavailable");
   // 1. Independent probabilities, over as many jev_noul calls as the whole material needs (each option is judged on its own).
