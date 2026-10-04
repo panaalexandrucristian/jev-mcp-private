@@ -359,7 +359,7 @@ export function decideOutcome(verdict, status) {
  * Summary within RUN_LIMITS.summaryChars (8 KB). When too large, it is
  * compacted step by step and never loses a part, a check, a limit or a
  * claim's overall verdict: first the per-occurrence detail is dropped
- * (`occurrences_omitted: n`), then long limit lists become counts
+ * (`occurrences_omitted: n`; each claim keeps its lowest confidence), then long limit lists become counts
  * (`{count: n}`) and redactions are summed per kind, problems are capped
  * (the omission is stated), then claims become verdict → claim-number ranges
  * (`{"verified": "1-12,14", "contradicted": "13"}`), parts become tuples
@@ -378,6 +378,15 @@ export function compactSummary(summary, max = RUN_LIMITS.summaryChars) {
   const steps = [
     () => {
       if (Array.isArray(s.occurrences)) {
+        // Each claim keeps its lowest evaluated confidence (null when none was evaluated) before the per-occurrence detail goes.
+        if (Array.isArray(s.claims)) {
+          const lowest = new Map();
+          for (const o of s.occurrences) {
+            if (typeof o?.confidence !== "number") continue;
+            lowest.set(o.c, Math.min(lowest.get(o.c) ?? Infinity, o.confidence));
+          }
+          s.claims = s.claims.map((cl) => ({ ...cl, confidence: lowest.get(cl.c) ?? null }));
+        }
         s.occurrences_omitted = s.occurrences.length;
         delete s.occurrences;
       }

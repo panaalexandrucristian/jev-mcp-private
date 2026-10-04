@@ -412,6 +412,32 @@ describe("gate runner: partitioning, sanitizing, credentials, verdicts", () => {
     assert.match(parsed.problems.at(-1), /more problem\(s\) omitted/);
     assert.doesNotMatch(out, /re-run/);
   });
+
+  it("keeps each claim's lowest confidence when the per-occurrence detail is dropped", () => {
+    const s = bigSummary(2, 2, { light: true });
+    // Claim 1 occurs in two parts; claim 4 was never evaluated.
+    s.occurrences = [
+      { c: 1, part: 1, verdict: "verified", confidence: 0.97 },
+      { c: 1, part: 2, verdict: "verified", confidence: 0.81 },
+      { c: 2, part: 1, verdict: "verified", confidence: 0.99 },
+      { c: 3, part: 2, verdict: "verified", confidence: 0.951 },
+      { c: 4, part: 2, verdict: "unevaluated", confidence: null },
+    ];
+    s.claims = [1, 2, 3, 4].map((c) => ({ c, verdict: c === 4 ? "unevaluated" : "verified" }));
+    s.limits.unattributed = Array.from({ length: 498 }, (_, i) => `.handoff-verify/run-${i}/report.verify.json`);
+    assert.ok(JSON.stringify(s).length > RUN_LIMITS.summaryChars);
+    const parsed = JSON.parse(compactSummary(s));
+    assert.equal(parsed.occurrences, undefined);
+    assert.equal(parsed.occurrences_omitted, 5);
+    assert.deepEqual(parsed.claims, [
+      { c: 1, verdict: "verified", confidence: 0.81 },
+      { c: 2, verdict: "verified", confidence: 0.99 },
+      { c: 3, verdict: "verified", confidence: 0.951 },
+      { c: 4, verdict: "unevaluated", confidence: null },
+    ]);
+    // The input is not modified.
+    assert.equal(s.claims[0].confidence, undefined);
+  });
 });
 
 describe("gate runner: the whole batch is evaluated and aggregated (R5)", () => {
