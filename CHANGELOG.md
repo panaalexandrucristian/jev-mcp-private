@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.0
+
+- `jev_verify`: contradictions now require evidence about the claim's own subject. Off-subject contradictions become `unsupported` and require review; missing subject judgments also require review. Via [#54](https://github.com/jkudish/jev-mcp/pull/54) by [@deadczarvc](https://github.com/deadczarvc), prompted by [#53](https://github.com/jkudish/jev-mcp/issues/53).
+- Runnable deny-only coding-agent hook example, with optional human escalation and bounded input, runtime, and subprocess cleanup. Via [#52](https://github.com/jkudish/jev-mcp/pull/52) by [@Rex-Gao](https://github.com/Rex-Gao), prompted by [#51](https://github.com/jkudish/jev-mcp/issues/51).
+
+## 0.12.0
+
+- Side-effect-free imports: the package root and `/server` export `createServer()` without starting a transport; the CLI stays unchanged. The new exports map replaces `dist/*` deep imports. Requested in [#49](https://github.com/jkudish/jev-mcp/issues/49) by [@deadczarvc](https://github.com/deadczarvc).
+- Opt-in `/mcp/<token>` authentication for HTTP clients that cannot send bearer headers, with URL-safe token validation and token stripping after authentication. Via [#50](https://github.com/jkudish/jev-mcp/pull/50).
+- TypeSafe requests retry transient HTTP failures, honor bounded `Retry-After`, and report the effective model through `jev-agent-tools` 0.1.4; exhausted rate limits and server failures remain tool errors rather than invalid judgments. Reported in [jev-agent-tools#5](https://github.com/jkudish/jev-agent-tools/issues/5) by [@deadczarvc](https://github.com/deadczarvc).
+
+## 0.11.0
+
+- New `jev_audit` tool: a max-gated failure-mode battery (hallucinated, off-target, incomplete, wrong format) plus an omission check, auditing extracted values against their source before they're trusted. Via [#48](https://github.com/jkudish/jev-mcp/pull/48) by Rex-Gao, prompted by [#45](https://github.com/jkudish/jev-mcp/issues/45).
+- `jev_decide`: names `contradicted_requirements` on the recommendation, and opt-in `escalate_on_contradiction` withdraws a contradicted pick in addition to the warning; no silent re-selection. Via [#46](https://github.com/jkudish/jev-mcp/pull/46) by Rex-Gao, prompted by [#43](https://github.com/jkudish/jev-mcp/issues/43); the structural-field idea from [#44](https://github.com/jkudish/jev-mcp/pull/44) by xujiantop-crypto.
+- `jev_review` / `jev_gate`: optional per-file review mode — one request, composed auto/mean/min/limiting, combined request+tests+diffs budget, per-file truncation. Via [#47](https://github.com/jkudish/jev-mcp/pull/47) by Rex-Gao, prompted by [#42](https://github.com/jkudish/jev-mcp/issues/42).
+- Docs: runnable Exa search → classification example. Via [#41](https://github.com/jkudish/jev-mcp/pull/41) by RogueTex.
+
 ## 0.10.1
 
 - `--http` advertises a static tool list and refuses `subscriptions/listen` in-band: previously a client that opened a listener parked an idle stream on a concurrency slot for its lifetime, and enough listeners could starve the server of slots. Slot accounting no longer leaks on a rejected handler either.

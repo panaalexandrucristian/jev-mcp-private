@@ -9,7 +9,7 @@
 
 Fast, cheap, typed judgments from TypeSafe's Jev model, as MCP tools.
 
-Give your agent eleven judgment tools:
+Give your agent twelve judgment tools:
 
 - `jev_verify` checks claims against evidence.
 - `jev_screen` judges content before it enters context.
@@ -20,6 +20,7 @@ Give your agent eleven judgment tools:
 - `jev_decide` settles bounded alternatives.
 - `jev_compare` judges how two passages relate.
 - `jev_extract` pulls field values with regex plus judgment.
+- `jev_audit` audits extracted values against their source before they are trusted.
 - `jev_review` scores a proposed diff before the task is called done.
 - `jev_gate` reviews a patch and verifies completion claims in one call.
 
@@ -142,7 +143,17 @@ It listens on `PORT` (default `8080`) and serves MCP at `/mcp`, with a health ch
 claude mcp add --transport http jev https://jev.example.com/mcp --header "Authorization: Bearer $JEV_MCP_AUTH_TOKEN"
 ```
 
+Some clients can only be configured with a URL and cannot send headers, such as claude.ai custom connectors. For those, set `JEV_MCP_PATH_TOKEN=1` and give the client `https://jev.example.com/mcp/<token>`; the segment is compared raw, in constant time, against `JEV_MCP_AUTH_TOKEN`, and the server refuses to start unless the token is URL-safe (letters, digits, `.` `_` `-` `~`). Use a dedicated high-entropy token for this form (for example `openssl rand -hex 32`), serve it over HTTPS only, and treat the whole URL as the secret: redact full paths from proxy and access logs, keep the URL out of shared configs, and avoid redirects of it. Rotate the token if it escapes. It is off by default because a URL is easier to leak than a header. The header form keeps working alongside it.
+
 The server itself speaks plain HTTP: terminate TLS at a reverse proxy or load balancer before exposing it beyond loopback, and put connection limits and request rate limits at that ingress. The process bounds admitted `/mcp` requests (`JEV_MCP_MAX_CONCURRENCY`, default 16; excess shed with `429`) and caps request bodies at 4 MiB, but it does not limit sockets waiting to finish headers or repeatedly rejected requests. The tool list is static: the server advertises no `listChanged` capability and refuses `subscriptions/listen` requests, so an idle listener cannot hold one of the concurrency slots. Clients that never open a listener, the common case, see no difference.
+
+### Embedding
+
+The `jev-mcp` bin boots a transport when run; importing the package never does. To run the tools in-process (an agent hook, a larger server, a test harness):
+
+- `import { createServer } from "@jkudish/jev-mcp"` — side-effect-free: it registers the tools and exports a `createServer()` that returns a fresh `McpServer` wired with all twelve, without starting stdio or HTTP. Connect your own transport to it; the stateless HTTP path in this package uses the same factory. `@jkudish/jev-mcp/server` is an explicit alias for the same entry.
+- `MODEL` is exported alongside it, resolved from `JEV_MCP_MODEL` at import time (default `jev-latest`), so embedders report the same model the CLI serves.
+- The package now declares `exports`, so deep imports like `@jkudish/jev-mcp/dist/index.js` no longer resolve. Before the exports map, importing that path booted a transport inside the importer's process — the trap `/server` and the safe root entry replace. `dist/index.js` remains the bin and still boots when executed.
 
 ### Agent skill
 
@@ -186,21 +197,26 @@ Check each claim in a report, PR description, or agent brief against the sources
 }
 ```
 
-Malformed or missing relation answers fail closed per claim (other valid claims are preserved). A missing, null, or non-object `answers` envelope invalidates every claim:
+A malformed or missing relation answer fails closed per claim:
 
 ```jsonc
 // invalid result entry; tool/model/provider/auto_accept/summary/results/usage remain
 {
   "id": "claim0", "claim": "The claim being checked",
   "verdict": "unknown", "probabilities": null, "confidence": null,
-  "status": "invalid_response", "action": "review", "supporting_evidence": null
+  "status": "invalid_response", "action": "review", "supporting_evidence": null, "same_subject": null
 }
 ```
 
+- A malformed or missing relation answer fails closed for that claim; other valid claims are preserved. A missing, null, or non-object `answers` envelope invalidates every claim.
 - Relation choices must belong to the requested set and be a maximum-probability option. Distributions must contain exactly all relation keys, with finite probabilities in `[0,1]` summing to 1 within `0.01`.
 - Missing or null confidence stays `null` and requires `review`, even with `auto_accept: 0`. Non-number, non-finite, or out-of-range confidence invalidates the claim and is returned as `null`; numeric zero is valid.
 - With multiple evidence items, each claim also gets the id of the evidence it rests on. These source answers are optional auxiliary information; missing sources yield `supporting_evidence: null` without invalidating a valid relation. A present source must be a well-formed choice over the evidence ids plus `none`; anything else yields `null`.
 - `auto_accept` (default `0.8`) is the confidence at or above which a verdict stands. Lower-confidence verdicts come back flagged `review`.
+- Each claim also gets a subject question: does the evidence report on that claim's own check, run, file, or object? `same_subject` carries the probability. This follows TypeSafe's [decomposition pattern](https://docs.typesafe.ai/primitives): separate judgments, composed in code.
+- A contradiction stands only when `same_subject` reaches `subject_at` (default `0.5`). Below it, the verdict is `unsupported`, the original relation remains visible as `relation_verdict: "contradicted"`, and the claim requires `review`.
+- A missing or malformed subject answer yields `same_subject: null`. A contradiction keeps its relation verdict but requires `review`, regardless of `auto_accept`; verified and unsupported relations retain their confidence-based routing.
+- Subject-aware verification applies to `jev_verify`, not `jev_gate`. It adds one probability question per claim, not another API request. The replay figures in [#53](https://github.com/jkudish/jev-mcp/issues/53) are the contributor's private experiment, not an independently reproduced accuracy benchmark.
 - For quote-level citation checks, match quotes against the source in code first and send only the surviving claims. See the [citation-check cookbook](https://docs.typesafe.ai/cookbooks/citation_check).
 
 ### jev_screen
@@ -234,8 +250,9 @@ Missing or malformed required answers return an error branch:
 }
 ```
 
-All requested probabilities must be finite numbers in `[0,1]`; zero is valid. Invalid or missing probabilities become `null`, while valid values are retained. Relevance is required only when a non-empty purpose is supplied; otherwise it is `null`. A missing, null, or non-object `answers` envelope also takes this error branch.
-
+- All requested probabilities must be finite numbers in `[0,1]`; zero is valid. Invalid or missing probabilities become `null`, while valid values are retained.
+- Relevance is required only when a non-empty `purpose` is supplied; otherwise it is `null`.
+- A missing, null, or non-object `answers` envelope also takes this error branch.
 - The recommendation is advisory: `pass`, `review`, `block`, or `skip`. The server never blocks on its own; enforcement stays with the calling agent.
 - Low substance or relevance yields `skip`: the page is not worth reading.
 - `block_at` (default `0.75`) and `review_at` (default `0.25`) are thresholds on the injection probability. Both are parameters.
@@ -289,8 +306,9 @@ Missing or malformed `exists` or `best` answers return an error branch:
 }
 ```
 
-`exists` must be a finite number in `[0,1]`; zero validly means `absent`. On failure, a valid `exists` value is retained; an invalid or missing value becomes `null`. The best distribution must contain exactly all candidate ids, finite probabilities in `[0,1]` summing to 1 within `0.01`, and a string choice tied for the maximum probability. Missing, null, or non-object `answers` also returns this error branch. Protocol failure is reported only in `status`; `exists_verdict` is `null` on failure.
-
+- `exists` must be a finite number in `[0,1]`; zero validly means `absent`. On failure, a valid `exists` value is retained; an invalid or missing value becomes `null`. Protocol failure is reported only in `status`; `exists_verdict` is `null` on failure.
+- The best distribution must contain exactly all candidate ids, finite probabilities in `[0,1]` summing to 1 within `0.01`, and a string choice tied for the maximum probability.
+- A missing, null, or non-object `answers` envelope also returns this error branch.
 - On successful responses, ranking always returns a winner, because Choice probabilities sum to 1. A top hit can masquerade as an answer when none is present; the exists check catches that. `exists_verdict` is `answered`, `partial`, or `absent`.
 - Up to 250 candidates per call. Candidate texts are truncated at 2,000 characters.
 - Pattern from the [semantic-find cookbook](https://docs.typesafe.ai/cookbooks/semantic_find).
@@ -329,6 +347,7 @@ Assign each item to one class from a shared catalog, in one batched request: the
 - Class descriptions carry the decision. Strong ones state a precise definition, what belongs, what does not, precedence over overlapping classes, and a short example.
 - Up to 250 classes and 64 items per call, with an 8,000 item-class budget per batch (split larger waves into multiple calls); item text is truncated at 2,000 characters.
 - A malformed or incomplete model response is reported as `status: invalid_response` on that item, never as model uncertainty. The chosen class must have the maximum probability (ties and differences within `1e-9` are accepted); otherwise that item returns `invalid_response`.
+- For a runnable Exa search → classification pipeline with preserved source URLs and review routing, see the [Exa classification example](examples/exa-classify.md).
 
 ### jev_decide
 
@@ -352,14 +371,16 @@ One bounded decision, 2-6 candidates, evidence, and explicit priorities. Jev ret
 // live result, abridged
 {
   "recommendation": { "selected": "poll", "escaped": false, "confidence": 1,
-                      "probabilities": { "poll": 1, "push": 0, "ask_user": 0 } },
+                      "probabilities": { "poll": 1, "push": 0, "ask_user": 0 },
+                      "contradicted_requirements": [] },
   "checks": [ { "candidate": "poll", "requirement": 0, "answer": "supported" },
               { "candidate": "push", "requirement": 0, "answer": "contradicted" } ]
 }
 ```
 
 - Escape hatches (`ask_user`, `investigate`, `none`) let the model decline to rank when a preference or fact is missing; `escaped: true` in the result marks it. Disable with `escape_hatches: false` for closed-world choices.
-- Requirement checks run as independent questions in the same request and may disagree with the recommendation; a contradiction on the recommended candidate surfaces as a warning.
+- Requirement checks run as independent questions in the same request and may disagree with the recommendation; `recommendation.contradicted_requirements` names the zero-based requirement indexes whose checks came back `contradicted` for the selected candidate, and a contradiction also surfaces as a warning.
+- Pass `escalate_on_contradiction: true` to withdraw a contradicted recommendation in addition to the warning: the result comes back `selected: null` with `status: "escalate"` (the `jev_verify` vocabulary), probabilities and `contradicted_requirements` intact. The indexes describe the recommended candidate before withdrawal — `selected` is null afterward. The default keeps the recommendation and warns. No re-selection: a withdrawn recommendation is never silently replaced by the runner-up.
 - One call per unchanged decision. Repeat only with materially new evidence or criteria.
 
 <sub>Pattern credit: [thesammykins/jev_ampcode](https://github.com/thesammykins/jev_ampcode).</sub>
@@ -400,8 +421,8 @@ Score every candidate's relevance to a query and get them back sorted. You bring
 }
 ```
 
-Each candidate is a file: `id` is any handle you choose, echoed back verbatim, and `text` is the file's contents (truncated at 2,000 characters). No candidate contains the words bandwidth or triple. A shorter CDN TTL means more origin fetches, so `src/cache.ts` ranks first on meaning alone; the always-on VMs are cloud spend too, just not bandwidth.
-
+- Why `src/cache.ts` ranks first: no candidate contains the words bandwidth or triple. A shorter CDN TTL means more origin fetches, so it wins on meaning alone; the always-on VMs are cloud spend too, just not bandwidth.
+- Each candidate is a file: `id` is any handle you choose, echoed back verbatim, and `text` is the file's contents (truncated at 2,000 characters).
 - One relevance probability per candidate, all in a single request; cost scales with the number of candidates, not with candidate-pairs.
 - Candidate ids are preserved verbatim. If any answer comes back malformed, the whole ranking is reported `invalid_response` rather than sorting a missing score as a confident zero.
 - Up to 250 candidates and a 100,000-character aggregate budget; split larger batches.
@@ -471,6 +492,55 @@ Pull structured fields out of a document with your regex and Jev's judgment. You
 - Invalid patterns and regexes that time out (they run in a sandboxed worker with a 1-second deadline, so a pathological pattern cannot hang the server) return `invalid_pattern` with the error instead of failing the whole call.
 - Up to 32 fields per call and 20 candidate matches per field, judged in one request. The document is capped at 50,000 characters, and the candidate match text at 50,000 characters in aggregate.
 
+### jev_audit
+
+Audit extracted values against the text they claim to come from, before the values are trusted. For each value, one request carries a failure-mode battery — hallucinated, off-target, incomplete, wrong format — each a yes/no question framed so that yes means something is wrong, plus a dedicated omission check for values that came back empty. A value's `p_wrong` is the maximum over its checks; any value at or above `wrong_at` (default 0.7) escalates the whole audit. Max-gated, never averaged: one fired flag cannot be diluted by clean siblings.
+
+```jsonc
+// arguments
+{
+  "source": "Invoice INV-7734. Total $1,240.00. Due 2026-10-15. Late fee 1.5% per month.",
+  "records": [
+    { "id": "total", "request": "The invoice total amount", "value": "$1,240.00" },
+    { "id": "due_date", "request": "The due date in YYYY-MM-DD", "value": "2026-10-15" },
+    { "id": "currency", "request": "The billing currency", "value": "EUR" }
+  ]
+}
+```
+
+```jsonc
+// live result, abridged
+{
+  "action": "escalate",
+  "wrong_at": 0.7,
+  "summary": { "records": 3, "flagged": 1, "invalid": 0 },
+  "records": [
+    { "id": "total", "value": "$1,240.00", "action": "ok", "p_wrong": 0.02,
+      "checks": { "hallucinated": 0.02, "off_target": 0.01, "incomplete": 0.01, "format": 0.01 } },
+    { "id": "due_date", "value": "2026-10-15", "action": "ok", "p_wrong": 0.03, "checks": { "…": "…" } },
+    { "id": "currency", "value": "EUR", "action": "wrong", "p_wrong": 0.91,
+      "checks": { "hallucinated": 0.91, "off_target": 0.4, "incomplete": 0.05, "format": 0.2 } }
+  ]
+}
+```
+
+- Here the currency was fabricated — the invoice never states one — and the `hallucinated` check catches what a schema-valid extraction would happily pass through.
+- The framing discipline is the point: every check asks "is something wrong", so one threshold routes the record. The battery, the omission special case, and the max gate come from TypeSafe's SDE cascade cookbook, where this verifier is what catches a schema-valid fabrication.
+- An empty value gets only the omission check: wrong when the source supports a value the extractor missed, correct when returning nothing was right.
+- Malformed answers mark the record `invalid_response` and escalate: a protocol failure is never a clean pass. A truncated `source` (over 50,000 characters) demotes `pass` to `review`, never keeps it.
+- Up to 32 records per call, judged in one request; each request line is capped at 500 characters, each value at 2,000.
+
+#### Multimodal intake
+
+Jev reads text only — its state is a string, JSON object, or array, and images, audio, and video are not supported (pre-process to text first, per the TypeSafe docs). Multimodal judgment therefore lands as a cascade, with the text artifacts cross-checked by the text-only judge:
+
+1. **Extract** with your host model: a vision or ASR model produces a dense transcript of the image, scan, or recording, plus the structured values you want.
+2. **Screen** the transcript with `jev_screen`: transcripts of fetched content are untrusted text and get the injection screen before anything else. The screen is advice you enforce — honor `block` and `review` before passing the transcript onward. It protects what enters your context, not the vision or ASR model, which has already consumed the untrusted material.
+3. **Audit** the values against the transcript with `jev_audit`. This is a cross-check between two text artifacts, not verification of the original: when the original text exists (a document, a page), audit against it directly. For vision or ASR output, one host model usually produces both the transcript and the values, so the same misreading can appear in both and pass the audit — producing the two separately, or with independent models, makes the cross-check stronger. `pass` means no check crossed the threshold, never that the values were verified against the pixels or audio.
+4. **Judge** with the existing tools — verify claims, classify, review — over the audited text, keeping the provenance in state so downstream judgments know they read an extraction, not the original.
+
+<sub>Question design adapted from the TypeSafe [SDE cascade cookbook](https://docs.typesafe.ai/cookbooks/sde_cascade) (see [#45](https://github.com/jkudish/jev-mcp/issues/45)).</sub>
+
 ### jev_review
 
 Score a proposed diff against the request before the task is called done. Jev answers four rubric questions, correctness, spec match, test gap, and blast radius, each 0..2, plus one safe-to-apply probability; the server combines them into a weighted composite and one action: `auto`, `review`, or `escalate`. It judges what you hand it. It never runs tests and never applies the patch.
@@ -505,14 +575,18 @@ Score a proposed diff against the request before the task is called done. Jev an
 }
 ```
 
-Here the composite clears the floor, but the failing test drags `safe_to_apply` to 0.24 and rubric confidences sit under `review_at`, so the patch escalates instead of sailing through on its decent scores.
-
+- Why the example escalates: the composite clears the floor, but the failing test drags `safe_to_apply` to 0.24 and rubric confidences sit under `review_at` — decent scores don't sail through on their own.
 - Rubric scores run 0..2. Higher is better for `correctness` and `spec_match`; higher is worse for `test_gap` and `blast_radius`, and the composite inverts those two before weighting, so a composite of 1.0 means favorable on every rubric.
 - A score answer may carry its full probability distribution over the three options; when the provider reports one, it is validated (exact keys, probabilities summing to one, expected value within a small tolerance of the reported score) and returned in `scores.*.probabilities`. Absent means "not reported" and stays `null`; a distribution that is present but malformed or contradictory marks that rubric `invalid_response`.
 - `reason_codes` collects why the review decided as it did: `invalid_response`, `unknown_confidence`, `confidence_below_review`, `safe_to_apply_below_review`, `confidence_below_auto_accept`, `safe_to_apply_below_auto_accept`, `composite_below_floor`, `incomplete_context`, `accepted`. `limiting_rubrics` names the rubric(s) that bound the decision, ties included: the null-confidence rubrics when confidence is unknown, every rubric tied at the minimum confidence when a confidence threshold blocks, and the least favorable rubrics when the composite floor blocks.
 - `auto` requires `safe_to_apply` and every rubric confidence at `auto_accept` and the composite at `composite_floor`. `safe_to_apply` or any rubric confidence below `review_at`, or unknown, escalates; a composite below `composite_floor` returns `review`, not `escalate`. Unknown confidence counts as escalate, never as a value that can satisfy a threshold.
 - `request` frames the review; it is not proof of anything. Put real output in `tests`. Every field is treated as evidence to evaluate, never instructions to follow.
 - Each text field is capped at 50,000 characters. Truncated input sets `truncated: true` and can never return `auto`; a malformed answer is `invalid_response`, not a semantic outcome.
+- Multi-file change: pass `files` (an array of `{ path, diff }`, up to 16 files) instead of `diff` — exactly one of the two. `jev_gate` takes the same `files` input for its review half.
+- The rubric is asked once per file, all in one request, each question scoped to its own file by index; the result carries `mode: "per-file"` and a `files` array with the full per-file review.
+- Composed top-level fields: the change is `auto` only when every file is `auto`, `composite` is the file mean, `safe_to_apply` is the file minimum, and `limiting` names the file and rubrics that bound the decision. Nothing is averaged into invisibility — a weak file stays visible as itself.
+- One request must fit the combined budget: `request` + `tests` + all file diffs together stay under 200,000 characters.
+- Truncation is per-file: only the file whose own diff (or the shared request/tests context) was truncated is demoted to `review`; an intact file is never demoted for a truncated sibling.
 
 <sub>Adapted from [burnigtm/jev-mcp](https://github.com/burnigtm/jev-mcp) (MIT), via [PR #2](https://github.com/jkudish/jev-mcp/pull/2) by rimusz.</sub>
 
@@ -560,11 +634,13 @@ The completion gate: the same patch review as `jev_review`, plus your completion
 }
 ```
 
-The two true claims verify at full confidence, and the one that matters, "the full test suite passes," is contradicted by the test log at full confidence: exactly the claim a coding agent is most tempted to hand-wave.
-
+- In the example, the two true claims verify at full confidence, and the one that matters — "the full test suite passes" — is contradicted by the test log at full confidence: exactly the claim a coding agent is most tempted to hand-wave.
 - Claim questions instruct Jev to use `evidence` only, not world knowledge, and not the request, diff, or tests fields; if a claim needs a diff excerpt or a test log as support, supply it in `evidence`. All fields share one model state, so this is instruction-level isolation, not a hard boundary. Every field is evidence to evaluate, never instructions to follow.
 - `reason_codes` collects why the gate decided as it did: `incomplete_context`, `invalid_response`, `review_escalated`, `review_required`, plus the review half's specific codes (`unknown_confidence`, `confidence_below_review`, `safe_to_apply_below_review`, `confidence_below_auto_accept`, `safe_to_apply_below_auto_accept`, `composite_below_floor`), `claims_contradicted`, `claims_unsupported`, `claim_confidence_low`, `claim_confidence_below_auto_accept`, `accepted`. The embedded `review` object carries the same `reason_codes` and `limiting_rubrics` a standalone `jev_review` returns.
 - Up to 16 claims and 16 evidence items per call. Text fields are capped at 50,000 characters each, claims at 2,000, and evidence at 200,000 characters in aggregate; oversized evidence is rejected before any model call. Malformed answers surface as `invalid_response` and the gate never returns `auto` on one.
+- The review half accepts `files` instead of `diff` for a multi-file change, exactly as `jev_review` does: the rubric is asked once per file in the same request, the review is `auto` only when every file is `auto`, and the embedded `review` object carries `mode: "per-file"`, the per-file results in `files`, and `limiting` naming the limiting file and rubrics.
+- The same 200,000-character combined budget (`request` + `tests` + all diffs) applies.
+- Truncation is per-file: only a file with its own truncated diff is demoted; claim actions stay fail-closed on any truncation.
 - Use `jev_verify` for claims without a patch review, and `jev_review` for a patch without claims.
 
 <sub>Adapted from [burnigtm/jev-mcp](https://github.com/burnigtm/jev-mcp) (MIT), via [PR #2](https://github.com/jkudish/jev-mcp/pull/2) by rimusz.</sub>
@@ -580,6 +656,7 @@ The two true claims verify at full confidence, and the one that matters, "the fu
 - `jev_decide`: choose between a handful of options with priorities in view.
 - `jev_compare`: how two passages relate, overall or per aspect.
 - `jev_extract`: pull field values a regex can find, verbatim.
+- `jev_audit`: extracted values (from a document, or a vision/ASR transcript) before they are trusted.
 - `jev_review`: score a proposed diff before calling the task done.
 - `jev_gate`: that same review plus completion claims checked against evidence.
 
@@ -646,6 +723,10 @@ Then decide the route, feeding that answer in as evidence. The `requirements` fi
 - One classify call and one decide call per task. Repeating them on the same inputs buys nothing.
 
 <sub>Pattern credit: [@Garfielk](https://github.com/Garfielk), from the routing discussion in [#5](https://github.com/jkudish/jev-mcp/issues/5).</sub>
+
+## Inside the harness: hooks
+
+The tools judge what the model brings into the conversation. The [hook gate example](examples/hook-gate.md) runs the same judgment out of band: a `PreToolUse` hook in Claude Code, Codex, OpenCode, or pi sends each proposed tool call to one `jev_decide` call measured against your written policy, and denies the confident violations with a reason the model can act on. The harness matcher routes for free, local skip rules and size caps defer cheaply, and anything the gate cannot confidently deny falls through to the harness's own permission flow — so a Jev outage never blocks the agent. Deny thresholds are parameters, not promises.
 
 ## How the answers work
 

@@ -67,6 +67,17 @@ export const RELATION_TO_VERDICT: Record<string, string> = {
   says_nothing: "unsupported",
 };
 
+/**
+ * jev_verify decomposition (docs.typesafe.ai/primitives: split a judgment into questions, combine in code): besides
+ * the relation, each claim gets "does the evidence report on this claim's own subject?". A contradiction stands only
+ * at or above this probability; below it the evidence is about something else and says nothing about the claim.
+ */
+export const DEFAULT_SUBJECT_AT = 0.5;
+export const SUBJECT_CRITERIA = {
+  true: "An evidence item reports on exactly what the claim asserts (the same check, run, file, object, or number)",
+  false: "The evidence is silent about it, or reports only on a different check, process, run, or object",
+};
+
 /** Does this verdict stand on its own, or should a human confirm it? */
 export function verifyAction(confidence: number, autoAccept: number): "auto" | "review" {
   return confidence >= autoAccept ? "auto" : "review";
@@ -191,6 +202,15 @@ export const MAX_COMPARE_ASPECTS = 10;
 /** Max fields for jev_extract per call. */
 export const MAX_EXTRACT_FIELDS = 32;
 
+/** Max records per jev_audit call, so one request stays bounded. */
+export const MAX_AUDIT_RECORDS = 32;
+
+/** Per-record request cap (characters) in jev_audit; requests are instructions, not documents. */
+export const MAX_AUDIT_REQUEST_CHARS = 500;
+
+/** Per-record value cap (characters) in jev_audit; values are extracted atoms, not documents. */
+export const MAX_AUDIT_VALUE_CHARS = 2_000;
+
 /** Max regex candidates per field before the set is flagged truncated. */
 export const MAX_EXTRACT_CANDIDATES = 20;
 
@@ -250,6 +270,15 @@ export const MAX_GATE_EVIDENCE_CHARS = 200_000;
 
 /** Per-document cap (characters) for request, diff, tests, and evidence texts. */
 export const MAX_REVIEW_DOC_CHARS = 50_000;
+
+/** Max files in one per-file review (jev_review / jev_gate files mode). */
+export const MAX_REVIEW_FILES = 16;
+
+/** Combined-state budget (characters): request + tests + all file diffs for one per-file review. */
+export const MAX_REVIEW_FILES_TOTAL_CHARS = 200_000;
+
+/** Per-file path cap (characters) in per-file review; paths are identifiers, not documents. */
+export const MAX_REVIEW_FILE_PATH_CHARS = 500;
 
 /** Per-claim cap (characters) in jev_gate; claims are bounded assertions. */
 export const MAX_CLAIM_CHARS = 2_000;
