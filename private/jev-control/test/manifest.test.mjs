@@ -13,12 +13,12 @@ const frontmatter = (text) => {
   return Object.fromEntries(m[1].split("\n").map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]));
 };
 
-describe("the plugin ships jev-control as 0.7.4", () => {
-  it("both manifests carry 0.7.4", () => {
+describe("the plugin ships jev-control as 0.7.5", () => {
+  it("both manifests carry 0.7.5", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.7.4");
-    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.7.4");
+    assert.equal(plugin.version, "0.7.5");
+    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.7.5");
   });
   it("PRIVATE.md documents the version, the section and the new check", () => {
     const text = read("PRIVATE.md");
@@ -26,6 +26,8 @@ describe("the plugin ships jev-control as 0.7.4", () => {
     assert.match(text, /^## Jev control$/m);
     assert.match(text, /node --test private\/jev-control\/test\//);
     assert.match(text, /Nothing has been measured live yet/);
+    assert.match(text, /`0\.7\.5` for the 600-character boundary test/);
+    assert.match(text, /^\*\*Gate status of 0\.7\.3 and 0\.7\.4\.\*\* Neither has an accepted `jev_gate` receipt.*`0a90f637aeeb8f47f02aa391f23d7b67`.*`53935d5ec804d18e24dffe39b8fd2dac`/m);
   });
 });
 

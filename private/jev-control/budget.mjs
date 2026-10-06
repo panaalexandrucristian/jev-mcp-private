@@ -1,7 +1,7 @@
 // The shared Jev call budget of one user request (D15, D26): at most 10000 MCP
 // tools/call ATTEMPTS from every source (main thread, subagents, helpers, gate
 // runner parts, tie-breaks), retries included. A slot is reserved atomically
-// BEFORE the request is sent, so a retry at the limit cannot become call 26.
+// BEFORE the request is sent, so once the limit is reached no retry can reserve another call.
 // A reservation that was never sent is released and reported separately; an
 // unconfirmed reservation is counted but never reported as a measured call.
 // The server's own HTTP/provider calls are not observable from here: they stay

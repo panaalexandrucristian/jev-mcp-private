@@ -199,4 +199,4 @@ Only `opt_pagination` is strictly above 0.95. There is a single eligible option,
 
 **Action:** run the first `e` item, `opt_pagination`: edit `src/pagination.mjs`. The `r` items are not executed.
 
-**Accounting:** 1 `tools/call` attempt (source `helper`) of the 25 for this user request. Provider calls inside the server: unknown.
+**Accounting:** 1 `tools/call` attempt (source `helper`) of the 10000 for this user request. Provider calls inside the server: unknown.

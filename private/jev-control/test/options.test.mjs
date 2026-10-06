@@ -43,6 +43,17 @@ describe("option batches (D6)", () => {
     long.options[0].evidence = ["a", "b", "c".repeat(400), "d".repeat(400)];
     assert.match(problemsOf(long).join(" "), /evidence must have 1-3 concrete lines \(merging the lines after the second would exceed 600 characters\)/);
   });
+  it("accepts a string whose merged third line is exactly 600 characters and refuses 601", () => {
+    const at = batchOf(5);
+    at.options[0].evidence = ["a", "b", "c".repeat(300), "d".repeat(298)].join("\n");
+    const n = normalizeBatch(at);
+    assert.equal(n.ok, true, JSON.stringify(n.problems));
+    assert.equal(n.batch.options[0].evidence[2].length, 600);
+    assert.deepEqual(n.notices, ["options[0].evidence: a string read as 4 lines", "options[0].evidence: 4 lines merged into 3"]);
+    const over = batchOf(5);
+    over.options[0].evidence = ["a", "b", "c".repeat(300), "d".repeat(299)].join("\n");
+    assert.match(problemsOf(over).join(" "), /merging the lines after the second would exceed 600 characters/);
+  });
   it("reads evidence given as one string as its lines, with a notice, instead of refusing the batch", () => {
     // A real headless session wrote every option's evidence as a single string (106-157 characters each).
     const one = batchOf(5);
@@ -190,6 +201,23 @@ describe("concrete actions and preconditions are kept, not dropped", () => {
       const b = batchOf(5, { kind });
       delete b.options[2].action;
       assert.match(problemsOf(b).join(" "), /action is required/, kind);
+    }
+    // A real session sent an order batch with no action at all: the refusal names every option and shows a valid shape.
+    const examples = {
+      order: '{"tool":"Read","target":"<path>"}',
+      command: '{"tool":"Bash","target":"<command>"}',
+      edit: '{"tool":"Edit","target":"<path>","old_string":"<old>","new_string":"<new>"}',
+      delegate: '{"tool":"Agent","target":"<agent>","prompt":"<task>"}',
+    };
+    for (const [kind, example] of Object.entries(examples)) {
+      const b = batchOf(5, { kind });
+      for (const o of b.options) delete o.action;
+      const problems = problemsOf(b).filter((p) => /action is required/.test(p));
+      assert.equal(problems.length, 5, kind);
+      for (const [i, p] of problems.entries()) assert.equal(p, `options[${i}].action is required for kind ${kind}: expected an action object such as ${example}`);
+      const fixed = batchOf(5, { kind });
+      for (const o of fixed.options) o.action = JSON.parse(example);
+      assert.deepEqual(problemsOf(fixed).filter((p) => /options\[\d\]\.action/.test(p)), [], `${kind}: the example itself is a valid action`);
     }
     const wrong = batchOf(5, { kind: "command" });
     wrong.options[0].action = { tool: "Write", target: "a.js", content: "x" };

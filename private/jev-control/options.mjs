@@ -37,6 +37,13 @@ const norm = (text) => String(text).toLowerCase().replace(/\s+/g, " ").trim();
 
 /** The kinds whose real options are single actions, and the tools each allows (null: any action tool). */
 export const ACTION_REQUIRED = Object.freeze({ order: null, command: ["Bash"], edit: EDIT_TOOLS, delegate: ["Agent"] });
+/** A valid descriptor per kind, shown when an option has none, so a session can fix the batch in one retry. */
+const ACTION_EXAMPLES = Object.freeze({
+  order: '{"tool":"Read","target":"<path>"}',
+  command: '{"tool":"Bash","target":"<command>"}',
+  edit: '{"tool":"Edit","target":"<path>","old_string":"<old>","new_string":"<new>"}',
+  delegate: '{"tool":"Agent","target":"<agent>","prompt":"<task>"}',
+});
 const ASK_ACTION = Object.freeze({ tool: "AskUserQuestion", target: "", args: {}, view: {} });
 
 /** Hash of an option's meaning: text, evidence, concrete action (tool, target and arguments) and preconditions (new material when any of them changes). */
@@ -100,7 +107,7 @@ export function normalizeBatch(raw, { root = null } = {}) {
     }
     if (raw.kind in ACTION_REQUIRED) {
       const allowed = ACTION_REQUIRED[raw.kind];
-      if (!action) problems.push(`${where}.action is required for kind ${raw.kind}: name the one concrete tool call this option stands for`);
+      if (!action) problems.push(`${where}.action is required for kind ${raw.kind}: expected an action object such as ${ACTION_EXAMPLES[raw.kind]}`);
       else if (allowed && !allowed.includes(action.tool)) problems.push(`${where}.action.tool must be ${allowed.join(" or ")} for kind ${raw.kind}`);
       else if (action.tool === "AskUserQuestion") problems.push(`${where}.action must not be a question: asking the user is the control option ${ASK_ID}`);
     }

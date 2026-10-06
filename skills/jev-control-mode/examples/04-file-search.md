@@ -152,4 +152,4 @@ node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" search --single --query
 - Zero candidates: `none_candidates`; widen the scope once (`--widen --search-id <id>`), then report.
 - The control options `action_gather_evidence` / `action_ask_user` are never added to the candidates as fake files; asking or gathering after a search is an ordinary decision.
 
-**Accounting:** 2 attempts (source `helper`), 2 of the 2 logical evaluations of this search, 2 of the 25 of this request.
+**Accounting:** 2 attempts (source `helper`), 2 of the 2 logical evaluations of this search, 2 of the 10000 of this request.
