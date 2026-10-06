@@ -4,7 +4,7 @@
 // output (at most 1.5 KB; 3 KB for a decision: decide and page). Usage (the plugin root is ${CLAUDE_PLUGIN_ROOT}):
 //   cli.mjs help [command]   (also <command> --help: usage and the decide batch format; needs no session)
 //   cli.mjs on [<x> | --threshold <x>] [--priorities "one line"]
-//   cli.mjs off | status | threshold <x>
+//   cli.mjs off | status | threshold <x> | gate on|off   (gate: the completion gate of rule (4), on by default)
 //   cli.mjs decide --file <batch.json|-> [--decision-id id] [--expand] [--headless] [--source subagent]
 //   cli.mjs search --query <text> [--single] [--exact-path p] [--search-id id --widen] [--source subagent]
 //   cli.mjs page --decision id [--part plan|scores] [--from n]
@@ -37,7 +37,10 @@ import { helpText } from "./help.mjs";
 import { normalizeBatch } from "./options.mjs";
 import { runDecision } from "./protocol.mjs";
 import { verifyDecisionReceipt, writeDecisionReceipt } from "./receipts.mjs";
-import { PROTOCOL_RULES } from "./rules.mjs";
+import { protocolRules } from "./rules.mjs";
+
+/** True for the rules text of the `on` result, with the gate on or off. */
+const isRules = (text) => text === protocolRules("on") || text === protocolRules("off");
 import { controlSearch } from "./search.mjs";
 import { controlSessionDir, hasSessionId, loadControlState, oneLine, repoKey, sessionKey, verifySessionCap, withControlState } from "./state.mjs";
 import { DEFAULT_THRESHOLD, parseThreshold, resolveThreshold } from "./threshold.mjs";
@@ -87,19 +90,19 @@ function shrink(o, max) {
     () => { if (typeof o.message === "string") o.message = o.message.slice(0, 80); },
     () => { delete o.problems; },
     // The `on` result (R09): the rules in `next`, the threshold and the stored priorities are never cut; only descriptive echoes yield, in this order.
-    () => { if (o.next === PROTOCOL_RULES) delete o.flow; },
-    () => { if (o.next === PROTOCOL_RULES && typeof o.audit === "string") o.audit = o.audit.split(" ")[0]; },
-    () => { if (o.next === PROTOCOL_RULES && typeof o.notice === "string") o.notice = o.notice.slice(0, 120); },
-    () => { if (o.next === PROTOCOL_RULES && typeof o.note === "string") o.note = o.note.slice(0, 60); },
+    () => { if (isRules(o.next)) delete o.flow; },
+    () => { if (isRules(o.next) && typeof o.audit === "string") o.audit = o.audit.split(" ")[0]; },
+    () => { if (isRules(o.next) && typeof o.notice === "string") o.notice = o.notice.slice(0, 120); },
+    () => { if (isRules(o.next) && typeof o.note === "string") o.note = o.note.slice(0, 60); },
     () => {
       // Characters are cut by the byte budget (a multibyte priority line can be three times its length in bytes).
-      while (o.next === PROTOCOL_RULES && typeof o.priorities === "string" && o.priorities !== "" && bytes(o) > max) {
+      while (isRules(o.next) && typeof o.priorities === "string" && o.priorities !== "" && bytes(o) > max) {
         const chars = Array.from(o.priorities);
         o.priorities = chars.length <= 8 ? "" : `${chars.slice(0, Math.max(8, Math.floor(chars.length * 0.8)) - 1).join("")}…`;
       }
-      if (o.next === PROTOCOL_RULES && o.priorities === "") o.priorities = null;
+      if (isRules(o.next) && o.priorities === "") o.priorities = null;
     },
-    () => { if (o.next === PROTOCOL_RULES && typeof o.notice === "string") delete o.notice; },
+    () => { if (isRules(o.next) && typeof o.notice === "string") delete o.notice; },
   ];
   for (const step of steps) {
     if (bytes(o) <= max) break;
@@ -252,13 +255,14 @@ async function cmdOn(flags, ctx) {
     mode: "on",
     threshold: state.threshold.value,
     threshold_source: state.threshold.source,
+    gate: state.gate,
     priorities: state.priorities || null,
     audit: check.audit ? "available" : "unavailable (that function is off; the rest works)",
     server,
     tool_prefix: check.prefix || null,
     session: ctx.via,
     flow: "jev-flow directives are suppressed while the mode is on",
-    next: PROTOCOL_RULES,
+    next: protocolRules(state.gate),
     ...(threshold.notice ? { notice: threshold.notice } : {}),
     ...(!state.priorities ? { note: "priorities not set: pass --priorities \"<one line from the user's request>\" or put them in each batch" } : {}),
   };
@@ -271,6 +275,7 @@ function cmdStatus(ctx) {
     mode: state.mode,
     threshold: state.threshold.value,
     threshold_source: state.threshold.source,
+    gate: state.gate,
     priorities: state.priorities || null,
     request: state.request.seq,
     budget: budgetView(state),
@@ -292,6 +297,22 @@ function cmdThreshold(flags, ctx) {
     if (notice) state.notices.push(oneLine(notice));
   });
   return { status: "ok", threshold: value, applies_to: "later decisions only", ...(notice ? { notice } : {}) };
+}
+
+/** `gate on|off`: the user's switch for the completion gate of rule (4); it lasts for the session (off, then on again, keeps it). */
+function cmdGate(flags, ctx) {
+  const value = flags._[1];
+  if (flags._.length !== 2 || (value !== "on" && value !== "off")) return { status: "invalid", message: "gate takes one argument: on or off" };
+  withControlState(ctx.dir, (state) => {
+    state.gate = value;
+  });
+  return {
+    status: "ok",
+    gate: value,
+    rule: value === "off"
+      ? "before declaring done, run the real checks yourself and report them with \"gate off: not verified by Jev\"; /jev:jev-done only if the user asks"
+      : "before declaring done, /jev:jev-done or cli.mjs done; only an accepted gate counts",
+  };
 }
 
 /**
@@ -575,6 +596,7 @@ export async function main(argv, env = process.env) {
       break;
     case "status": result = cmdStatus(ctx); break;
     case "threshold": result = cmdThreshold(flags, ctx); break;
+    case "gate": result = cmdGate(flags, ctx); break;
     case "decide": result = await cmdDecide(flags, ctx); break;
     case "search": result = await cmdSearch(flags, ctx); break;
     case "approve": result = cmdApprove(flags, ctx); break;

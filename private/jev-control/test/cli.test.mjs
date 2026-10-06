@@ -8,7 +8,7 @@ import { materialize } from "../fixtures/lib.mjs";
 import { ASK_ID, CONTROL_IDS, GATHER_ID, KINDS, MAX_OPTIONS, MIN_OPTIONS, normalizeBatch } from "../options.mjs";
 import { actionHash, normalizeDescriptor, planItem, shortHash } from "../actions.mjs";
 import { cleanupLine, compactOut } from "../cli.mjs";
-import { PROTOCOL_RULES } from "../rules.mjs";
+import { GATE_OFF_RULE, PROTOCOL_RULES, protocolRules } from "../rules.mjs";
 import { runControlDone } from "../done.mjs";
 import { classifyClaimsSource, ClaimsRefused, consumableClaimsName, loadClaims, splitClaims } from "../claimsfile.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, removeSessionCap, sessionKey, withControlState } from "../state.mjs";
@@ -123,6 +123,40 @@ describe("activation (D1, D2, D13, D16)", () => {
     const t = cli(["threshold", "0.5", ...SID], { env, cwd: repo });
     assert.equal(t.json.threshold, 0.95);
     assert.match(t.json.notice, /using 0\.95/);
+  });
+  it("gate on|off: on by default, the user's switch lasts for the session, status and the `on` rules show it, bad arguments are refused", () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const first = on(repo, env);
+    assert.equal(first.json.gate, "on");
+    assert.equal(first.json.next, PROTOCOL_RULES);
+    assert.equal(cli(["status", ...SID], { env, cwd: repo }).json.gate, "on");
+    const off = cli(["gate", "off", ...SID], { env, cwd: repo });
+    assert.equal(off.code, 0, off.stdout);
+    assert.equal(off.json.gate, "off");
+    assert.match(off.json.rule, /real checks yourself/);
+    assert.match(off.json.rule, /gate off: not verified by Jev/);
+    assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).gate, "off");
+    assert.equal(cli(["status", ...SID], { env, cwd: repo }).json.gate, "off");
+    // off and on again keep the user's choice; the `on` line then carries the gate-off rule (4), within 1500 bytes.
+    cli(["off", ...SID], { env, cwd: repo });
+    const again = on(repo, env);
+    assert.equal(again.json.gate, "off");
+    assert.equal(again.json.next, protocolRules("off"));
+    assert.ok(again.json.next.includes(GATE_OFF_RULE));
+    assert.ok(!again.json.next.includes("only an accepted gate counts"));
+    assert.ok(Buffer.byteLength(again.stdout.trim()) <= 1500, String(Buffer.byteLength(again.stdout.trim())));
+    for (const bad of [[], ["maybe"], ["off", "now"]]) {
+      const r = cli(["gate", ...bad, ...SID], { env, cwd: repo });
+      assert.equal(r.code, 4, `${bad}: ${r.stdout}`);
+      assert.equal(r.json.status, "invalid");
+    }
+    assert.equal(loadControlState(controlSessionDir(repo, "cli-session-1", env)).gate, "off", "a refused argument changes nothing");
+    const back = cli(["gate", "on", ...SID], { env, cwd: repo });
+    assert.equal(back.json.gate, "on");
+    assert.match(back.json.rule, /only an accepted gate counts/);
+    assert.equal(on(repo, env).json.next, PROTOCOL_RULES);
+    assert.equal(serverLog(env).length, 0, "the switch spends no tools/call");
   });
   it("on takes the documented positional threshold (on [threshold]) and refuses an ambiguous one", () => {
     const repo = makeRepo({ "a.txt": "a\n" });
@@ -782,7 +816,7 @@ describe("help without SKILL.md (R04)", () => {
     for (const word of ["--query", "--single", "--exact-path", "--widen", "--search-id", "sha256"]) assert.ok(search.stdout.includes(word), word);
     assert.match(search.stdout, /a pipe after it \(`\| head`\) voids the grant/);
     assert.equal(cli(["search", "--help"], { env: controlEnv(), cwd: outside() }).stdout, search.stdout);
-    for (const topic of ["on", "off", "status", "threshold", "page", "approve", "budget", "receipt", "done"]) {
+    for (const topic of ["on", "off", "status", "threshold", "gate", "page", "approve", "budget", "receipt", "done"]) {
       const r = cli(["help", topic], { env: controlEnv(), cwd: outside() });
       assert.equal(r.code, 0, topic);
       assert.ok(r.stdout.startsWith(topic), `${topic}: ${r.stdout}`);

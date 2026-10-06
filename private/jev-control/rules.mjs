@@ -3,3 +3,12 @@
 // Exemptions follow D3/D9 (SKILL.md); nothing here blocks or refuses: the rules are advice the user asked the model to follow.
 
 export const PROTOCOL_RULES = "Rules while ON (T = threshold; only a score strictly above T counts): (1) Every choice with 2+ real alternatives, incl. task order, goes through cli.mjs decide --file <batch>; run only plan items above T, in order. Exempt: explicit user instructions, exact user-named paths, permission prompts, a one-variant step, this fixed protocol itself. (2) Select files with cli.mjs search; rg/glob only list candidates. (3) No eligible option: expand at most twice with new options/evidence (same id), then ask the user, or headless start the final message with Incomplete: + scores. An option at or below T needs explicit user approval (cli.mjs approve). (4) Before declaring done: /jev:jev-done or cli.mjs done --claims jev-claims.json; only an accepted gate counts. Formats: help decide|search|done.";
+
+const GATE_ON_RULE = "(4) Before declaring done: /jev:jev-done or cli.mjs done --claims jev-claims.json; only an accepted gate counts.";
+/** Rule (4) when the user switched the completion gate off (cli.mjs gate off); everything else stays. */
+export const GATE_OFF_RULE = '(4) Gate OFF by the user (cli.mjs gate on restores it): before declaring done, run the real checks yourself and report them with "gate off: not verified by Jev"; /jev:jev-done only if the user asks.';
+
+/** The rules for a session whose gate is "on" (the default) or "off". */
+export function protocolRules(gate = "on") {
+  return gate === "off" ? PROTOCOL_RULES.replace(GATE_ON_RULE, GATE_OFF_RULE) : PROTOCOL_RULES;
+}

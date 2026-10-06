@@ -13,12 +13,12 @@ const frontmatter = (text) => {
   return Object.fromEntries(m[1].split("\n").map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]));
 };
 
-describe("the plugin ships jev-control as 0.7.6", () => {
-  it("both manifests carry 0.7.6", () => {
+describe("the plugin ships jev-control as 0.7.7", () => {
+  it("both manifests carry 0.7.7", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.7.6");
-    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.7.6");
+    assert.equal(plugin.version, "0.7.7");
+    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.7.7");
   });
   it("PRIVATE.md documents the version, the section and the new check", () => {
     const text = read("PRIVATE.md");
@@ -93,7 +93,7 @@ describe("skill and command", () => {
     const marked = `jev-control was requested by the user ${NATURAL_MARKER.replace(/\.$/, "")}`;
     assert.ok(text.includes(`«${marked}»`), "step 3 quotes the natural-language line of the hook");
     assert.match(text, /With no or unknown arguments: when the prompt hook of the current request put the line «[^»]+» in your context/);
-    assert.match(text, /a line from an earlier prompt does not count, and a `\/jev:jev-control` prompt never gets it\), run `on` as above; otherwise run `status` and explain the four commands/);
+    assert.match(text, /a line from an earlier prompt does not count, and a `\/jev:jev-control` prompt never gets it\), run `on` as above; otherwise run `status` and explain the five commands/);
     assert.doesNotMatch(text, /«jev-control was requested by the user for this session»/, "the line that slash commands also get is not the condition");
   });
   it("jev-done, jev-locate and the locator have explicit control branches", () => {

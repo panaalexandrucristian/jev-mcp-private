@@ -67,6 +67,8 @@ export function emptyControlState(now = Date.now()) {
     updated: now,
     mode: "off",
     threshold: { value: DEFAULT_THRESHOLD, source: "default", since_decision: 0 },
+    // The completion gate of rule (4): "on" (default) or "off" (cli.mjs gate off, the user's choice); it lasts for the session.
+    gate: "on",
     priorities: "",
     server: null,
     audit: false,

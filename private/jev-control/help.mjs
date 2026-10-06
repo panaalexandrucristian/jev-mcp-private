@@ -22,7 +22,8 @@ const SEARCH = [
 const LINES = {
   on: "on [<x> | --threshold <x>] [--priorities \"<one line>\"]: switch the mode on (the threshold is strictly > T, valid in (0.5, 1), default 0.95).",
   off: "off: switch the mode off.",
-  status: "status: show the mode, threshold and priorities.",
+  status: "status: show the mode, threshold, gate and priorities.",
+  gate: "gate on|off: switch the completion gate of rule (4) for this session (on by default). Off: before declaring done, run the real checks yourself and report them as not verified by Jev; /jev:jev-done only if the user asks.",
   threshold: "threshold <x>: change the threshold for later decisions (valid in (0.5, 1); an invalid value gives 0.95).",
   page: "page --decision <id> [--part plan|scores] [--from <n>]: the rest of a plan or score list the printed line cut (plan_next / scores_next).",
   approve: "approve --decision <id> --option <id> --message \"<the user's own words naming the option>\" [--question \"<the question a short answer answers>\"]: record a user approval of a below-threshold option.",
@@ -40,8 +41,8 @@ const DONE = [
 ].join("\n");
 
 const OVERVIEW = [
-  "Usage: cli.mjs on|off|status|threshold <x>|decide|search|approve|budget|receipt|done  (see the header of cli.mjs)",
-  "Per command: cli.mjs help decide | search | on | page | approve | budget | receipt | done (the same as <command> --help).",
+  "Usage: cli.mjs on|off|status|threshold <x>|gate on|off|decide|search|approve|budget|receipt|done  (see the header of cli.mjs)",
+  "Per command: cli.mjs help decide | search | on | gate | page | approve | budget | receipt | done (the same as <command> --help).",
 ].join("\n");
 
 /** The help text for a topic (a command name); the overview for no or an unknown topic. */

@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitTopLevel } from "../jev-flow/state.mjs";
 import { startRequest } from "./budget.mjs";
-import { PROTOCOL_RULES } from "./rules.mjs";
+import { protocolRules } from "./rules.mjs";
 import { cleanupControlRetention, controlSessionDir, ensureSessionCap, hasSessionId, isControlOn, loadControlState, removeSessionCap, sessionKey, withControlState } from "./state.mjs";
 
 const COMMAND = /^\s*\/(?:jev:)?jev-control\b/i;
@@ -41,9 +41,12 @@ const capNote = (cap) => `Session capability: pass --session-cap ${cap} to every
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** The one-line reminder of a prompt (at most 400 bytes with a real 49-character capability); the full rules are in activation() and at SessionStart. */
-export function reminder(threshold, cap = null) {
-  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; protocol: Skill jev:jev-control-mode. jev-flow directives are suppressed.${cap ? ` ${capNote(cap)}` : ""}`;
+export function reminder(threshold, cap = null, gate = "on") {
+  return `jev-control ON (T=${threshold}): every choice with 2+ real alternatives goes through the jev-control helper (private/jev-control/cli.mjs) and Jev; protocol: Skill jev:jev-control-mode. jev-flow directives are suppressed.${gate === "off" ? GATE_OFF_NOTE : ""}${cap ? ` ${capNote(cap)}` : ""}`;
 }
+
+// The reminder's note while the user has the completion gate off (rule (4) in its gate-off form).
+const GATE_OFF_NOTE = " Gate OFF: real checks, no jev_gate.";
 
 export const NATURAL_MARKER = "in natural language for this request.";
 
@@ -56,12 +59,12 @@ function loadLine(root) {
 export function activation(cap, natural = false, root = PLUGIN_ROOT) {
   const first = natural ? ` Do first: node "${join(root, "private", "jev-control", "cli.mjs")}" on --session-cap ${cap} --priorities "<one line>".` : "";
   // Only the natural-language line carries the marker that step 3 of commands/jev-control.md tests; a slash command never does.
-  return `jev-control was requested by the user ${natural ? NATURAL_MARKER : "for this session."}${first} ${PROTOCOL_RULES} ${loadLine(root)} ${capNote(cap)}`;
+  return `jev-control was requested by the user ${natural ? NATURAL_MARKER : "for this session."}${first} ${protocolRules()} ${loadLine(root)} ${capNote(cap)}`;
 }
 
 /** SessionStart after a compaction with the mode ON: the rules again (they may have been compacted away), the way to the skill and the capability. */
-export function resumeText(threshold, cap, root = PLUGIN_ROOT) {
-  return `jev-control ON (T=${threshold}). ${PROTOCOL_RULES} ${loadLine(root)} ${capNote(cap)}`;
+export function resumeText(threshold, cap, root = PLUGIN_ROOT, gate = "on") {
+  return `jev-control ON (T=${threshold}). ${protocolRules(gate)} ${loadLine(root)} ${capNote(cap)}`;
 }
 
 function repoFor(input) {
@@ -104,17 +107,17 @@ export function handleControlHook(event, input, env = process.env, now = Date.no
     // Only a compaction continues the same live session; startup, resume, clear and anything unknown start OFF.
     if (input.source !== "compact") resetSession(dir, now);
     const state = loadControlState(dir);
-    return state.mode === "on" ? additionalContext("SessionStart", resumeText(state.threshold.value, ensureSessionCap(dir, key))) : null;
+    return state.mode === "on" ? additionalContext("SessionStart", resumeText(state.threshold.value, ensureSessionCap(dir, key), PLUGIN_ROOT, state.gate)) : null;
   }
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
   const state = loadControlState(dir);
   if (COMMAND.test(prompt)) {
     // A mode command is not a new request: the budget keeps counting.
-    return additionalContext("UserPromptSubmit", state.mode === "on" ? reminder(state.threshold.value, ensureSessionCap(dir, key)) : activation(ensureSessionCap(dir, key)));
+    return additionalContext("UserPromptSubmit", state.mode === "on" ? reminder(state.threshold.value, ensureSessionCap(dir, key), state.gate) : activation(ensureSessionCap(dir, key)));
   }
   if (state.mode !== "on") return asksForControl(prompt) ? additionalContext("UserPromptSubmit", activation(ensureSessionCap(dir, key), true)) : null;
   withControlState(dir, (s) => startRequest(s, now), now);
-  return additionalContext("UserPromptSubmit", reminder(state.threshold.value, ensureSessionCap(dir, key)));
+  return additionalContext("UserPromptSubmit", reminder(state.threshold.value, ensureSessionCap(dir, key), state.gate));
 }
 
 /** Combine two hook outputs (control reminder and the flow's output) into one. */

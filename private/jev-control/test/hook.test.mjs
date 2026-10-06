@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { DEV_SCENARIOS } from "../fixtures/scenarios.mjs";
 import { NATURAL_MARKER, activation, asksForControl, handleControlHook, mergeOutputs, reminder, resumeText } from "../hook.mjs";
-import { PROTOCOL_RULES } from "../rules.mjs";
+import { GATE_OFF_RULE, PROTOCOL_RULES, protocolRules } from "../rules.mjs";
 import { controlSessionDir, ensureSessionCap, loadControlState, sessionKey, verifySessionCap, withControlState } from "../state.mjs";
 import { HOOK_CLI, controlEnv, makeRepo, run } from "./helpers.mjs";
 
@@ -303,6 +303,31 @@ describe("R09: the compact protocol at activation, at SessionStart and in the re
     assert.equal(text.includes("\n"), false);
     assert.ok(text.includes(`--session-cap ${CAP}`) && text.includes("protocol: Skill jev:jev-control-mode"));
     assert.equal(text.includes(PROTOCOL_RULES), false);
+  });
+  it("gate off: rule (4) alone changes, the reminder and the SessionStart text say so within their limits, and the default is on", () => {
+    const offRules = protocolRules("off");
+    assert.equal(protocolRules(), PROTOCOL_RULES);
+    assert.equal(protocolRules("on"), PROTOCOL_RULES);
+    assert.notEqual(offRules, PROTOCOL_RULES);
+    assert.ok(offRules.includes(GATE_OFF_RULE));
+    assert.equal(offRules.replace(GATE_OFF_RULE, ""), PROTOCOL_RULES.replace(/\(4\) Before declaring done: [^]*?only an accepted gate counts\./, ""), "rules (1)-(3) and the formats stay byte for byte");
+    for (const phrase of ["real checks yourself", "gate off: not verified by Jev", "/jev:jev-done only if the user asks", "cli.mjs gate on"]) assert.ok(offRules.includes(phrase), phrase);
+    assert.ok(Buffer.byteLength(offRules) < 900);
+    const resumed = resumeText("0.99999", CAP, LONG_ROOT, "off");
+    assert.ok(resumed.includes(offRules) && Buffer.byteLength(resumed) <= 1500, `${Buffer.byteLength(resumed)} bytes`);
+    const short = reminder(0.99999, CAP, "off");
+    assert.ok(Buffer.byteLength(short) <= 400, `${Buffer.byteLength(short)} bytes`);
+    assert.match(short, /Gate OFF: real checks, no jev_gate\./);
+    assert.doesNotMatch(reminder(0.99999, CAP), /Gate OFF/);
+    // Through the hook: the state's gate reaches the per-prompt reminder.
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const env = controlEnv();
+    const dir = controlSessionDir(repo, SESSION, env);
+    withControlState(dir, (s) => { s.mode = "on"; s.gate = "off"; });
+    const out = handleControlHook("UserPromptSubmit", { session_id: SESSION, cwd: repo, prompt: "continue" }, env);
+    assert.match(out.hookSpecificOutput.additionalContext, /Gate OFF/);
+    const compacted = handleControlHook("SessionStart", { session_id: SESSION, cwd: repo, source: "compact" }, env);
+    assert.ok(compacted.hookSpecificOutput.additionalContext.includes(GATE_OFF_RULE));
   });
   it("the control hook's own output blocks nothing and stays within 1500 bytes (the jev-flow text merged after it by the adapter is not part of it)", () => {
     const repo = makeRepo({ "a.txt": "a\n" });

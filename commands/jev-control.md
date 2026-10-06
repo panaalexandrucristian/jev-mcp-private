@@ -1,6 +1,6 @@
 ---
-description: Put this session under Jev control (on/off/status/threshold). Every choice with two or more real alternatives is then decided by Jev at a configurable confidence (default 0.95).
-argument-hint: on [threshold] | off | status | threshold <x>
+description: Put this session under Jev control (on/off/status/threshold/gate). Every choice with two or more real alternatives is then decided by Jev at a configurable confidence (default 0.95).
+argument-hint: on [threshold] | off | status | threshold <x> | gate on|off
 ---
 
 Run the jev-control command for this request: `$ARGUMENTS`
@@ -13,6 +13,7 @@ Run the jev-control command for this request: `$ARGUMENTS`
    - `off`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" off`
    - `status`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" status`
    - `threshold <x>`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" threshold <x>` (it applies to later decisions only; an invalid value gives 0.95 and one notice).
-3. With no or unknown arguments: when the prompt hook of the current request put the line «jev-control was requested by the user in natural language for this request» in your context (a natural-language request such as «Let Jev control this session»; a line from an earlier prompt does not count, and a `/jev:jev-control` prompt never gets it), run `on` as above; otherwise run `status` and explain the four commands.
+   - `gate on|off`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-control/cli.mjs" gate on|off` switches the completion gate of rule (4) for this session (on by default; it stays as set until the session ends). With the gate off, before declaring done run the repository's real checks yourself and report their results with "gate off: not verified by Jev"; run `/jev:jev-done` only when the user asks.
+3. With no or unknown arguments: when the prompt hook of the current request put the line «jev-control was requested by the user in natural language for this request» in your context (a natural-language request such as «Let Jev control this session»; a line from an earlier prompt does not count, and a `/jev:jev-control` prompt never gets it), run `on` as above; otherwise run `status` and explain the five commands.
 
 The session identity comes from the session itself: `CLAUDE_CODE_SESSION_ID`, or the capability the prompt hook injected into your context for this request (`Session capability: pass --session-cap <cap> ...`). When the hook gave you one, add `--session-cap <cap>` to every `cli.mjs` command above and to the prompt of every subagent. Never pass a made-up `--session-id` or a capability that did not appear in your own context; with no identity the helper refuses and nothing is activated.
