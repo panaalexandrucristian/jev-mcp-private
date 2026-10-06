@@ -7,7 +7,7 @@ real verdict `unsupported`; R03, historical: the claim "... neither states nor i
 canonical MATERIAL of the version (the note itself + its direct references, one level, delimited, in order). The CLI `prepare` prints all of it so the model copies, never types, the values; the validator
 (jevref.validate_finding) re-derives everything. This module decides nothing semantic: Jev judges the claims; here only provenance, eligibility and completeness are deterministic.
 
-CLI: omissions.py prepare --source ID|PATH.jsonl --file HANDOFF --write-id ID --evaluated-against prefix|session_end --detail TEXT --source-quote QUOTE [--cwd DIR]
+CLI: omissions.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID --file HANDOFF --write-id ID --evaluated-against prefix|session_end --detail TEXT --source-quote QUOTE [--cwd DIR]
   exit 0 = ready (JSON on stdout), 3 = something is ambiguous or not recoverable (JSON with `reasons`; the omission stays UNRESOLVED)."""
 import argparse, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -136,7 +136,7 @@ _MEMO = {}
 def context(source_jsonl, handoff_real, version, evaluated_against, bases=()):
     """Everything the validator needs about one version: the eligible source text and the canonical material. -> dict(eligible_source, material, material_reason). Cached by transcript identity."""
     import discover as D, jevref as J
-    try: key = (os.path.realpath(source_jsonl), os.path.getmtime(source_jsonl), os.path.getsize(source_jsonl))
+    try: key = D.fingerprint(source_jsonl)
     except OSError: return dict(eligible_source=None, eligible_blocks=None, material=None, material_reason="source transcript unreadable")
     if key not in _MEMO: recs = D.load_jsonl(source_jsonl); _MEMO[key] = (recs, J.timeline(recs)[0])
     recs, use_pos = _MEMO[key]
@@ -151,7 +151,7 @@ def prepare_one(a):
     def fail(*reasons, **extra): return dict(ok=False, reasons=list(reasons), **extra), 3
     sp, how, amb = D.resolve_session_info(a.source, a.cwd)
     if amb: return fail("source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl")
-    if not sp or not os.path.isfile(sp): return fail("source session not found")
+    if not sp or not D.source_exists(sp): return fail("source session not found")
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)
     vs, canon, _, note = V.versions_of(sp, path); reloc = None
     if canon is None:

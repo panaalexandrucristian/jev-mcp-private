@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic preparation for handoff-verify (no Jev, no network, never executes handoff code).
-usage: prepare.py [SESSION_ID|PATH.jsonl] [--cwd DIR] [--out DIR] [--max-chars N]
+usage: prepare.py [SESSION_ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] [--cwd DIR] [--out DIR] [--max-chars N]
 Writes into the run directory <session-cwd>/.handoff-verify/<session-id>/<run-id>/work/ (or --out):
   inventory.json         handoff candidates + dispositions (included_by_name / needs_jev_classify / failed / unlinked / excluded) + aliases/copies
   handoffs/<name>.v<N>.md  reconstructed versions (sanitized) ; versions[] in inventory.json carry sha256/uuid/timestamp/status/evaluated_against
@@ -33,8 +33,8 @@ def main():
     a = ap.parse_args()
     sp, how, ambiguous = D.resolve_session_info(a.session, a.cwd)
     if ambiguous: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions in this project; pass the session id or .jsonl path", "resolution": how})); return 3
-    if not sp: print(json.dumps({"error": "session not found", "arg": a.session})); return 2
-    sid = os.path.splitext(os.path.basename(sp))[0]
+    if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
+    sid = D.session_label(sp)
     files = [(sp, "session")] + [(f, "subagent") for f in D.subagent_files(sp)]
     items, bash = [], []
     for f, src in files:

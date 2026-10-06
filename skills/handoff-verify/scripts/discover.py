@@ -1,7 +1,7 @@
 """Session discovery and Write/Edit inventory from Claude Code JSONL transcripts. Pure parsing; never executes anything."""
 import glob, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import jevref as J
+import jevref as J, opencode as O
 
 NAME_RX = re.compile(r"(?i)(^HANDOVER|^HANDOFF|^CONTINUE-HERE|handoff|handover)")
 BASH_WRITE = re.compile(r"(?:>>?|\btee\s+(?:-a\s+)?)\s*([\"']?)([^\s\"'|;&<>]+\.(?:md|txt|markdown))\1")
@@ -10,7 +10,31 @@ TEXT_EXT = (".md", ".markdown", ".txt")
 def projects_dir():
     return os.environ.get("CLAUDE_PROJECTS_DIR", os.path.expanduser("~/.claude/projects"))
 
+def is_selector(s):
+    """An explicit OpenCode selector (`opencode:<id>` / `opencode-db:<abs db>#<id>`); never a guess, never a filesystem path."""
+    return O.is_selector(s)
+
+def source_exists(p):
+    """The source (a JSONL file or an OpenCode selector) is readable now."""
+    return O.exists(p) if O.is_selector(p) else os.path.isfile(p)
+
+def canon(p):
+    """Canonical identity of a source: realpath of a file, `opencode-db:<realpath(db)>#<id>` of a selector (an unusable selector stays as written)."""
+    if not O.is_selector(p): return os.path.realpath(p)
+    try: return O.canonical(p)
+    except OSError: return p
+
+def fingerprint(p):
+    """(identity, mtime, size...) of a source for memoization; OSError when it cannot be read."""
+    if O.is_selector(p): return O.fingerprint(p)
+    return (os.path.realpath(p), os.path.getmtime(p), os.path.getsize(p))
+
+def session_label(p):
+    """Session id used to name run directories: the JSONL stem, or the OpenCode session id."""
+    return O.session_id(p) if O.is_selector(p) else os.path.splitext(os.path.basename(p))[0]
+
 def load_jsonl(path):
+    if O.is_selector(path): return O.records(path)   # explicit OpenCode selector: normalized in memory, nothing written
     out = []
     for i, l in enumerate(open(path, encoding="utf-8", errors="replace")):
         l = l.strip()
@@ -25,6 +49,9 @@ def resolve_session_info(arg=None, cwd=None, window_s=120):
     """Returns (path, how, ambiguous). how: path | id | env:CLAUDE_SESSION_ID | heuristic_most_recent | none.
     Without an explicit path/id the current session is NOT demonstrated: the most recent jsonl of cwd's project dir is only a heuristic, and it is flagged ambiguous
     when another jsonl of the same project was modified within `window_s` seconds of it (concurrent sessions)."""
+    if O.is_selector(arg):   # explicit OpenCode selector: canonical identity, never guessed; existence is checked by the caller (source_exists)
+        try: return O.canonical(arg), "opencode", False
+        except OSError: return None, "opencode", False
     if arg and arg.endswith(".jsonl") and os.path.isfile(arg): return os.path.abspath(arg), "path", False
     arg = arg or os.environ.get("CLAUDE_SESSION_ID")
     if arg:
@@ -41,6 +68,7 @@ def resolve_session(arg=None, cwd=None):
     return resolve_session_info(arg, cwd)[0]
 
 def subagent_files(session_path):
+    if O.is_selector(session_path): return []   # child sessions of an OpenCode session are not followed
     d = os.path.splitext(session_path)[0] + os.sep + "subagents"
     return sorted(glob.glob(os.path.join(d, "*.jsonl")))
 
@@ -68,6 +96,7 @@ def inventory(path, source="session"):
                 r = res.get(c["id"])
                 meta.update(op=c["name"], path=c["input"]["file_path"], result_found=r is not None,
                             success=bool(r) and not r["is_error"], result_uuid=(r or {}).get("uuid"))
+                if d.get("_adapter") == "opencode" and isinstance(c["input"].get("_unrecoverable"), str): meta["unrecoverable"] = c["input"]["_unrecoverable"]   # adapter-only marker (never read from a Claude record)
                 if c["name"] == "Write": meta["content"] = c["input"].get("content")
                 else: meta.update(old_string=c["input"].get("old_string"), new_string=c["input"].get("new_string"),
                                   replace_all=bool(c["input"].get("replace_all")))

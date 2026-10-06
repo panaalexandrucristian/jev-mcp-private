@@ -8,8 +8,8 @@ verification of a saved session (no cross-transcript chronology). A check names 
 those values: it copies them from `versions.py list`. Absent or inconsistent identity is never deduced from the last listed version nor from the call's window.
 
 CLI:
-  versions.py list   [--source ID|PATH.jsonl] --file HANDOFF [--evaluated-against prefix|session_end] [--cwd DIR]   exit 0 unambiguous, 3 absent/ambiguous source or unidentifiable path
-  versions.py status [--session ID|PATH.jsonl] --file HANDOFF --report R.verify.json [--cwd DIR]                  exit 0 verified_version, 2 needs_reverification, 3 unresolved
+  versions.py list   [--source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] --file HANDOFF [--evaluated-against prefix|session_end] [--cwd DIR]   exit 0 unambiguous, 3 absent/ambiguous source or unidentifiable path
+  versions.py status [--session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] --file HANDOFF --report R.verify.json [--cwd DIR]                  exit 0 verified_version, 2 needs_reverification, 3 unresolved
 `verified_version` = the delivered (last) version has a valid report with >= 1 genuinely bound check; it does NOT mean PASS."""
 import argparse, hashlib, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -93,8 +93,9 @@ def same_session(report_source, calls_path, session_id=None):
     """Is the report's `session.jsonl` the CURRENT (calls) transcript? Demonstrated only by (a) the same file (realpath), or (b) a copy/stream of the same session: both files exist, their real
     metadata name a common session id (and `session_id`, when given, is named by the report's transcript) and their tool_use records correspond (same ids with the same tool and input,
     one transcript contained in the other, at least one in common). A path that does not exist, or a file with the same basename/stem but another content, is NOT evidence."""
-    if not isinstance(report_source, str) or not report_source or not isinstance(calls_path, str) or not os.path.isfile(report_source) or not os.path.isfile(calls_path): return False
-    if os.path.realpath(report_source) == os.path.realpath(calls_path): return True
+    if not isinstance(report_source, str) or not report_source or not isinstance(calls_path, str) or not D.source_exists(report_source) or not D.source_exists(calls_path): return False
+    if D.canon(report_source) == D.canon(calls_path): return True
+    if D.is_selector(report_source) or D.is_selector(calls_path): return False   # an OpenCode selector is the same session only as the canonical-equal selector, never as a Claude JSONL
     sa, ta = _identity(report_source); sb, tb = _identity(calls_path)
     if session_id: sid_ok = session_id in sa and (not sb or session_id in sb)
     else: sid_ok = bool(sa & sb)
@@ -123,7 +124,7 @@ def bind_versions(checks, bindings, handoff_path, source_jsonl, calls, same, sou
     cm = {c["tool_use_id"]: c for c in calls}
     vs, note, how, canon = [], None, "none", None
     try:
-        vs, canon, how, note = versions_of(source_jsonl, handoff_path, None if same else source_path) if source_jsonl and os.path.isfile(source_jsonl) else ([], None, "none", "source transcript unavailable: provenance not demonstrated")
+        vs, canon, how, note = versions_of(source_jsonl, handoff_path, None if same else source_path) if source_jsonl and D.source_exists(source_jsonl) else ([], None, "none", "source transcript unavailable: provenance not demonstrated")
     except Exception as e:
         note = "source transcript unreadable: %s" % e
     disk = None
@@ -182,7 +183,7 @@ def per_version(checks, bindings, findings, declared_unresolved, declared_versio
 
 def write_ids(source_jsonl, path, source_path=None):
     """Ids of every successful write/edit of the handoff in the source transcript (None when it cannot be read)."""
-    try: return {v["write_tool_use_id"] for v in versions_of(source_jsonl, path, source_path)[0]} if source_jsonl and os.path.isfile(source_jsonl) else None
+    try: return {v["write_tool_use_id"] for v in versions_of(source_jsonl, path, source_path)[0]} if source_jsonl and D.source_exists(source_jsonl) else None
     except Exception: return None
 
 def lookup(pv, declared, writes=None):
@@ -197,15 +198,53 @@ def lookup(pv, declared, writes=None):
     if len(cand) == 1: return cand[0], "unique sha256"
     return None, "ambiguous sha256 (several writes)" if cand else "no check of its own"
 
+STALE_NOTICE = ("Atenție: acest raport este despre versiunea %d (sha %s); nota are acum o versiune mai nouă, %d (sha %s), pe care acest raport nu o acoperă. "
+                "Rulează verificarea din nou pe versiunea curentă.")
+
+def stale_notice(stale):
+    """The exact notice for a `stale` dict (report_version, report_sha256, newer_version, newer_sha256)."""
+    return STALE_NOTICE % (stale["report_version"], stale["report_sha256"][:8], stale["newer_version"], stale["newer_sha256"][:8])
+
+def latest_versions(calls_path, handoff_path, doc, session_id=None):
+    """-> (versions of the handoff path, canonical path, reason | None): the AUTHORITATIVE list for the delivered-version gate. It starts from the calls log; when the report names another transcript of the SAME
+    session (same_session) that records more writes of the path and the calls log's writes are a prefix of them, that longer list wins: a strict-prefix copy of the transcript must not hide a later write.
+    Writes that do not extend each other are not demonstrated to be one session history (reason set)."""
+    vs, canon, how, note = versions_of(calls_path, handoff_path)
+    src = (doc.get("session") or {}).get("jsonl") if isinstance(doc, dict) and isinstance(doc.get("session"), dict) else None
+    if not vs or not isinstance(src, str) or D.canon(src) == D.canon(calls_path) or not same_session(src, calls_path, session_id): return vs, canon, note
+    try: sv, scanon, _, _ = versions_of(src, handoff_path)
+    except Exception: return vs, canon, None
+    a, b = [v["write_tool_use_id"] for v in vs], [v["write_tool_use_id"] for v in sv]
+    if scanon != canon or not sv: return vs, canon, None
+    if b[:len(a)] == a: return (sv if len(b) > len(a) else vs), canon, None
+    if a[:len(b)] == b: return vs, canon, None   # the report's transcript is the shorter copy
+    return vs, canon, "the writes of the handoff in the calls log and in the report's transcript do not extend each other: one session history is not demonstrated"
+
+def stale_of(doc, vs):
+    """-> dict(report_version, report_sha256, newer_version, newer_sha256) when the highest version cited by a valid version_ref of the report's checks is older than the latest write, else None."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("checks"), list) or not vs or vs[-1]["status"] != "ok": return None
+    cited = [v for c in doc["checks"] if isinstance(c, dict) for k, _, v in [validate_ref(c.get("version_ref"), vs)] if k == "ok"]
+    if not cited: return None
+    top = max(cited, key=lambda v: v["version"])
+    if top["version"] >= vs[-1]["version"]: return None
+    return dict(report_version=top["version"], report_sha256=top["sha256"], newer_version=vs[-1]["version"], newer_sha256=vs[-1]["sha256"])
+
 def gate(calls_path, handoff_path, doc, disk_path=None, session_id=None, omission_contract="R04"):
     """The delivered-version gate (current contract R04; "R03" / False (R02) only when passed explicitly for a historical/baseline evaluation; `jevref.contract_of`). -> dict(delivery_state, current_sha256, latest_write_id, report_path?, audited_status, bound_checks_for_version, reasons). Same code for the CLI, the report
     writer and the auditor. `disk_path` = file whose bytes are compared (default: handoff_path)."""
     res = dict(delivery_state="unresolved", current_sha256=None, latest_write_id=None, audited_status=None, bound_checks_for_version=0, reasons=[])
-    def fin(state, why): res["delivery_state"] = state; res["reasons"].append(why); return res
-    try: vs, canon, how, note = versions_of(calls_path, handoff_path)
+    ctx = dict(vs=[])
+    def fin(state, why):
+        res["delivery_state"] = state; res["reasons"].append(why)
+        st = stale_of(doc, ctx["vs"])   # also when the state is unresolved for another reason: a reader must learn that a newer version exists
+        if st: res["stale"] = st; res["stale_notice"] = stale_notice(st)
+        return res
+    try: vs, canon, note = latest_versions(calls_path, handoff_path, doc, session_id)
     except Exception as e: return fin("unresolved", "session transcript unreadable: %s" % e)
+    ctx["vs"] = vs
     if not vs: return fin("unresolved", note or "no successful Write/Edit of the handoff in this session")
     last = vs[-1]; res["latest_write_id"] = last["write_tool_use_id"]
+    if vs and note: return fin("unresolved", note)
     if last["status"] != "ok": return fin("unresolved", "the last version is not recoverable: %s" % last["reason"])
     dp = disk_path or handoff_path
     try: raw = open(dp, "rb").read()
@@ -247,7 +286,7 @@ def _resolve(arg, cwd):
 def cmd_list(a):
     sp, how, amb = _resolve(a.source, a.cwd)
     if amb: print(json.dumps({"error": "source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl", "resolution": how})); return 3
-    if not sp or not os.path.isfile(sp): print(json.dumps({"error": "source session not found", "arg": a.source})); return 3
+    if not sp or not D.source_exists(sp): print(json.dumps({"error": "source session not found", "arg": a.source})); return 3
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)
     vs, canon, pathhow, note = versions_of(sp, path)
     reloc = None
@@ -268,7 +307,7 @@ def cmd_list(a):
 def cmd_status(a):
     sp, how, amb = _resolve(a.session, a.cwd)
     def out(d, code): print(json.dumps(d, indent=1, ensure_ascii=False)); return code
-    if amb or not sp or not os.path.isfile(sp):
+    if amb or not sp or not D.source_exists(sp):
         return out(dict(delivery_state="unresolved", current_sha256=None, latest_write_id=None, report_path=a.report, audited_status=None, bound_checks_for_version=0,
                         reasons=["current session not demonstrated (ambiguous: pass --session ID or PATH.jsonl)" if amb else "session not found"]), 3)
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)

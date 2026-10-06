@@ -7,9 +7,10 @@ belongs to the exact input element named by `key` (per-tool adapter, never a rec
 used by another check of the same report. Text overlap, uniqueness and "same confidence" are never evidence. Unknown response shapes stay unbound.
 Binding and resolution are distinct: a bound check is RESOLVED only if the strict threshold (> 0.95) and the auxiliary Jev conditions also hold.
 
-CLI: jevref.py list [--session ID|PATH.jsonl] [--cwd DIR]   -> JSON with every Jev call of the session: tool_use_id, tool, per result index/key/verdict/confidence."""
+CLI: jevref.py list [--session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] [--cwd DIR]   -> JSON with every Jev call of the session: tool_use_id, tool, per result index/key/verdict/confidence."""
 import argparse, hashlib, json, math, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import opencode as O
 
 PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
 VERDICT_KEYS = ("verdict", "relation", "decision", "class", "label", "choice")
@@ -85,6 +86,7 @@ def calls_from_records(records):
     return out
 
 def load_calls(path):
+    if O.is_selector(path): return calls_from_records(O.records(path))   # explicit OpenCode selector (see opencode.py)
     recs = []
     for l in open(path, encoding="utf-8", errors="replace"):
         l = l.strip()
@@ -382,7 +384,7 @@ def main():
     import discover as D
     sp, how, amb = D.resolve_session_info(a.session, a.cwd)
     if amb: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", "resolution": how})); return 3
-    if not sp: print(json.dumps({"error": "session not found", "arg": a.session})); return 2
+    if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
     print(json.dumps(dict(session=sp, resolution=how, calls=listing(load_calls(sp))), indent=1, ensure_ascii=False)); return 0
 
 if __name__ == "__main__": sys.exit(main())

@@ -14,7 +14,9 @@ def reconstruct(items, reads=()):
         if e["kind"] == "read":
             if cur is None: cur = e["content"]
             continue
-        if e["op"] == "Write":
+        if e.get("unrecoverable"):   # OpenCode adapter marker: a recorded mutation whose content cannot be demonstrated (no base is kept)
+            cur = None; ok, reason = False, e["unrecoverable"]
+        elif e["op"] == "Write":
             cur = e["content"]; ok, reason = True, ""
         else:
             if cur is None:

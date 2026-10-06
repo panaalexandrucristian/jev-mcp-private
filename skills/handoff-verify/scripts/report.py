@@ -131,6 +131,7 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
         if vnote["same_session"] and cpath:
             g = versions.gate(cpath, h.get("path") or handoff_path or "", dict(doc), disk_path=handoff_path or h.get("path"), session_id=session_id, omission_contract=ctr)
             doc["delivery"] = {k: g[k] for k in ("delivery_state", "current_sha256", "latest_write_id", "bound_checks_for_version", "reasons")}
+            if g.get("stale"): doc["delivery"]["stale"] = g["stale"]   # the report is about a version that is not the latest write of the path (the exact notice is derived from it by render_md / versions.py status)
     return doc
 
 def render_md(md_text, doc):
@@ -140,6 +141,8 @@ def render_md(md_text, doc):
     out = "\n".join(lines) + ("\n" if md_text.endswith("\n") else "")
     if "status_claimed" in doc:
         out = "> Stare finală (recalculată de report.py din legăturile verificare→apel Jev): **%s**; declarată inițial: %s. Motiv: %s.\n\n" % (final, doc["status_claimed"], "; ".join(doc["binding_summary"]["reasons"]) or "n/a") + out
+    stale = (doc.get("delivery") or {}).get("stale")
+    if stale: out = versions.stale_notice(stale) + "\n\n" + out
     return out
 
 def write_report(run_dir, handoff_path, doc, md_text, existing=(), calls_jsonl=None, require_version_identity=True, omission_contract="R04"):
