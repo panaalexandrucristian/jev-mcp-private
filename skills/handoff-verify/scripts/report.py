@@ -2,7 +2,7 @@
 Stdlib only. Never calls Jev (Claude Code calls MCP directly)."""
 import datetime, hashlib, json, math, os, re, shutil, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import jevref, scope, versions
+import advice, jevref, scope, versions
 
 THRESHOLD = 0.95
 SCHEMA_VERSION = "1"
@@ -40,6 +40,20 @@ def overall_status(checks):
     return {"status": status, "confirmed": confirmed, "unresolved": unresolved, "cleared": st.count("cleared"), "total": len(st)}
 
 TRANSPORT_ERRORS = {"transport", "invalid_response"}
+
+def attach_advice(checks, bindings, calls, findings):
+    """Informative only (never read back, never changes a status): every bound verify/gate check that is not resolved gets `advice` = advice.advise of its REAL result
+    (what to try in the single re-verification that retry_decision allows). The two checks of an omission pair get none (their `unsupported` half is expected). A declared `advice` is dropped."""
+    pair = {f.get("check_id") for f in findings if isinstance(f, dict) and f.get("type") == "lost_detail"}
+    pair |= {(f.get("omission_ref") or {}).get("source_check_id") for f in findings if isinstance(f, dict) and isinstance(f.get("omission_ref"), dict)}
+    by_id = {c["tool_use_id"]: c for c in calls}
+    for c, b in zip(checks, bindings):
+        if not isinstance(c, dict): continue
+        c.pop("advice", None)
+        if not b.get("bound") or b.get("resolved") or b.get("tool") not in ("verify", "gate") or c.get("id") in pair: continue
+        call = by_id.get(b["tool_use_id"]); e = next((x for x in jevref.results_of(call)[0] if x["index"] == b["result_index"]), None) if call else None
+        a = advice.advise(e, call) if e else None
+        if a: c["advice"] = a
 
 def retry_decision(error_kind, attempts_identical, low_confidence=False, new_evidence=False, reverifications=0):
     """One identical retry only for transport/invalid_response; low confidence: at most one re-verification with NEW documented evidence;
@@ -113,6 +127,7 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
         bs = jevref.finalize(bs, doc.get("findings", []), htxt, ctr)   # R04: the absence half of a valid pair is resolved once the identity and the material are attached
         vnote = dict(same_session=same, identity_ok=sum(1 for r in rows.values() if r["ok"]), identity_failed=sum(1 for r in rows.values() if not r["ok"]), reasons=sorted({r["reason"] for r in rows.values() if not r["ok"]}))
     for c, b in zip(checks, bs): c["binding"] = {k: b[k] for k in ("bound", "reason", "resolved", "aux_ok")}
+    attach_advice(checks, bs, calls, doc.get("findings", []))
     ev = jevref.audited_status(checks, bs, doc.get("findings", []), doc.get("unresolved", []), htxt, ctr)
     if "scope_exclusions" in doc:   # R05: every declared out-of-scope exclusion is re-derived from the real jev_classify call; one that cannot be demonstrated makes a PASS UNRESOLVED (a FAIL stays FAIL)
         sa = scope.validate_exclusions(doc["scope_exclusions"], calls, (doc.get("session") or {}).get("jsonl"), doc.get("findings", []))
