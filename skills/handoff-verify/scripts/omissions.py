@@ -40,15 +40,15 @@ def material(note_text, references=()):
     return out
 
 def build_material(note_text, bases=()):
-    """-> (material | None, manifest, reason). Direct references (shared/refs.py: one level, existing files) found in the note are part of the eligible material; a reference that cannot be resolved or read means that
+    """-> (material | None, manifest, reason). Direct references (refs.py: one level, existing files; the git roots of the bases are extra bases) found in the note are part of the eligible material; a reference that cannot be resolved or read means that
     completeness is not demonstrated (None, reason). A note without references: the note alone."""
-    manifest, found = [], []
+    manifest, found, bases = [], [], R.with_git_roots(bases)
     for ref in R.direct_refs(note_text):
-        real = R.resolve(ref, list(bases))
-        if real is None: return None, manifest, "direct reference %r cannot be resolved: the complete material is not demonstrated" % ref
+        real, how = R.resolve_info(ref, bases)
+        if real is None: return None, manifest, "direct reference %r cannot be resolved (%s): the complete material is not demonstrated" % (ref, how)
         try: txt = open(real, encoding="utf-8", newline="").read()   # newline="": no newline translation, the text (and its sha256) is exactly the bytes presented
         except (OSError, UnicodeDecodeError): return None, manifest, "direct reference %r cannot be read: the complete material is not demonstrated" % ref
-        manifest.append(dict(ref=ref, path=real, sha256=sha256_text(txt))); found.append((ref, txt))
+        manifest.append(dict(ref=ref, path=real, sha256=sha256_text(txt), resolution=how)); found.append((ref, txt))
     return material(note_text, found), manifest, None
 
 def _blocks_of(content):
