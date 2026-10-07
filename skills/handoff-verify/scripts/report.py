@@ -2,7 +2,7 @@
 Stdlib only. Never calls Jev (Claude Code calls MCP directly)."""
 import datetime, hashlib, json, math, os, re, shutil, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import jevref, versions
+import jevref, scope, versions
 
 THRESHOLD = 0.95
 SCHEMA_VERSION = "1"
@@ -114,6 +114,12 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
         vnote = dict(same_session=same, identity_ok=sum(1 for r in rows.values() if r["ok"]), identity_failed=sum(1 for r in rows.values() if not r["ok"]), reasons=sorted({r["reason"] for r in rows.values() if not r["ok"]}))
     for c, b in zip(checks, bs): c["binding"] = {k: b[k] for k in ("bound", "reason", "resolved", "aux_ok")}
     ev = jevref.audited_status(checks, bs, doc.get("findings", []), doc.get("unresolved", []), htxt, ctr)
+    if "scope_exclusions" in doc:   # R05: every declared out-of-scope exclusion is re-derived from the real jev_classify call; one that cannot be demonstrated makes a PASS UNRESOLVED (a FAIL stays FAIL)
+        sa = scope.validate_exclusions(doc["scope_exclusions"], calls, (doc.get("session") or {}).get("jsonl"), doc.get("findings", []))
+        doc["scope_audit"] = dict(threshold=scope.THRESHOLD, **sa)
+        if sa["invalid"]:
+            ev["reasons"].append("invalid scope exclusions: %d" % sa["invalid"])
+            if ev["status"] == "PASS": ev["status"] = "UNRESOLVED"
     if doc.get("status") != ev["status"]: doc["status_claimed"] = doc.get("status")
     if ctr != "R02": doc["omission_contract"] = ctr   # informative only (never read): the contract the writer applied (strict auxiliary conditions and the explicit omission pair; the gate and the auditors recompute under their own contract)
     doc.update(checks=checks, status=ev["status"], jev_ref_version="1", binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], calls_log_note=note, jev_calls_in_log=len(calls)))

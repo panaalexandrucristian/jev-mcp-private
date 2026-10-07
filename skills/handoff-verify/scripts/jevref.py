@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opencode as O
 
 PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
-VERDICT_KEYS = ("verdict", "relation", "decision", "class", "label", "choice")
+VERDICT_KEYS = ("verdict", "relation", "classification", "decision", "class", "label", "choice")   # jev_classify returns `classification` (and `decision` = auto/review, which is the action)
 
 def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and not (isinstance(v, float) and math.isnan(v))
@@ -135,8 +135,9 @@ def _compare(call):
 
 def _by_id(field):
     def f(call):
-        """jev_classify / jev_extract: ONLY the form results[k].id == input.<items|fields>[k].id is accepted; any other shape stays unbound
-        (this form was not observed in recorded evidence: it is the strict rule, not a measured contract)."""
+        """jev_classify / jev_extract: ONLY the form results[k].id == input.<items|fields>[k].id is accepted; any other shape stays unbound.
+        jev_classify (observed live, R05): results[k] = {id, classification, probabilities, confidence, margin, top_probability, decision: auto|review}; `classification` is the verdict (VERDICT_KEYS)
+        and `decision` the action (_entry). The jev_extract form is not observed: it is the strict rule, not a measured contract."""
         items, res = call["input"].get(field), (call["parsed"] or {}).get("results")
         if not isinstance(items, list) or not isinstance(res, list): return [], "unknown response shape (%s/results)" % field
         out = []

@@ -18,7 +18,7 @@ ABSENCE_PREFIX = "The complete supplied handoff material neither states nor impl
 EVALUATED = ("prefix", "session_end")
 WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 BLOCK_SEP = "\n\u0000\n"   # joins the eligible records; a quote can never span two records
-SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py")   # the skill's own scripts (verification activity)
+SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py")   # the skill's own scripts (verification activity)
 JEV_PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
 _MODULE_USE = re.compile(r"(?:-m\s+|\bimport\s+|\bfrom\s+)(?:%s)\b" % "|".join(x[:-3] for x in SKILL_SCRIPTS))   # a script of the skill used as a module: -m omissions, import omissions, from omissions ...
 
