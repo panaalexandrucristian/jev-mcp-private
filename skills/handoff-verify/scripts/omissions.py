@@ -7,7 +7,7 @@ real verdict `unsupported`; R03, historical: the claim "... neither states nor i
 canonical MATERIAL of the version (the note itself + its direct references, one level, delimited, in order). The CLI `prepare` prints all of it so the model copies, never types, the values; the validator
 (jevref.validate_finding) re-derives everything. This module decides nothing semantic: Jev judges the claims; here only provenance, eligibility and completeness are deterministic.
 
-CLI: omissions.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID --file HANDOFF --write-id ID --evaluated-against prefix|session_end --detail TEXT --source-quote QUOTE [--cwd DIR]
+CLI: omissions.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID --file HANDOFF --write-id ID --evaluated-against prefix|session_end --detail TEXT --source-quote QUOTE [--cwd DIR] [--location DIR ...]
   exit 0 = ready (JSON on stdout), 3 = something is ambiguous or not recoverable (JSON with `reasons`; the omission stays UNRESOLVED)."""
 import argparse, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,25 +39,42 @@ def material(note_text, references=()):
     for ref, content in references: out += "=== DIRECT REFERENCE %s (sha256: %s) ===\n%s\n=== END DIRECT REFERENCE ===\n" % (ref, sha256_text(content), content)
     return out
 
-def material_bases(note_path, version):
-    """The ordered bases of the material, the SAME for `prepare` and the report re-derivation: the directory of the note, then the cwd recorded in the transcript for THIS write of the note (when it has one; never the process cwd or --cwd);
-    build_material adds the git root of each."""
+def bad_location(loc):
+    """None when `loc` is a usable work location (an absolute path of an existing directory), else "relative" / "missing"."""
+    if not isinstance(loc, str) or not os.path.isabs(loc): return "relative"
+    return None if os.path.isdir(loc) else "missing"
+
+def check_locations(locs):
+    """The user-given work locations (`--location`): -> (list, None) or (None, reason). Order and strings are kept as given."""
+    for loc in locs or ():
+        w = bad_location(loc)
+        if w == "relative": return None, "work location %r is not an absolute path" % (loc,)
+        if w: return None, "work location %r is not an existing directory" % (loc,)
+    return list(locs or ()), None
+
+def material_bases(note_path, version, locations=()):
+    """The ordered bases of the material, the SAME for `prepare` and the report re-derivation: the directory of the note, then the cwd recorded in the transcript for THIS write of the note (when it has one; never the process cwd or --cwd),
+    then the work locations the user gave (`--location`, in the given order); build_material adds the git root of each."""
     out = []
-    for b in (os.path.dirname(note_path) if note_path else None, (version or {}).get("cwd")):
+    for b in [os.path.dirname(note_path) if note_path else None, (version or {}).get("cwd")] + list(locations or ()):
         if isinstance(b, str) and b and b not in out: out.append(b)
     return out
 
 def build_material(note_text, bases=()):
-    """-> (material | None, manifest, reason). Direct references (refs.py: one level, existing files; the git roots of the bases are extra bases) found in the note are part of the eligible material; a reference that cannot be resolved or read means that
+    """-> (material | None, manifest, reason): `build_material_ex` without the unresolved reference."""
+    return build_material_ex(note_text, bases)[:3]
+
+def build_material_ex(note_text, bases=()):
+    """-> (material | None, manifest, reason, missing_reference | None). Direct references (refs.py: one level, existing files; the git roots of the bases are extra bases) found in the note are part of the eligible material; a reference that cannot be resolved or read means that
     completeness is not demonstrated (None, reason). A note without references: the note alone."""
     manifest, found, bases = [], [], R.with_git_roots(bases)
     for ref in R.direct_refs(note_text, bases):
         real, how = R.resolve_info(ref, bases)
-        if real is None: return None, manifest, "direct reference %r cannot be resolved (%s): the complete material is not demonstrated" % (ref, how)
+        if real is None: return None, manifest, "direct reference %r cannot be resolved (%s): the complete material is not demonstrated" % (ref, how), dict(ref=ref, reason=how, searched=bases)
         try: txt = open(real, encoding="utf-8", newline="").read()   # newline="": no newline translation, the text (and its sha256) is exactly the bytes presented
-        except (OSError, UnicodeDecodeError): return None, manifest, "direct reference %r cannot be read: the complete material is not demonstrated" % ref
+        except (OSError, UnicodeDecodeError): return None, manifest, "direct reference %r cannot be read: the complete material is not demonstrated" % ref, dict(ref=ref, reason="cannot be read (%s)" % real, searched=bases)
         manifest.append(dict(ref=ref, path=real, sha256=sha256_text(txt), resolution=how)); found.append((ref, txt))
-    return material(note_text, found), manifest, None
+    return material(note_text, found), manifest, None, None
 
 def _blocks_of(content):
     if isinstance(content, str): return [content]
@@ -150,13 +167,15 @@ def context(source_jsonl, handoff_real, version, evaluated_against, bases=()):
     recs, use_pos = _MEMO[key]
     pos = use_pos.get(version["write_tool_use_id"]) if evaluated_against == "prefix" else verification_limit(recs)
     if evaluated_against == "prefix" and pos is None: return dict(eligible_source=None, eligible_blocks=None, material=None, material_reason="position of the write not found")
-    blocks = eligible_blocks(recs, handoff_real, pos); mat, manifest, why = build_material(version["content"], bases)
-    return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=blocks, material=mat, material_reason=why, manifest=manifest)
+    blocks = eligible_blocks(recs, handoff_real, pos); mat, manifest, why, missing = build_material_ex(version["content"], bases)
+    return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=blocks, material=mat, material_reason=why, manifest=manifest, missing_reference=missing)
 
 def prepare_one(a):
     """The prepare result for one candidate -> (object, exit code); `cmd_prepare` prints it, `cmd_prepare_batch` collects it."""
     import discover as D, versions as V
     def fail(*reasons, **extra): return dict(ok=False, reasons=list(reasons), **extra), 3
+    locs, why = check_locations(getattr(a, "location", None))
+    if why: return fail(why)
     sp, how, amb = D.resolve_session_info(a.source, a.cwd)
     if amb: return fail("source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl")
     if not sp or not D.source_exists(sp): return fail("source session not found")
@@ -173,14 +192,15 @@ def prepare_one(a):
         try: disk = hashlib.sha256(open(path, "rb").read()).hexdigest()
         except OSError: return fail("the copy cannot be read: relocation not verified")
         if disk not in {x["sha256"] for x in vs if x["sha256"]}: return fail("relocated copy: the bytes do not hash to a recoverable version of the written handoff")
-    ctx = context(sp, canon, v, a.evaluated_against, material_bases(path, v))
-    if ctx["material"] is None: return fail(ctx["material_reason"] or "material not available")
-    if not wsnorm(a.detail): return fail("empty detail")
-    if wsnorm(a.detail).startswith(SOURCE_PREFIX.strip()) or wsnorm(a.detail).startswith(ABSENCE_PREFIX.strip()): return fail("the detail must be the bare detail, not a canonical claim (the helper builds the claims itself)")
+    bases = material_bases(path, v, locs); work = R.with_git_roots(bases)
+    ctx = context(sp, canon, v, a.evaluated_against, bases)
+    if ctx["material"] is None: return fail(ctx["material_reason"] or "material not available", work_locations=work, **({"missing_reference": ctx["missing_reference"]} if ctx.get("missing_reference") else {}))
+    if not wsnorm(a.detail): return fail("empty detail", work_locations=work)
+    if wsnorm(a.detail).startswith(SOURCE_PREFIX.strip()) or wsnorm(a.detail).startswith(ABSENCE_PREFIX.strip()): return fail("the detail must be the bare detail, not a canonical claim (the helper builds the claims itself)", work_locations=work)
     passage = passage_of(ctx["eligible_blocks"], a.source_quote)
-    if passage is None: return fail("the source quote is not (exactly, case-sensitive, whitespace as in the record, inside ONE transcript record) in the eligible source of this version (%s; session_end stops before the verification activity, Jev calls are never source)" % a.evaluated_against)
+    if passage is None: return fail("the source quote is not (exactly, case-sensitive, whitespace as in the record, inside ONE transcript record) in the eligible source of this version (%s; session_end stops before the verification activity, Jev calls are never source)" % a.evaluated_against, work_locations=work)
     sc, ac = claims(a.detail, "R04")
-    return (dict(ok=True, contract="R04", detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
+    return (dict(ok=True, contract="R04", work_locations=work, detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
                           version_ref=dict(write_tool_use_id=v["write_tool_use_id"], sha256=v["sha256"], evaluated_against=a.evaluated_against), handoff_source_path=reloc,
                           omission_ref_template=dict(detail=wsnorm(a.detail), source_check_id="<id of the check whose call used source_claim and source_passage>"),
                           note="Call jev_verify twice: (1) claims=[source_claim], evidence=source_passage (verbatim, the WHOLE passage, nothing added); (2) claims=[absence_claim] (the bare detail, the ONLY claim of that call), evidence=material, verbatim and complete. Both checks carry the same version_ref. Only if (1) is verified > 0.95 AND (2) comes back `unsupported` > 0.95 with action auto, report a finding (type lost_detail): omission_ref, claim = absence_claim, check_id = the absence check, confidence = its confidence, quote_source = the exact quote. If (2) is verified or contradicted the note states the detail: record the check, report NO finding. Anything else stays UNRESOLVED."), 0)
@@ -215,10 +235,10 @@ def cmd_prepare_batch(a):
 def main():
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True); p = sub.add_parser("prepare")
     p.add_argument("--source"); p.add_argument("--file", required=True); p.add_argument("--write-id", required=True, dest="write_id"); p.add_argument("--evaluated-against", choices=EVALUATED, required=True, dest="evaluated_against")
-    p.add_argument("--detail", required=True); p.add_argument("--source-quote", required=True, dest="source_quote"); p.add_argument("--cwd")
+    p.add_argument("--detail", required=True); p.add_argument("--source-quote", required=True, dest="source_quote"); p.add_argument("--cwd"); p.add_argument("--location", action="append", default=[])
     b = sub.add_parser("prepare-batch")
     b.add_argument("--source"); b.add_argument("--file"); b.add_argument("--write-id", dest="write_id"); b.add_argument("--evaluated-against", choices=EVALUATED, dest="evaluated_against")
-    b.add_argument("--spec", required=True); b.add_argument("--cwd")
+    b.add_argument("--spec", required=True); b.add_argument("--cwd"); b.add_argument("--location", action="append", default=[])
     a = ap.parse_args()
     return cmd_prepare_batch(a) if a.cmd == "prepare-batch" else cmd_prepare(a)
 

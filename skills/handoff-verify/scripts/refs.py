@@ -29,6 +29,7 @@ def direct_refs(handoff_text, bases=()):
         if p and not p.startswith(("-", "...")) and not re.search(r"[\t<>|;&$*?{}\\]", p) and p not in refs: refs.append(p)
     for m in SPAN_RX.finditer(handoff_text):
         p = m.group(1) or m.group(2)
+        if not p.strip(): continue   # a backticked space (Markdown such as "` `") names nothing
         if m.group(2) or not re.search(r"\s", p):
             if m.group(2) or re.search(EXT + "$", p): add(p)
             continue

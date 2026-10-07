@@ -118,9 +118,17 @@ def validate_ref(ref, vs, call=None, same=False):
             return "window", "call or its result is outside the window of the referenced version (call after its write; result before the next write/edit of the same path)", v
     return "ok", "ok", v
 
-def bind_versions(checks, bindings, handoff_path, source_jsonl, calls, same, source_path=None):
+def bind_versions(checks, bindings, handoff_path, source_jsonl, calls, same, source_path=None, work_locations=()):
     """-> {check id: dict(kind, ok, reason, version, sha256, write_tool_use_id, text)} for every BOUND check. Unbound checks have no row (they are unresolved already).
-    `source_path` (retrospective only, never with `same`): explicit relocation, additionally requires the bytes of the file at `handoff_path` to hash to a recoverable version of the written handoff."""
+    `source_path` (retrospective only, never with `same`): explicit relocation, additionally requires the bytes of the file at `handoff_path` to hash to a recoverable version of the written handoff.
+    `work_locations` = the user locations of the report (`doc["work_locations"]`), added to the bases of the omission material exactly as `omissions.py prepare --location` does; one that is invalid or gone makes the material unavailable."""
+    loc_why = None
+    if work_locations is None: work_locations = ()
+    if not isinstance(work_locations, (list, tuple)) or not all(isinstance(x, str) for x in work_locations): loc_why = "work_locations of the report is not a list of directory strings: the complete material is not demonstrated"
+    else:
+        for x in work_locations:
+            w = O.bad_location(x)
+            if w: loc_why = "work location %r %s at report time: the complete material is not demonstrated" % (x, "is not an absolute path" if w == "relative" else "does not exist"); break
     cm = {c["tool_use_id"]: c for c in calls}
     vs, note, how, canon = [], None, "none", None
     try:
@@ -142,8 +150,10 @@ def bind_versions(checks, bindings, handoff_path, source_jsonl, calls, same, sou
         row = dict(kind=kind, ok=kind == "ok", reason=why, version=v["version"] if v else None, sha256=v["sha256"] if v else None, write_tool_use_id=v["write_tool_use_id"] if v else None,
                    text=v["content"] if kind == "ok" else None, evaluated_against=(c.get("version_ref") or {}).get("evaluated_against") if isinstance(c.get("version_ref"), dict) else None)
         if kind == "ok" and canon and row["evaluated_against"] in EVALUATED:   # R03: what the omission pair is validated against (eligible source of THIS version, canonical material)
-            try: row["omission"] = O.context(source_jsonl, canon, v, row["evaluated_against"], O.material_bases(handoff_path, v))
-            except Exception as e: row["omission"] = dict(eligible_source=None, material=None, material_reason="omission context unavailable: %s" % e)
+            if loc_why: row["omission"] = dict(eligible_source=None, eligible_blocks=None, material=None, material_reason=loc_why)
+            else:
+              try: row["omission"] = O.context(source_jsonl, canon, v, row["evaluated_against"], O.material_bases(handoff_path, v, work_locations))
+              except Exception as e: row["omission"] = dict(eligible_source=None, material=None, material_reason="omission context unavailable: %s" % e)
         rows[b["id"]] = row
     return rows
 
@@ -258,7 +268,7 @@ def gate(calls_path, handoff_path, doc, disk_path=None, session_id=None, omissio
     if not same_session(src, calls_path, session_id): return fin("unresolved", "the report's source session is not demonstrated to be the current session (a retrospective report cannot certify a current delivery)")
     calls = J.load_calls(calls_path); checks = doc["checks"]
     r03 = J.contract_of(omission_contract)   # the CURRENT contract is chosen by the evaluator (default R04: strict auxiliary conditions, explicit omission pair with the R04 absence half), never by a marker in the report; R03 / R02 only by an explicit selection (historical evaluation)
-    bs = J.bind(checks, calls, r03); rows = bind_versions(checks, bs, handoff_path, calls_path, calls, True); bs2 = J.finalize(attach(bs, rows), doc["findings"], None, r03)
+    bs = J.bind(checks, calls, r03); rows = bind_versions(checks, bs, handoff_path, calls_path, calls, True, None, doc.get("work_locations")); bs2 = J.finalize(attach(bs, rows), doc["findings"], None, r03)
     ev = J.audited_status(checks, bs2, doc["findings"], doc.get("unresolved", []), None, r03)
     res["audited_status"] = ev["status"]
     if doc.get("status") != ev["status"]: return fin("unresolved", "stored report status %r differs from the recomputed %r (invalid or hand-edited report)" % (doc.get("status"), ev["status"]))

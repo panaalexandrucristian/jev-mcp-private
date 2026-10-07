@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic preparation for handoff-verify (no Jev, no network, never executes handoff code).
-usage: prepare.py [SESSION_ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] [--cwd DIR] [--out DIR] [--max-chars N]
+usage: prepare.py [SESSION_ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] [--cwd DIR] [--out DIR] [--max-chars N] [--location DIR ...]
 Writes into the run directory <session-cwd>/.handoff-verify/<session-id>/<run-id>/work/ (or --out):
   inventory.json         handoff candidates + dispositions (included_by_name / needs_jev_classify / failed / unlinked / excluded) + aliases/copies
   handoffs/<name>.v<N>.md  reconstructed versions (sanitized) ; versions[] in inventory.json carry sha256/uuid/timestamp/status/evaluated_against
@@ -9,7 +9,7 @@ Writes into the run directory <session-cwd>/.handoff-verify/<session-id>/<run-id
 Prints a compact JSON summary on stdout."""
 import argparse, glob, hashlib, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import discover as D, slice as SL, sanitize as S, report as R
+import discover as D, slice as SL, sanitize as S, report as R, omissions as O
 
 def flatten(path, source):
     out = []
@@ -30,7 +30,10 @@ def flatten(path, source):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("session", nargs="?"); ap.add_argument("--cwd"); ap.add_argument("--out"); ap.add_argument("--max-chars", type=int, default=9000)
+    ap.add_argument("--location", action="append", default=[])
     a = ap.parse_args()
+    locs, why = O.check_locations(a.location)
+    if why: print(json.dumps({"error": why})); return 3
     sp, how, ambiguous = D.resolve_session_info(a.session, a.cwd)
     if ambiguous: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions in this project; pass the session id or .jsonl path", "resolution": how})); return 3
     if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
@@ -40,6 +43,7 @@ def main():
     for f, src in files:
         i, b = D.inventory(f, src); items += i; bash += b
     cwd0 = next((i["cwd"] for i in items if i.get("cwd")), a.cwd or os.getcwd())
+    cwds = list(dict.fromkeys(d["cwd"] for f, _ in files for d in D.load_jsonl(f) if isinstance(d.get("cwd"), str) and d["cwd"]))   # every cwd the selected session and its subagents recorded, in order of appearance (not only the Write/Edit calls)
     if a.out: work = a.out
     else:
         rd, run_id = R.new_run_dir(a.cwd or cwd0, sid); work = os.path.join(rd, "work")
@@ -94,13 +98,14 @@ def main():
     cov = dict(records=len(flat), chunks=len(chunks_meta), uuids_in_chunks=len(covered), complete=covered == {r["uuid"] for r in flat}, sanitization=san_total,
                continuation="links not demonstrated: leafUuid only points inside the same file (results/PROTOCOL.md P1); sibling sessions are NOT included")
     json.dump(cov, open(os.path.join(work, "coverage.json"), "w"), indent=1)
-    inv = dict(session=dict(session_id=sid, jsonl=sp, cwd=cwd0, subagents=[f for f, s in files if s == "subagent"]), handoffs=inv_h,
+    inv = dict(session=dict(session_id=sid, jsonl=sp, cwd=cwd0, work_locations=locs, subagents=[f for f, s in files if s == "subagent"]), handoffs=inv_h,
                needs_jev_classify=[dict(path=i["path"], tool_use_id=i["tool_use_id"], uuid=i["uuid"], excerpt_hint="read handoffs/ file; classify with jev_classify (>0.95 decides)") for i in cls["needs_jev_classify"]],
                failed_writes=[dict(path=i["path"], tool_use_id=i["tool_use_id"], op=i["op"]) for i in cls["failed"]],
                unlinked_bash=[dict(path=b["path"], tool_use_id=b["tool_use_id"], note="unlinked: created via Bash, no Write/Edit link") for b in bash],
                excluded_non_text=[i["path"] for i in cls["excluded_non_text"]], env_excluded=[i["path"] for i in items if S.is_excluded_file(i["path"])])
     json.dump(inv, open(os.path.join(work, "inventory.json"), "w"), indent=1)
     print(json.dumps(dict(work=work, session_id=sid, handoff_files=len(inv_h), versions=sum(len(h["versions"]) for h in inv_h), unlinked=len(inv["unlinked_bash"]), failed_writes=len(inv["failed_writes"]),
-                          transcript_chunks=len(chunks_meta), transcript_complete=cov["complete"], needs_jev_classify=len(inv["needs_jev_classify"]))))
+                          transcript_chunks=len(chunks_meta), transcript_complete=cov["complete"], needs_jev_classify=len(inv["needs_jev_classify"]),
+                          session_cwd=cwd0, session_cwds=cwds, note_dirs=sorted({os.path.dirname(h["path"]) for h in inv_h}), work_locations=locs)))
     return 0
 if __name__ == "__main__": sys.exit(main())

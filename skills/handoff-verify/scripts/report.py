@@ -122,7 +122,7 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
         h = doc.get("handoff") if isinstance(doc.get("handoff"), dict) else {}
         hp = h.get("path") if isinstance(h.get("path"), str) else handoff_path
         src = (doc.get("session") or {}).get("jsonl"); same = bool(cpath) and versions.same_session(src, cpath, session_id)
-        rows = versions.bind_versions(checks, bs, hp or "", (cpath if same else src) if isinstance(src, str) else None, calls, same, h.get("source_path") if isinstance(h.get("source_path"), str) else None)
+        rows = versions.bind_versions(checks, bs, hp or "", (cpath if same else src) if isinstance(src, str) else None, calls, same, h.get("source_path") if isinstance(h.get("source_path"), str) else None, doc.get("work_locations"))
         bs = versions.attach(bs, rows)
         bs = jevref.finalize(bs, doc.get("findings", []), htxt, ctr)   # R04: the absence half of a valid pair is resolved once the identity and the material are attached
         vnote = dict(same_session=same, identity_ok=sum(1 for r in rows.values() if r["ok"]), identity_failed=sum(1 for r in rows.values() if not r["ok"]), reasons=sorted({r["reason"] for r in rows.values() if not r["ok"]}))

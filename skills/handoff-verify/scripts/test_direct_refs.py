@@ -13,6 +13,11 @@ def write(path, text):
     with open(path, "w", encoding="utf-8") as f: f.write(text)
 
 class Extraction(unittest.TestCase):
+    def test_a_backticked_space_names_nothing_and_does_not_crash(self):
+        # seen in a real council handover note: Markdown "`` `My Notes.md` ``" leaves "` `" spans, which crashed direct_refs (IndexError)
+        self.assertEqual(refs.direct_refs("paths with spaces (e.g., `` `My Notes.md` ``)", ["/nonexistent"]), [])
+        self.assertEqual(refs.direct_refs("a ` ` span, a `\t` span and `docs/a.md`", ["/nonexistent"]), ["docs/a.md"])
+
     def test_a_command_names_its_files_and_is_not_itself_a_reference(self):
         self.assertEqual(refs.direct_refs("run `PYTHONDONTWRITEBYTECODE=1 bash scripts/test-completion.sh` then `python3 -m x t.py`"), ["scripts/test-completion.sh", "t.py"])
 
