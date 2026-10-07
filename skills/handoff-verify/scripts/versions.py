@@ -47,7 +47,7 @@ def versions_of(source_jsonl, path, source_path=None):
     its = sorted([i for i in items if os.path.realpath(i["path"]) == canon], key=lambda x: x["index"])
     rds = [dict(r, path=canon) for r in D.reads(source_jsonl) if r["complete"] and isinstance(r["path"], str) and os.path.realpath(r["path"]) == canon]
     vs, op = SL.reconstruct(its, rds), {i["tool_use_id"]: i for i in its}
-    out = [dict(version=v["version"], write_tool_use_id=v["tool_use_id"], uuid=v["uuid"], index=v["index"], pos=op[v["tool_use_id"]].get("pos"), result_pos=op[v["tool_use_id"]].get("result_pos"), op=op[v["tool_use_id"]]["op"],
+    out = [dict(version=v["version"], write_tool_use_id=v["tool_use_id"], uuid=v["uuid"], index=v["index"], pos=op[v["tool_use_id"]].get("pos"), result_pos=op[v["tool_use_id"]].get("result_pos"), op=op[v["tool_use_id"]]["op"], cwd=op[v["tool_use_id"]].get("cwd"),
                 status=v["status"], reason=v["reason"], content=v["content"], sha256=sha256_text(v["content"]) if v["content"] is not None else None) for v in vs]
     for k, v in enumerate(out): v["next_index"] = out[k + 1]["index"] if k + 1 < len(out) else None; v["next_pos"] = out[k + 1]["pos"] if k + 1 < len(out) else None
     return out, canon, how, (None if out else "no successful Write/Edit of %s in the source session" % os.path.basename(path))
@@ -142,7 +142,7 @@ def bind_versions(checks, bindings, handoff_path, source_jsonl, calls, same, sou
         row = dict(kind=kind, ok=kind == "ok", reason=why, version=v["version"] if v else None, sha256=v["sha256"] if v else None, write_tool_use_id=v["write_tool_use_id"] if v else None,
                    text=v["content"] if kind == "ok" else None, evaluated_against=(c.get("version_ref") or {}).get("evaluated_against") if isinstance(c.get("version_ref"), dict) else None)
         if kind == "ok" and canon and row["evaluated_against"] in EVALUATED:   # R03: what the omission pair is validated against (eligible source of THIS version, canonical material)
-            try: row["omission"] = O.context(source_jsonl, canon, v, row["evaluated_against"], [os.path.dirname(handoff_path or ""), os.getcwd()] if handoff_path else [os.getcwd()])
+            try: row["omission"] = O.context(source_jsonl, canon, v, row["evaluated_against"], O.material_bases(handoff_path, v))
             except Exception as e: row["omission"] = dict(eligible_source=None, material=None, material_reason="omission context unavailable: %s" % e)
         rows[b["id"]] = row
     return rows

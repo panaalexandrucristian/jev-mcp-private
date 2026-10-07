@@ -39,11 +39,19 @@ def material(note_text, references=()):
     for ref, content in references: out += "=== DIRECT REFERENCE %s (sha256: %s) ===\n%s\n=== END DIRECT REFERENCE ===\n" % (ref, sha256_text(content), content)
     return out
 
+def material_bases(note_path, version):
+    """The ordered bases of the material, the SAME for `prepare` and the report re-derivation: the directory of the note, then the cwd recorded in the transcript for THIS write of the note (when it has one; never the process cwd or --cwd);
+    build_material adds the git root of each."""
+    out = []
+    for b in (os.path.dirname(note_path) if note_path else None, (version or {}).get("cwd")):
+        if isinstance(b, str) and b and b not in out: out.append(b)
+    return out
+
 def build_material(note_text, bases=()):
     """-> (material | None, manifest, reason). Direct references (refs.py: one level, existing files; the git roots of the bases are extra bases) found in the note are part of the eligible material; a reference that cannot be resolved or read means that
     completeness is not demonstrated (None, reason). A note without references: the note alone."""
     manifest, found, bases = [], [], R.with_git_roots(bases)
-    for ref in R.direct_refs(note_text):
+    for ref in R.direct_refs(note_text, bases):
         real, how = R.resolve_info(ref, bases)
         if real is None: return None, manifest, "direct reference %r cannot be resolved (%s): the complete material is not demonstrated" % (ref, how)
         try: txt = open(real, encoding="utf-8", newline="").read()   # newline="": no newline translation, the text (and its sha256) is exactly the bytes presented
@@ -165,7 +173,7 @@ def prepare_one(a):
         try: disk = hashlib.sha256(open(path, "rb").read()).hexdigest()
         except OSError: return fail("the copy cannot be read: relocation not verified")
         if disk not in {x["sha256"] for x in vs if x["sha256"]}: return fail("relocated copy: the bytes do not hash to a recoverable version of the written handoff")
-    ctx = context(sp, canon, v, a.evaluated_against, [os.path.dirname(path), a.cwd or os.getcwd()])
+    ctx = context(sp, canon, v, a.evaluated_against, material_bases(path, v))
     if ctx["material"] is None: return fail(ctx["material_reason"] or "material not available")
     if not wsnorm(a.detail): return fail("empty detail")
     if wsnorm(a.detail).startswith(SOURCE_PREFIX.strip()) or wsnorm(a.detail).startswith(ABSENCE_PREFIX.strip()): return fail("the detail must be the bare detail, not a canonical claim (the helper builds the claims itself)")

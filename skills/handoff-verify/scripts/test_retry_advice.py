@@ -14,9 +14,10 @@ EVIDENCE = "$ git log --oneline -1\n54edd39 Plugin 0.7.8: handoff-verify scope f
 def verify_result(rows, subject_at=0.5):
     return json.dumps(dict(tool="jev_verify", subject_at=subject_at, results=[dict(id="claim%d" % k, claim=c, verdict=v, confidence=p, action=a, same_subject=s) for k, (c, v, p, a, s) in enumerate(rows)]))
 
-def call(rows, evidence=EVIDENCE, subject_at=0.5, tid="c1"):
-    rec = [dict(type="assistant", uuid="u1", message=dict(role="assistant", content=[dict(type="tool_use", id=tid, name="mcp__jev__jev_verify", input=dict(claims=[r[0] for r in rows], evidence=evidence))])),
-           dict(type="user", uuid="u2", message=dict(role="user", content=[dict(type="tool_result", tool_use_id=tid, content=verify_result(rows, subject_at))]))]
+def call(rows, evidence=EVIDENCE, subject_at=0.5, tid="c1", tool="verify", result_claims=None):
+    sent = [r[0] for r in rows]; shown = [(c, *r[1:]) for c, r in zip(result_claims or sent, rows)]
+    rec = [dict(type="assistant", uuid="u1", message=dict(role="assistant", content=[dict(type="tool_use", id=tid, name="mcp__jev__jev_" + tool, input=dict(claims=sent, evidence=evidence))])),
+           dict(type="user", uuid="u2", message=dict(role="user", content=[dict(type="tool_result", tool_use_id=tid, content=verify_result(shown, subject_at))]))]
     return rec, jevref.calls_from_records(rec)[0]
 
 def advise_one(row, **kw):
@@ -53,6 +54,50 @@ class Rules(unittest.TestCase):
         rec, c = call([("HEAD is 54edd39.", "verified", None, "auto", 0.9)])
         self.assertEqual(advice.advise(jevref.results_of(c)[0][0], c)["code"], "no_result")
 
+    def test_aux_only_failure_advice(self):
+        for row in (("HEAD is 54edd39.", "verified", 0.99, "review", 0.9), ("HEAD is 54edd39.", "verified", 0.99, "auto", None), ("HEAD is 54edd39.", "verified", 0.99, "auto", 0.3)):
+            a = advise_one(row)
+            self.assertEqual(a["code"], "aux_condition_failed" if row[4] != 0.3 else "evidence_off_subject", row)
+        a = advise_one(("HEAD is 54edd39.", "verified", 0.99, "review", 0.9))
+        self.assertNotIn("below the threshold", a["hint"]); self.assertIn("same_subject/subject_at", a["hint"]); self.assertIn("exactly this claim", a["hint"])
+        self.assertEqual(advise_one(("HEAD is 54edd39.", "verified", 0.9, "review", 0.9))["code"], "add_direct_evidence")   # low confidence is still the old advice
+
+    def test_no_result_hint_matches_retry_policy(self):
+        for k in report.TRANSPORT_ERRORS: self.assertIn(k, advice.HINTS["no_result"])
+        self.assertEqual(report.TRANSPORT_ERRORS, {"transport", "invalid_response"})
+
+    def test_result_mismatch_no_verdict_advice(self):
+        _, c = call([("HEAD is 54edd39.", "contradicted", 0.99, "auto", 0.9)], result_claims=["HEAD is 0000000."])
+        e = jevref.results_of(c)[0][0]; self.assertTrue(e.get("mismatch"))
+        a = advice.advise(e, c)
+        self.assertEqual(a["code"], "result_mismatch"); self.assertIn(e["mismatch"], a["hint"])
+        out = advice.session_advice([c])
+        self.assertEqual([(r["advice"]["code"]) for r in out], ["result_mismatch"])
+        self.assertTrue(all(r["advice"]["code"] not in ("fix_fact", "recheck_fact", "add_direct_evidence") for r in out))
+
+    def test_comma_list_not_compound(self):
+        self.assertFalse(advice.compound("files a.md, b.md, c.md exist in the repository"))
+        self.assertFalse(advice.compound("Files a.md, b.md and c.md exist"))
+
+    def test_single_fact_with_comma_not_compound(self):
+        self.assertFalse(advice.compound("In the repository, the plugin version is 0.7.10"))
+
+    def test_semicolon_and_conjunction_compound(self):
+        self.assertTrue(advice.compound("The plugin is at 0.7.10; the tests all pass"))
+        self.assertTrue(advice.compound("The plugin is at 0.7.10 but the tests fail"))
+        self.assertFalse(advice.compound("Tests pass and ok"))   # a part with fewer than 3 words does not count
+
+    def test_romanian_conjunctions(self):
+        for c in ("Versiunea este 0.7.10 și toate testele trec", "Versiunea este 0.7.10 iar toate testele trec", "Versiunea este 0.7.10 dar toate testele pică", "Versiunea este 0.7.10 însă toate testele pică"):
+            self.assertTrue(advice.compound(c), c)
+
+    def test_eg_and_dotted_words_not_details(self):
+        self.assertEqual(advice.unsupported_details("Use tools, e.g. the tests.pass flag", "nothing relevant"), [])
+        self.assertEqual(advice.unsupported_details("Use e.g tests.pass here", "x"), [])
+
+    def test_filename_with_extension_or_separator_still_detail(self):
+        self.assertEqual(advice.unsupported_details("See notes.md and run.mjs and docs/readme", "x"), ["notes.md", "run.mjs", "docs/readme"])
+
     def test_every_code_has_a_hint(self):
         self.assertEqual(set(advice.CODES), set(advice.HINTS))
 
@@ -85,6 +130,29 @@ class ReportAdvice(unittest.TestCase):
         f = dict(type="lost_detail", check_id="k0", omission_ref=dict(detail="X", source_check_id="k1"), claim=rows[0][0], confidence=0.9, quote_source="X", quote_handoff=None, uuid="u", category="c")
         out = self.doc(rows, [f])
         self.assertTrue(all("advice" not in c for c in out["checks"]))
+
+    def test_gate_result_in_session_advice(self):
+        _, c = call([("HEAD is 0000000.", "contradicted", 0.99, "auto", 0.9), ("HEAD is 54edd39.", "verified", 0.99, "auto", 0.9)], tool="gate")
+        self.assertEqual(c["tool"], "gate")
+        out = advice.session_advice([c])
+        self.assertEqual([(r["tool"], r["result_index"], r["advice"]["code"]) for r in out], [("gate", 0, "fix_fact")])
+
+    def test_gate_result_in_attach_advice(self):
+        rec, c = call([("HEAD is 0000000.", "contradicted", 0.9, "auto", 0.9)], tool="gate")
+        checks = [dict(id="k0", tool="jev_gate", verdict="contradicted", confidence=0.9, jev_ref=dict(tool_use_id="c1", result_index=0, key="HEAD is 0000000."))]
+        b = jevref.bind(checks, [c], True)
+        self.assertTrue(b[0]["bound"])
+        self.assertEqual(b[0]["tool"], "gate")
+        report.attach_advice(checks, b, [c], [])
+        self.assertEqual(checks[0]["advice"]["code"], "recheck_fact")
+
+    def test_mismatched_unbound_check_has_no_attached_verdict_advice(self):
+        rec, c = call([("HEAD is 54edd39.", "contradicted", 0.9, "auto", 0.9)], result_claims=["HEAD is 0000000."])
+        checks = [dict(id="k0", tool="jev_verify", verdict="contradicted", confidence=0.9, jev_ref=dict(tool_use_id="c1", result_index=0, key="HEAD is 54edd39."))]
+        b = jevref.bind(checks, [c], True)
+        self.assertFalse(b[0]["bound"])
+        report.attach_advice(checks, b, [c], [])
+        self.assertNotIn("advice", checks[0])
 
 class Cli(unittest.TestCase):
     def test_cli_lists_every_result_that_did_not_pass(self):

@@ -14,7 +14,7 @@ import argparse, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jevref as J
 
-CODES = ("evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "no_result")
+CODES = ("evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "aux_condition_failed", "result_mismatch", "no_result")
 HINTS = {
     "evidence_off_subject": "Jev judged the evidence to be about another subject (same_subject below subject_at): give the exact passage about this claim's subject.",
     "fix_fact": "The evidence contradicts the claim with high confidence: correct the fact from the source; more evidence of the same kind will not help.",
@@ -22,12 +22,14 @@ HINTS = {
     "remove_unsupported_detail": "These details of the claim do not appear in the evidence: remove them from the claim or add the passage that states them.",
     "add_source_passage": "The evidence does not state the claim: add the exact source passage (command output, file lines, transcript quote) that states it.",
     "add_direct_evidence": "The claim is supported below the threshold: add the direct evidence for it (the exact output or lines), not a summary.",
-    "no_result": "No usable result: only a transport error allows one identical retry; otherwise the check stays unresolved.",
+    "aux_condition_failed": "Jev did not let the verdict stand on its own: the action is review, or same_subject/subject_at is missing. Give evidence about exactly this claim; a server that returns no same_subject/subject_at cannot pass the strict conditions.",
+    "result_mismatch": "The result does not carry the claim that was sent (%s): no advice can be read from it; the check stays unresolved. Re-verify only with a corrected call that carries this claim.",
+    "no_result": "No usable result: only a transport or invalid_response error allows one identical retry; otherwise the check stays unresolved.",
 }
 SPLIT_HINT = " It joins several facts: in the same single re-verification, split it into one claim per fact, each with only its own evidence."
 # identifiers that must appear in the evidence when the claim states them: numbers, versions, hashes, paths, file names, code names
-DETAIL = re.compile(r"`[^`]+`|[\w./~:-]*\d[\w./:-]*|[\w-]+(?:/[\w.-]+)+|\w+\.\w{1,5}\b|\b\w+_\w+\b")
-JOIN = re.compile(r";|,? (?:and|but|while|whereas|și|iar|dar|însă) |, ", re.I)
+DETAIL = re.compile(r"`[^`]+`|[\w./~:-]*\d[\w./:-]*|[\w-]+(?:/[\w.-]+)+|\w+\.(?:md|txt|json|py|sh|yml|yaml|toml|js|mjs|ts)\b|\b\w+_\w+\b")
+JOIN = re.compile(r";|\b(?:and|but|while|whereas|și|iar|dar|însă)\b", re.I)
 
 def passed(entry, call):
     """The claim holds: `verified`, strictly > 0.95, with the strict auxiliary conditions (a confirmed `contradicted` is a claim that failed, not a pass)."""
@@ -45,12 +47,13 @@ def unsupported_details(claim, evidence):
     return out
 
 def compound(claim):
-    """True when the claim joins at least two facts (split on ;, commas and conjunctions) of three or more words each."""
+    """True when the claim joins at least two facts (split on ; and the conjunctions only, never on a bare comma) of three or more words each."""
     parts = [p for p in JOIN.split(claim or "") if len(p.split()) >= 3]
     return len(parts) >= 2
 
 def advise(entry, call):
     """entry: a jevref.results_of entry of a verify/gate call; -> {code, hint[, details][, split]}, or None when the result passed."""
+    if entry.get("mismatch"): return dict(code="result_mismatch", hint=HINTS["result_mismatch"] % entry["mismatch"])
     if call.get("is_error") or entry.get("verdict") is None or entry.get("confidence") is None:
         return dict(code="no_result", hint=HINTS["no_result"])
     if passed(entry, call): return None
@@ -62,6 +65,7 @@ def advise(entry, call):
         miss = unsupported_details(entry.get("key"), evidence_text(call))
         if miss: return dict(code="remove_unsupported_detail", hint=HINTS["remove_unsupported_detail"], details=miss)
         code = "add_source_passage"
+    elif verdict == "verified" and J.strict_pass(entry["confidence"]): code = "aux_condition_failed"
     elif compound(entry.get("key")): return dict(code="add_direct_evidence", hint=HINTS["add_direct_evidence"] + SPLIT_HINT, split=True)
     else: code = "add_direct_evidence"
     return dict(code=code, hint=HINTS[code])
