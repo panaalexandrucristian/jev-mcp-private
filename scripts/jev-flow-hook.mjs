@@ -5,6 +5,7 @@
 // yields one stderr diagnostic and no decision, never a silent approval.
 import { handleControlHook, mergeOutputs } from "../private/jev-control/hook.mjs";
 import { handleHook } from "../private/jev-flow/hook.mjs";
+import { handlePromptCheckHook } from "../private/jev-prompt-check/hook.mjs";
 
 async function readStdin() {
   const chunks = [];
@@ -25,8 +26,20 @@ try {
   } catch (error) {
     process.stderr.write(`[jev-control] hook error: ${String(error?.message ?? error)}\n`);
   }
-  const output = mergeOutputs(control, handleHook(name, input));
-  if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+  let output = mergeOutputs(control, handleHook(name, input));
+  // prompt-check (opt-in, off by default) runs after them and adds only its own systemMessage.
+  let ran = false;
+  try {
+    const promptCheck = await handlePromptCheckHook(name, input);
+    ran = promptCheck.ran;
+    output = mergeOutputs(output, promptCheck.output);
+  } catch (error) {
+    process.stderr.write(`[prompt-check] hook error: ${String(error?.message ?? error).slice(0, 200)}\n`);
+  }
+  const line = output ? `${JSON.stringify(output)}\n` : "";
+  // After a Jev check exit as soon as the output is flushed, so no child process can hold the prompt.
+  if (ran) process.stdout.write(line, () => process.exit(0));
+  else if (line) process.stdout.write(line);
 } catch (error) {
   process.stderr.write(`[jev-flow] hook error: ${String(error?.message ?? error)}\n`);
 }

@@ -1,5 +1,5 @@
 {
-  "description": "jev-flow: route directive, exploration and range-only hints, jev-locator model selection and hits, Jev payload guard and completion checks (gate runner receipts). Local work only; no tests or model calls.",
+  "description": "jev-flow: route directive, exploration and range-only hints, jev-locator model selection and hits, Jev payload guard and completion checks (gate runner receipts). Local work only; no tests or model calls, except the opt-in prompt-check (off by default), which for a prompt after the first makes two short Jev checks when the user switched it on with /jev:prompt-check.",
   "hooks": {
     "SessionStart": [
       {
