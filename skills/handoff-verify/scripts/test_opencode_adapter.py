@@ -186,9 +186,9 @@ class Mutations(Base):
         self.assertEqual([(c["id"], c["name"], c["input"]) for c, _ in uses(self.recs(sel))], [("s1", "Bash", dict(command="echo a > notes.md")), ("b1", "Bash", dict(command="ls"))])
         _, bash = D.inventory(sel); self.assertEqual([b["path"] for b in bash], ["notes.md"])
 
-    def test_other_tools_are_not_emitted_and_no_read_records_exist(self):
-        sel = self.sel([assistant([tool("r1", "read", dict(filePath=self.path()), T0 + 1, T0 + 2, out="CONTENT"), tool("g1", "grep", dict(pattern="x"), T0 + 3, T0 + 4)], T0)])
-        self.assertEqual(self.recs(sel), []); self.assertEqual(D.reads(sel), [])
+    def test_other_tools_are_not_emitted_and_timed_reads_are_evidence_never_bases(self):
+        sel = self.sel([assistant([tool("r1", "read", dict(filePath=self.path()), T0 + 1, T0 + 2, out="CONTENT"), tool("g1", "grep", dict(pattern="x"), T0 + 3, T0 + 4), tool("f1", "webfetch", dict(url="https://x.invalid"), T0 + 5, T0 + 6)], T0)])
+        self.assertEqual([(c["id"], c["name"]) for c, _ in uses(self.recs(sel))], [("r1", "Read"), ("g1", "Grep")]); self.assertEqual([r for r in D.reads(sel) if r["complete"]], [])   # test_opencode_evidence.py has the details
 
     def test_duplicate_ids_are_disambiguated(self):
         sel = self.sel([assistant([tool("dup", "write", dict(filePath=self.path("a.md"), content="1"), T0 + 1, T0 + 2)], T0), assistant([tool("dup", "write", dict(filePath=self.path("b.md"), content="2"), T0 + 3, T0 + 4)], T0 + 3),
@@ -297,7 +297,7 @@ class Ordering(Base):
         self.assertEqual({k: r["timestamp"] for k, (_, r) in rs.items()}, {"w": iso(T0 + 2), "e": iso(T0 + 4), "b": iso(T0 + 6), "j": iso(T0 + 8), "p#1": iso(T0 + 39)})
         self.assertNotIn("u", [c["id"] for c, _ in us]); self.assertNotIn("u", rs)   # the unpositioned edit is not invented as an event
         self.assertIn("_unrecoverable", us[4][0]["input"])   # ...but it still invalidated the base for the later patch Update
-        self.assertEqual([(v["status"], v["content"]) for v in versions.versions_of(sel, self.path())[0]][:2], [("ok", "alpha\nbeta\n"), ("ok", "ALPHA\nbeta\n")])
+        self.assertEqual([(v["status"], v["content"]) for v in versions.versions_of(sel, self.path())[0]][:2], [("ok", "alpha\nbeta\n"), ("content not recoverable", None)])   # the unpositioned edit `u` may have changed the base the timed Edit `e` applied to (council fix 8)
         self.assertEqual([c["tool_use_id"] for c in J.load_calls(sel)], ["j"]); self.assertEqual([n["call_id"] for n in self.O.load(sel)[1]], ["u"])
 
     def test_a_completed_mutation_without_created_invalidates_the_base_of_its_path(self):

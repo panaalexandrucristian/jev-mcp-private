@@ -7,9 +7,10 @@ real verdict `unsupported`; R03, historical: the claim "... neither states nor i
 canonical MATERIAL of the version (the note itself + its direct references, one level, delimited, in order). The CLI `prepare` prints all of it so the model copies, never types, the values; the validator
 (jevref.validate_finding) re-derives everything. This module decides nothing semantic: Jev judges the claims; here only provenance, eligibility and completeness are deterministic.
 
-CLI: omissions.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID --file HANDOFF --write-id ID --evaluated-against prefix|session_end --detail TEXT --source-quote QUOTE [--cwd DIR] [--location DIR ...]
+CLI: omissions.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID --file HANDOFF --write-id ID --evaluated-against prefix|session_end --detail TEXT --source-quote QUOTE [--cwd DIR] [--location DIR ...] [--run ID]
+  --run = the verification run a session_end evaluation is about (the tool_use id that starts it, listed by `versions.py list` and by this command when several runs follow the write); it is printed in `version_ref.run` and must be copied into every check.
   exit 0 = ready (JSON on stdout), 3 = something is ambiguous or not recoverable (JSON with `reasons`; the omission stays UNRESOLVED)."""
-import argparse, hashlib, json, os, re, sys
+import argparse, ast, collections, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import refs as R
 
@@ -18,9 +19,8 @@ ABSENCE_PREFIX = "The complete supplied handoff material neither states nor impl
 EVALUATED = ("prefix", "session_end")
 WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 BLOCK_SEP = "\n\u0000\n"   # joins the eligible records; a quote can never span two records
-SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py")   # the skill's own scripts (verification activity)
+SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py", "checks.py")   # the skill's own scripts (verification activity)
 JEV_PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
-_MODULE_USE = re.compile(r"(?:-m\s+|\bimport\s+|\bfrom\s+)(?:%s)\b" % "|".join(x[:-3] for x in SKILL_SCRIPTS))   # a script of the skill used as a module: -m omissions, import omissions, from omissions ...
 
 def sha256_text(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 def wsnorm(s): return " ".join(str(s if s is not None else "").split())
@@ -85,55 +85,898 @@ def _blocks_of(content):
             c = b.get("content"); out.append(c if isinstance(c, str) else "".join(x.get("text", "") for x in c if isinstance(x, dict)) if isinstance(c, list) else "")
     return out
 
-def _is_verification_use(b):
-    """A tool_use that is verification activity (not source): the Skill handoff-verify, a run of one of the skill's scripts (any input that names them), any Jev call."""
-    name = str(b.get("name") or ""); inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-    if name.startswith(JEV_PREFIX): return True
-    if name == "Skill" and "handoff-verify" in str(inp.get("skill") or ""): return True
-    blob = json.dumps(inp, ensure_ascii=False)
-    if "handoff-verify" in blob: return True   # the skill's directory (Read SKILL.md, cd into scripts/, ...)
-    return any(x in blob for x in SKILL_SCRIPTS) or bool(_MODULE_USE.search(blob))
+_STEMS = tuple(x[:-3] for x in SKILL_SCRIPTS)
+_PATH_FIELDS = ("file_path", "path", "notebook_path")
+_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_PYTHON = re.compile(r"^(?:python|pypy)[0-9.]*$")
+_SHELLS = ("sh", "bash", "zsh", "dash", "ksh")
+_READERS = ("cat", "head", "tail", "less", "more", "bat", "nl", "tac", "od", "xxd", "strings", "wc")                # every operand is a file that is read
+_PATTERN_FIRST = ("grep", "egrep", "fgrep", "rg", "ag", "sed", "awk")                                              # the first operand is a pattern / script, the others are files that are read
+_WRAPPERS = ("env", "time", "nohup", "command", "exec", "nice", "timeout", "sudo")                                  # run the next command word as it is
+_INERT = ("echo", "printf", "ls", "git", "gh", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "chmod", "chown", "ln", "stat", "file", "test", "[", "[[", "true", "false", "pwd", "diff", "find", "realpath",
+          "dirname", "basename", "export", "unset", "set", "alias", "type", "which", "tee", "du", "df", "date", "sleep", "wait", "read", "npm", "pip", "pip3", "curl", "wget", "tar", "zip", "unzip")   # they name a path, they do not run or read it as a skill script
 
-def verification_limit(records):
-    """Position (common timeline of jevref.timeline: tool_use / tool_result blocks counted in record order) of the FIRST verification event of the transcript: the Skill handoff-verify, a run of a script of the
-    skill (omissions.py, versions.py, jevref.py, report.py, discover.py, kit.py, ...) or any mcp__jev__ call. None = the transcript holds no verification activity. For `session_end` the eligible source stops strictly
-    before it (the verification's own commands, Jev inputs and generated material are not source)."""
-    n = 0
-    for d in records:
-        msg = d.get("message") if isinstance(d.get("message"), dict) else {}; c = msg.get("content")
-        if d.get("type") == "assistant" and isinstance(c, list):
-            for b in c:
-                if isinstance(b, dict) and b.get("type") == "tool_use":
-                    n += 1
-                    if _is_verification_use(b): return n
-        elif d.get("type") == "user" and isinstance(c, list): n += sum(1 for b in c if isinstance(b, dict) and b.get("type") == "tool_result")
-    return None
+def is_jev(b): return str((b or {}).get("name") or "").startswith(JEV_PREFIX)
 
-def eligible_blocks(records, handoff_real, pos=None):
-    """Source text blocks eligible to evaluate a version of the note: user/assistant text, tool results and tool inputs of the transcript, EXCLUDING every Write/Edit of the handoff path itself (the note is
-    not its own source) and EVERY Jev call (claims and evidence are inputs of a verification, not facts established by the transcript) with its result. `pos` = position on the common timeline (jevref.timeline):
-    only what comes strictly before it is eligible (`prefix`: the position of the write's tool_use; `session_end`: `verification_limit`, None when the session holds no verification activity = the whole transcript). -> [text]."""
-    out, n, skip = [], 0, set()
-    for d in records:
+def _resolve(p, base):
+    """Absolute normalized path of `p` (relative ones against the absolute `base`), else None. Pure string work: nothing is read, nothing is resolved through the filesystem."""
+    if not isinstance(p, str) or not p or "\x00" in p or p.startswith("~") or "$" in p: return None
+    if os.path.isabs(p): return os.path.normpath(p)
+    return os.path.normpath(os.path.join(base, p)) if isinstance(base, str) and os.path.isabs(base) else None
+
+def _is_skill_file(path):
+    """`.../handoff-verify/scripts/<one of the skill's scripts>` or `.../handoff-verify/SKILL.md`, by path components (never a substring or a bare basename)."""
+    parts = [x for x in path.split(os.sep) if x]
+    return (len(parts) >= 3 and parts[-3:-1] == ["handoff-verify", "scripts"] and parts[-1] in SKILL_SCRIPTS) or (len(parts) >= 2 and parts[-2] == "handoff-verify" and parts[-1] == "SKILL.md")
+
+def _is_scripts_dir(path):
+    parts = [x for x in (path or "").split(os.sep) if x]
+    return parts[-2:] == ["handoff-verify", "scripts"]
+
+def _named(p):
+    """Does the path text name a script of the skill (its basename) or its SKILL.md (directly inside a `handoff-verify` component)? Only the name: where it is, is `_path_class`'s question."""
+    if not isinstance(p, str) or not p: return False
+    parts = [x for x in p.split(os.sep) if x]
+    return bool(parts) and (parts[-1] in SKILL_SCRIPTS or (parts[-1] == "SKILL.md" and len(parts) >= 2 and parts[-2] == "handoff-verify"))
+
+def _path_class(p, base):
+    """yes / no / unknown for ONE path argument: yes = it resolves to a script of the skill or its SKILL.md; unknown = a path that names a script of the skill but cannot be resolved (relative without a recorded
+    absolute base, `$VAR`, `~`): no resolution is ever invented from the components of the text (`..` or a leading `skills/handoff-verify/scripts/` do not make a path absolute); `no` for anything else."""
+    r = _resolve(p, base)
+    if r is not None: return "yes" if _is_skill_file(r) else "no"
+    return "unknown" if _named(p) else "no"
+
+_MENTION = re.compile(r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(re.escape(x) for x in SKILL_SCRIPTS))
+def _mentions_skill(text): return "handoff-verify" in text or bool(_MENTION.search(text))
+
+_PUNCT = "();<>|&"
+
+def _unquoted_newlines(cmd, mark=None):
+    """The command with every newline outside quotes turned into `;` (a newline separates commands like `;` does); a backslash-newline is a continuation. With `mark` (a dict operator character -> placeholder text) every
+    operator character that is quoted or backslash-escaped is replaced by its placeholder, so that the tokeniser cannot take it for an operator (it is an ordinary character of a word, restored afterwards)."""
+    out, q, i = [], None, 0
+    cmd = cmd.replace("\\\n", " ")
+    mark = mark or {}
+    while i < len(cmd):
+        ch = cmd[i]
+        if q is None and ch == "\\" and i + 1 < len(cmd): out.append(mark.get(cmd[i + 1], cmd[i:i + 2])); i += 2; continue             # an escaped operator is a plain character (shlex drops the backslash as well)
+        if q == '"' and ch == "\\" and i + 1 < len(cmd): out.append(cmd[i] + mark[cmd[i + 1]] if cmd[i + 1] in mark else cmd[i:i + 2]); i += 2; continue
+        if ch in "'\"" and (q is None or q == ch): q = None if q else ch
+        out.append(" ; " if ch == "\n" and q is None else mark[ch] if q is not None and ch in mark else ch); i += 1
+    return "".join(out)
+
+_OPS = re.compile(r"&&|\|\||[;&|()]")
+
+def _shell_items(cmd):
+    """The command as an ordered list of ("seg", before, after, words, io) / ("push", before) / ("pop", after): `before` / `after` are the operators (`;`, `&&`, `||`, `&`, `|`, None at the ends) around a simple command, or, for
+    a group `( ... )`, the operator in front of its `(` and the one behind its `)`; `io` = dict(outs [(target, append)], ins [target]) holds the LITERAL words after `>` / `>>` / `>|` / `&>` and after `<` (a descriptor
+    duplication `>&`, a here-document / here-string and a process substitution name no file). Redirections and their targets are not words of the command. Only an UNQUOTED, unescaped operator character is an operator:
+    `echo '>' f`, `echo ">" f`, `echo x \\> f` and `echo 'a;b'` have no redirect and no separator (the quoted characters travel as two-character placeholders built on an escape character, and the escape character of the command itself
+    travels as `\ue000` + `0`: no character of the command can collide with them, however many private-use characters it holds, and nothing is exhausted; they come back into the words). Raises ValueError when the command cannot be tokenised."""
+    import shlex
+    esc = "\ue000"; mark = {ch: esc + str(k) for k, ch in enumerate(_PUNCT, 1)}; back = {str(k): ch for k, ch in enumerate(_PUNCT, 1)}; back["0"] = esc
+    restore = lambda t: re.sub(esc + "(.)", lambda m: back[m.group(1)], t)
+    lex = shlex.shlex(_unquoted_newlines(cmd.replace(esc, esc + "0"), mark), posix=True, punctuation_chars=True); lex.whitespace_split = True; toks = list(lex)
+    items, cur, before, mode, outs, ins = [], [], None, None, [], []
+    def finish(after):
+        nonlocal cur, before, outs, ins
+        if cur: items.append(("seg", before, after, cur, dict(outs=outs, ins=ins)))
+        cur, outs, ins = [], [], []; before = after
+    for t in toks:
+        if t and all(ch in _PUNCT for ch in t):
+            if "<" in t or ">" in t:
+                mode = ("in",) if t == "<" else ("out", t.endswith(">>")) if t in (">", ">>", ">|", "&>", "&>>") else ("skip",)
+                continue
+            mode = None
+            for op in _OPS.findall(t):
+                if op == "(": group = before; finish(";"); items.append(("push", group)); before = ";"
+                elif op == ")": finish(";"); items.append(("pop", None)); before = ";"
+                else:
+                    if not cur and items and items[-1] == ("pop", None): items[-1] = ("pop", op)
+                    finish(op)
+            continue
+        t = restore(t)
+        if mode:
+            if mode[0] == "out": outs.append((t, mode[1]))
+            elif mode[0] == "in": ins.append(t)
+            mode = None; continue
+        cur.append(t)
+    finish(None)
+    return items
+
+def _plan(items, cls="always", rest_ok=True):
+    """What each simple command of `_shell_items` demonstrably did, aligned with `items`: (class, tail) for a "seg", None for the rest. The class: "always" = it ran whatever the exit statuses (the first command of a list,
+    or one behind `;` / a newline, not in the background, in a group that itself ran); "ok" = it ran whenever the WHOLE command exited 0 (it follows `&&` and every operator from it to the end of the command, the ends of
+    the groups included, is `&&`: the last `&&` chain); None = not demonstrated (behind `||` / `&`, followed by `;` / `||` / `&`, in a group that is not demonstrated). The members of a pipeline share the class of the
+    pipeline. `tail` = the exit status of the command is the status of the whole command (only `&&` follows it). The global success of a call is never taken as proof of a command that a status may have skipped. `cls` and
+    `rest_ok` start the plan inside another command (`bash -c '...'` under the class and tail of the command around it)."""
+    root, stack, opened = [], [], []; cur = root
+    for k, it in enumerate(items):
+        if it[0] == "seg": cur.append(dict(k=k, before=it[1], after=it[2], kids=None))
+        elif it[0] == "push":
+            nd = dict(k=k, before=it[1], after=None, kids=[]); cur.append(nd); stack.append(cur); opened.append(nd); cur = nd["kids"]
+        elif stack:
+            if cur: cur[-1]["after"] = None                               # the end of the group is not an operator
+            cur = stack.pop(); opened.pop()["after"] = it[1]
+    if root and root[-1]["after"] == ";": root[-1]["after"] = None        # a trailing `;`
+    out = [None] * len(items)
+    def level(nodes, cls, rest_ok):
+        units, i = [], 0
+        while i < len(nodes):
+            j = i
+            while nodes[j]["after"] == "|" and j + 1 < len(nodes): j += 1
+            units.append((i, j)); i = j + 1
+        tail = [False] * (len(units) + 1); tail[len(units)] = rest_ok
+        for u in range(len(units) - 1, -1, -1): tail[u] = nodes[units[u][1]]["after"] in ("&&", None) and tail[u + 1]
+        for u, (a, b) in enumerate(units):
+            before, after = (nodes[a - 1]["after"] if a else None), nodes[b]["after"]
+            local = None if after == "&" else "always" if before in (None, ";") else "ok" if before == "&&" and tail[u] else None
+            c = None if local is None or cls is None else "ok" if "ok" in (cls, local) else "always"
+            for m in range(a, b + 1):
+                nd = nodes[m]; last = tail[u] and m == b
+                if nd["kids"] is None: out[nd["k"]] = (c, last)
+                else: level(nd["kids"], c, last)
+    level(root, cls, rest_ok)
+    return out
+
+_VALUE_OPTS = {   # options that take a value (separate, or attached to a short option / after `=` on a long one), by command family
+    "grep": ("-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices", "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--binary-files"),
+    "rg": ("-e", "-f", "-m", "-A", "-B", "-C", "-g", "-t", "-T", "-j", "-M", "-E", "--regexp", "--file", "--max-count", "--glob", "--iglob", "--type", "--type-not", "--threads", "--context", "--after-context", "--before-context", "--max-columns", "--encoding", "--ignore-file"),
+    "sed": ("-e", "-f", "-l", "--expression", "--file", "--line-length"),
+    "awk": ("-f", "-v", "-F", "--file", "--assign", "--field-separator"),
+}
+_PATTERN_OPTS = ("-e", "--regexp", "--expression")      # the value is a pattern / script text, not a file
+_FILE_OPTS = ("-f", "--file")                            # the value is a file that is READ (patterns, a script, an awk program)
+
+def _file_operands(b, args):
+    """The paths a grep / egrep / fgrep / rg / ag / sed / awk command READS: the values of -f / --file and the operands after the pattern (script, program); the pattern given by -e / --regexp / --expression, the first operand
+    when no option gave it, and the values of every other option are not files. `--` ends the options."""
+    fam = "grep" if b in ("grep", "egrep", "fgrep") else "rg" if b in ("rg", "ag") else b; vopts = _VALUE_OPTS.get(fam, ()); files, have, pos, i = [], False, [], 0
+    while i < len(args):
+        a = args[i]; i += 1
+        if a == "--": pos += args[i:]; break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name in _PATTERN_OPTS: have = True; i += 0 if eq else 1
+            elif name in _FILE_OPTS:
+                have = True
+                if not eq and i < len(args): val = args[i]
+                if not eq: i += 1
+                files.append(val)
+            elif name in vopts and not eq: i += 1
+            continue
+        if a.startswith("-") and a != "-":
+            letters = a[1:]
+            for k, ch in enumerate(letters):
+                opt = "-" + ch
+                if opt not in vopts: continue
+                val = letters[k + 1:]
+                if not val and i < len(args): val = args[i]
+                if not letters[k + 1:]: i += 1
+                if opt in _PATTERN_OPTS: have = True
+                elif opt in _FILE_OPTS: have = True; files.append(val)
+                break
+            continue
+        pos.append(a)
+    if not have and pos: pos = pos[1:]
+    return [f for f in files if f] + pos
+
+class _Frame(dict):
+    """The local names of a function that `_PayloadFlow` runs; `glob` / `nonl` = the names it declared `global` / `nonlocal` (their bindings go to the outer maps)."""
+    glob = nonl = frozenset()
+
+class _PayloadFlow:
+    """A `python -c` payload read in the order and the context it would run (stdlib `ast`; NOTHING is executed): the statements of the module in order, a definition only when it is called (by name, with the `sys.path` of
+    that moment). A name is what it was bound to at that point: `import_module` is `importlib.import_module` only through `import importlib [as x]` / `from importlib import import_module [as y]` (and plain aliases of
+    them), `__import__` only while nothing shadows it, `sys.path.insert/append` only through a bound `sys`. What may or may not run (an `if` whose test is not a constant, loops, handlers, cases, `a and b`, `x if c else y`,
+    comprehensions, a definition used as a value or decorated, the methods of a class that is used) is MAYBE, and so is every binding it makes: the alternatives are read apart from each other, each from the state before
+    the statement (a loop also after one and two rounds, a handler from a state the body may or may not have reached), and the names they bind are joined conservatively afterwards (`("alt", values)`; an alternative that
+    did not bind the name contributes "undefined"), so a branch never installs a certain binding and one branch never sees what another one bound. Inside a function or lambda the names it assigns (`:=` included), imports or defines anywhere are
+    local from its start and `unbound` until then (`global` / `nonlocal` send the binding to the module / the enclosing function): a call through a name that is not bound yet demonstrates nothing and is never resolved
+    from the outer scope (a MAYBE import when it names a script of the skill). CREATING a callable or an iterator is not running it: a lambda or generator expression that is only built runs nothing (but its defaults / its
+    first iterable), a generator function (or a lambda holding `yield`) that is called and discarded runs nothing; when its result is used the body MAY run. Values: ("mod", name), ("def", node, scope, is_async), ("class", methods), ("import",),
+    ("import_module",), ("syspath",), ("exec",), ("other",), ("unbound",), ("alt", values). Results in `imports` = (literal directories on the path then, whether the path is not demonstrated, sure)."""
+    LIMIT, STEPS = 8, 4000
+    OTHER, UNBOUND, UNDEF = ("other",), ("unbound",), ("undef",)
+    IMPORT, IMPORT_MODULE, SYSPATH = ("import",), ("import_module",), ("syspath",)
+    def __init__(self):
+        self.dirs, self.unknown, self.imports, self.exec, self.active, self.escaped, self.steps, self.incomplete = [], False, [], False, [], set(), 0, False
+        self.scans = {}
+
+    def lit(self, n): return n.value if isinstance(n, ast.Constant) and isinstance(n.value, str) else None
+
+    # --- the state: one dict per scope, innermost first (a ChainMap), the module a plain dict -------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def maps(env): return env.maps if isinstance(env, collections.ChainMap) else [env]
+    def snap(self, env): return [dict(m) for m in self.maps(env)]
+    def restore(self, env, st):
+        for m, s in zip(self.maps(env), st): m.clear(); m.update(s)
+    def same(self, a, b):
+        if a is b: return True
+        if a[0] != b[0]: return False
+        if a[0] == "def": return a[1] is b[1] and a[2] is b[2]
+        return False if a[0] == "class" else a == b
+    def join(self, vals):
+        """The value of a name that is one of `vals` (alternatives) afterwards: the same value when they agree, else ("alt", the distinct values)."""
+        out = []
+        for v in vals:
+            for m in (v[1] if v[0] == "alt" else (v,)):
+                if not any(self.same(m, o) for o in out): out.append(m)
+        return out[0] if len(out) == 1 else ("alt", tuple(out))
+    def merge(self, env, states):
+        for i, m in enumerate(self.maps(env)):
+            new = {}
+            for nm in set().union(*(s[i] for s in states)):
+                v = self.join([s[i].get(nm, self.UNDEF) for s in states])
+                if v != self.UNDEF: new[nm] = v
+            m.clear(); m.update(new)
+    def alts(self, env, branches, skip=False):
+        """Run each alternative from the state before it (`skip` adds the alternative where none of them ran) and join what they bound."""
+        self.steps += 1
+        if self.steps > self.STEPS: self.incomplete = True; return
+        pre = self.snap(env); states = []
+        for b in branches: self.restore(env, pre); b(); states.append(self.snap(env))
+        self.restore(env, pre)
+        if skip: states.append(pre)
+        self.merge(env, states)
+    def maybe(self, env, fn): self.alts(env, [fn], True)
+    def bind(self, env, name, v):
+        fr = env.maps[0] if isinstance(env, collections.ChainMap) else None
+        if isinstance(fr, _Frame):
+            if name in fr.glob: env.maps[-1][name] = v; return
+            if name in fr.nonl:
+                for m in env.maps[1:-1]:
+                    if name in m: m[name] = v; return
+                return                                                       # not modelled: nothing is installed
+        env[name] = v
+    def lookup(self, env, name):
+        v = env.get(name); d = self.IMPORT if name == "__import__" else ("exec",) if name in ("exec", "eval", "compile") else None
+        if v is None: return d
+        return self.join([(d or self.OTHER) if m == self.UNDEF else m for m in v[1]]) if v[0] == "alt" else v
+    def attr(self, base, attr):
+        def one(b):
+            if b == ("mod", "importlib") and attr == "import_module": return self.IMPORT_MODULE
+            if b == ("mod", "sys") and attr == "path": return self.SYSPATH
+            return self.UNBOUND if b == self.UNBOUND else self.OTHER
+        v = self.join([one(b) for b in (base[1] if base[0] == "alt" else (base,))])
+        return None if v == self.OTHER else v
+    def kind(self, n, env):
+        """The value an expression names without evaluating it (a name, an attribute of a bound module, a lambda) or None."""
+        if isinstance(n, ast.Name): return self.lookup(env, n.id)
+        if isinstance(n, ast.Lambda): return ("def", n, env, False)
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name):
+            base = self.lookup(env, n.value.id)
+            return self.attr(base, n.attr) if base is not None else None
+        return None
+    def scan(self, fn):
+        """(names bound in the body of a function or lambda, its `global` names, its `nonlocal` names, whether it is a generator): nested definitions and classes bind only their name."""
+        got = self.scans.get(id(fn))
+        if got: return got
+        bound, glob, nonl, gen = set(), set(), set(), False
+        stack = [fn.body] if isinstance(fn, ast.Lambda) else list(fn.body)
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(n.name); stack.extend(n.decorator_list)
+                stack.extend(n.bases + [k.value for k in n.keywords] if isinstance(n, ast.ClassDef) else n.args.defaults + [d for d in n.args.kw_defaults if d]); continue
+            if isinstance(n, ast.Lambda): stack.extend(n.args.defaults + [d for d in n.args.kw_defaults if d]); continue
+            if isinstance(n, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):                      # the targets of a comprehension are its own
+                stack.extend([n.key, n.value] if isinstance(n, ast.DictComp) else [n.elt])
+                for g in n.generators: stack.append(g.iter); stack.extend(g.ifs)
+                continue
+            if isinstance(n, ast.Global): glob.update(n.names)
+            elif isinstance(n, ast.Nonlocal): nonl.update(n.names)
+            elif isinstance(n, (ast.Yield, ast.YieldFrom)): gen = True
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)): bound.add(n.id)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)): bound.update((al.asname or al.name.split(".")[0]) for al in n.names if al.name != "*")
+            elif isinstance(n, ast.ExceptHandler) and n.name: bound.add(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name: bound.add(n.name)
+            elif isinstance(n, ast.MatchMapping) and n.rest: bound.add(n.rest)
+            stack.extend(ast.iter_child_nodes(n))
+        got = self.scans[id(fn)] = (frozenset(bound - glob - nonl), frozenset(glob), frozenset(nonl), gen)
+        return got
+
+    # --- definitions and calls ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    def defaults(self, fn, env, sure):
+        """The default values and decorators of a definition are evaluated when it is defined."""
+        for x in fn.args.defaults + [d for d in fn.args.kw_defaults if d] + getattr(fn, "decorator_list", []): self.expr(x, env, sure)
+    def record(self, name, sure):
+        if isinstance(name, str) and name.split(".")[0] in _STEMS: self.imports.append((tuple(self.dirs), self.unknown, sure))
+    def escape(self, v):
+        """A definition (or a class) used as a value may be called by whoever received it: its body is MAYBE."""
+        if v is None: return
+        if v[0] == "alt":
+            for m in v[1]: self.escape(m)
+            return
+        if v[0] not in ("def", "class") or id(v[1]) in self.escaped: return
+        self.escaped.add(id(v[1]))
+        for m in (v[1] if v[0] == "class" else [v]): self.invoke(m, False)
+    def invoke(self, fn, sure):
+        node, scope = fn[1], fn[2]
+        if node in self.active: return                                   # the recursion adds nothing: its effects are already being counted
+        self.steps += 1
+        if len(self.active) >= self.LIMIT or self.steps > self.STEPS: self.incomplete = True; return
+        a = node.args; names = [x.arg for x in a.posonlyargs + a.args + a.kwonlyargs] + [x.arg for x in (a.vararg, a.kwarg) if x]
+        frame = _Frame({n: self.OTHER for n in names}); sure = sure and not fn[3]
+        bound, frame.glob, frame.nonl, _ = self.scan(node)                    # a lambda too: `:=` in its body makes the name local in the whole lambda
+        for nm in bound:
+            if nm not in frame: frame[nm] = self.UNBOUND                      # local from the start of the function, not the outer name, until it is assigned
+        env = collections.ChainMap(frame, *self.maps(scope)); outer = None if sure else collections.ChainMap(*self.maps(scope)); pre = outer is not None and self.snap(outer)
+        self.active.append(node)
+        try:
+            if isinstance(node, ast.Lambda): self.expr(node.body, env, sure)
+            else: self.block(node.body, env, sure)
+        finally:
+            self.active.pop()
+            if outer is not None: self.merge(outer, [pre, self.snap(outer)])    # what a call that may not happen bound in the enclosing scopes is only maybe bound
+
+    # --- statements -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    def block(self, body, env, sure):
+        res = None
+        for st in body:
+            r = self.stmt(st, env, sure)
+            if r == "ret": return "ret" if sure else "mret"
+            if r == "mret": sure, res = False, "mret"
+        return res
+    def targets(self, t, env, value=None, sure=True):
+        if isinstance(t, ast.Name): self.bind(env, t.id, value or self.OTHER)
+        elif isinstance(t, (ast.Tuple, ast.List, ast.Starred)):
+            for x in (t.elts if not isinstance(t, ast.Starred) else [t.value]): self.targets(x, env, None, sure)
+        else: self.expr(t, env, sure); self.escape(value)                    # stored into an object: whoever reads it may call it
+    def stmt(self, st, env, sure):
+        T = ast
+        if isinstance(st, T.Import):
+            for al in st.names:
+                self.record(al.name, sure); self.bind(env, al.asname or al.name.split(".")[0], ("mod", al.name if al.asname else al.name.split(".")[0]))
+        elif isinstance(st, T.ImportFrom):
+            if not st.level: self.record(st.module, sure)
+            for al in st.names:
+                nm = al.asname or al.name; ok = not st.level
+                if al.name == "*":                                           # the public names of the module: importlib's and builtins' carry the authentic callables
+                    if ok and st.module == "importlib": self.bind(env, "import_module", self.IMPORT_MODULE); self.bind(env, "__import__", self.IMPORT)
+                    elif ok and st.module == "builtins": self.bind(env, "__import__", self.IMPORT)
+                    continue
+                self.bind(env, nm, self.IMPORT_MODULE if (ok and st.module == "importlib" and al.name == "import_module") else self.IMPORT if (ok and st.module == "builtins" and al.name == "__import__") else self.OTHER)
+        elif isinstance(st, (T.FunctionDef, T.AsyncFunctionDef)):
+            self.defaults(st, env, sure); v = ("def", st, env, isinstance(st, T.AsyncFunctionDef))
+            if st.decorator_list: self.escape(v); self.bind(env, st.name, self.OTHER)
+            else: self.bind(env, st.name, v)
+        elif isinstance(st, T.ClassDef):
+            for x in st.bases + [k.value for k in st.keywords] + st.decorator_list: self.expr(x, env, sure)
+            cenv = collections.ChainMap({}, *self.maps(env)); methods = []
+            for sub in st.body:
+                if isinstance(sub, (T.FunctionDef, T.AsyncFunctionDef)):
+                    self.defaults(sub, cenv, sure)
+                    methods.append(("def", sub, env, isinstance(sub, T.AsyncFunctionDef))); cenv[sub.name] = self.OTHER
+                else: self.stmt(sub, cenv, sure)
+            v = ("class", methods); self.bind(env, st.name, v)
+            if st.decorator_list: self.escape(v)
+        elif isinstance(st, T.Return):
+            if st.value is not None: self.expr(st.value, env, sure)
+            return "ret"
+        elif isinstance(st, T.Expr):
+            v = st.value
+            if isinstance(v, T.Call): self.call(v, env, sure, True)             # the result is thrown away
+            elif isinstance(v, T.Lambda): self.defaults(v, env, sure)            # created and thrown away: its body does not run
+            elif isinstance(v, T.GeneratorExp): self.expr(v.generators[0].iter, env, sure)        # only the first iterable is evaluated when the generator is created
+            else: self.expr(v, env, sure)
+        elif isinstance(st, T.Assign):
+            k = self.kind(st.value, env)
+            if isinstance(st.value, T.Lambda): self.defaults(st.value, env, sure)
+            elif not (isinstance(st.value, (T.Name, T.Attribute)) and k is not None): self.expr(st.value, env, sure)
+            for t in st.targets: self.targets(t, env, k, sure)
+        elif isinstance(st, (T.AnnAssign, T.AugAssign)):
+            if st.value is not None: self.expr(st.value, env, sure)
+            self.targets(st.target, env, None, sure)
+        elif isinstance(st, T.If):
+            if isinstance(st.test, T.Constant): return self.block(st.body if st.test.value else st.orelse, env, sure)
+            self.expr(st.test, env, sure); res = []
+            self.alts(env, [lambda: res.append(self.block(st.body, env, False)), lambda: res.append(self.block(st.orelse, env, False))])
+            return "mret" if any(res) else None
+        elif isinstance(st, (T.For, T.AsyncFor, T.While)):
+            loop = isinstance(st, T.While); self.expr(st.test if loop else st.iter, env, sure)
+            def once():
+                if not loop: self.targets(st.target, env, None, False)
+                self.block(st.body, env, False)
+            def twice(): once(); (self.expr(st.test, env, False) if loop else None); once()
+            def els(): self.block(st.orelse, env, False)
+            self.alts(env, [els, once, lambda: (once(), els()), twice, lambda: (twice(), els())], True)         # no round, one, two (the second sees what the first bound); `break` skips the else
+        elif isinstance(st, (T.With, T.AsyncWith)):
+            for it in st.items:
+                self.expr(it.context_expr, env, sure)
+                if it.optional_vars is not None: self.targets(it.optional_vars, env, None, sure)
+            return self.block(st.body, env, sure)
+        elif isinstance(st, (T.Try, getattr(T, "TryStar", T.Try))):
+            pre = self.snap(env); r = self.block(st.body, env, sure); post = self.snap(env)
+            if st.handlers: self.merge(env, [pre, post])                    # a handler starts from a state the body may or may not have reached
+            start = self.snap(env); states = []
+            self.restore(env, post); self.block(st.orelse, env, False); states.append(self.snap(env))
+            for h in st.handlers:
+                self.restore(env, start)
+                if h.name: self.bind(env, h.name, self.OTHER)
+                if h.type is not None: self.expr(h.type, env, False)
+                self.block(h.body, env, False); states.append(self.snap(env))
+            self.merge(env, states); f = self.block(st.finalbody, env, sure)
+            return f or r
+        elif isinstance(st, T.Assert): self.expr(st.test, env, sure); (self.maybe(env, lambda: self.expr(st.msg, env, False)) if st.msg is not None else None)
+        elif isinstance(st, T.Raise):
+            for x in (st.exc, st.cause):
+                if x is not None: self.expr(x, env, sure)
+        elif isinstance(st, T.Delete):
+            for x in st.targets:
+                if isinstance(x, T.Name): self.bind(env, x.id, self.OTHER)
+                else: self.expr(x, env, sure)
+        elif isinstance(st, T.Match):
+            self.expr(st.subject, env, sure)
+            def case(c):
+                def run():
+                    for n in ast.walk(c.pattern):
+                        for nm in (getattr(n, "name", None), getattr(n, "rest", None)):
+                            if isinstance(nm, str): self.bind(env, nm, self.OTHER)
+                    if c.guard is not None: self.expr(c.guard, env, False)
+                    self.block(c.body, env, False)
+                return run
+            self.alts(env, [case(c) for c in st.cases], True)
+        elif isinstance(st, (T.Global, T.Nonlocal, T.Pass, T.Break, T.Continue)): pass
+        else:
+            def rest():
+                for ch in ast.iter_child_nodes(st):
+                    if isinstance(ch, T.expr): self.expr(ch, env, False)
+                    elif isinstance(ch, T.stmt): self.stmt(ch, env, False)
+            self.maybe(env, rest)
+        return None
+
+    # --- expressions ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    def expr(self, n, env, sure):
+        T = ast
+        if isinstance(n, T.Call): return self.call(n, env, sure)
+        if isinstance(n, T.Name):
+            if isinstance(n.ctx, T.Load): self.escape(self.lookup(env, n.id))
+            return
+        if isinstance(n, T.Lambda): self.defaults(n, env, sure); return self.escape(("def", n, env, False))     # used as a value: whoever receives it may call it
+        if isinstance(n, T.IfExp):
+            self.expr(n.test, env, sure); self.alts(env, [lambda: self.expr(n.body, env, False), lambda: self.expr(n.orelse, env, False)]); return
+        if isinstance(n, T.BoolOp):
+            self.expr(n.values[0], env, sure)
+            for v in n.values[1:]: self.maybe(env, lambda v=v: self.expr(v, env, False))
+            return
+        if isinstance(n, (T.ListComp, T.SetComp, T.GeneratorExp, T.DictComp)):
+            def comp():
+                cenv = collections.ChainMap({}, *self.maps(env))
+                for k, g in enumerate(n.generators):
+                    self.expr(g.iter, cenv, sure and k == 0); self.targets(g.target, cenv, None, False)
+                    for c in g.ifs: self.expr(c, cenv, False)
+                for e in ([n.key, n.value] if isinstance(n, T.DictComp) else [n.elt]): self.expr(e, cenv, False)
+            self.maybe(env, comp); return
+        if isinstance(n, T.NamedExpr): self.expr(n.value, env, sure); self.targets(n.target, env, self.kind(n.value, env), sure); return
+        for ch in ast.iter_child_nodes(n):
+            if isinstance(ch, T.expr): self.expr(ch, env, sure)
+            elif isinstance(ch, T.keyword): self.expr(ch.value, env, sure)
+
+    def call(self, n, env, sure, discard=False):
+        """A call: the callee is what its name is bound to NOW (when the alternatives differ every one is tried, as MAYBE; when they all import, it is an import); `discard` = the result is thrown away, so a generator
+        function that is called creates its generator and nothing else (when the result is used, the body may run)."""
+        f = n.func; k = self.kind(f, env); ks = list(k[1] if k is not None and k[0] == "alt" else (k,))
+        if isinstance(f, ast.Attribute) and f.attr in ("insert", "append"):
+            bk = self.kind(f.value, env); bs = [] if bk is None else list(bk[1] if bk[0] == "alt" else (bk,))
+            if self.UNBOUND in bs: self.unknown = True                       # `sys` is not bound yet: the path may have changed
+            if self.SYSPATH in bs: ks = [("path", f.attr) if b == self.SYSPATH else self.OTHER for b in bs]
+        ks = [m for m in ks if m is not None]
+        if not ks or all(m[0] == "other" for m in ks):
+            if not isinstance(f, ast.Name): self.expr(f, env, sure)
+        elif any(m[0] in ("def", "class") for m in ks) and not isinstance(f, (ast.Name, ast.Lambda)): self.expr(f, env, sure)
+        if isinstance(f, ast.Lambda): self.defaults(f, env, sure)
+        for x in n.args + [kw.value for kw in n.keywords]: self.expr(x, env, sure)
+        imports = len(ks) > 1 and all(m[0] in ("import", "import_module") for m in ks)
+        if len(ks) > 1 and not imports: sure = False                          # alternatives that differ: whichever one ran, none is demonstrated
+        for m in ks[:1] if imports else ks: self.apply(m, n, sure, discard)
+    def apply(self, k, n, sure, discard):
+        if k[0] in ("import", "import_module", "unbound"):
+            arg = n.args[0] if n.args else next((kw.value for kw in n.keywords if kw.arg == "name"), None); self.record(self.lit(arg), sure and k[0] != "unbound")
+        elif k[0] == "path":
+            d = self.lit(n.args[-1]) if (n.args and (k[1] == "append" or len(n.args) == 2)) else None
+            if d is None or not sure: self.unknown = True
+            elif os.path.isabs(d): self.dirs.append(d)
+        elif k[0] == "exec":
+            if any(isinstance(c, ast.Constant) and isinstance(c.value, str) and (_mentions_skill(c.value) or (lambda r: bool(r and r[0]))(_payload_imports(c.value))) for x in n.args for c in ast.walk(x)): self.exec = True
+        elif k[0] == "def":
+            if self.scan(k[1])[3]:          # a generator function (or a lambda holding `yield`): the call creates the generator and runs no line of the body
+                if not discard: self.invoke(k, False)                          # the generator may be consumed by whoever receives it
+            else: self.invoke(k, sure)
+        elif k[0] == "class": self.escape(k)
+
+def _payload_imports(code):
+    """What a `python -c` payload does that matters for the skill, in the ORDER and CONTEXT it would run (`_PayloadFlow`, stdlib `ast`, nothing is executed): -> (imports, dynamic) or None when the payload is not valid
+    Python. Strings and comments never count: `print("example import report")` imports nothing. An import = an `import X` / `from X import ...` statement of a module whose top-level name is a script of the skill, or
+    `__import__("X")` / `importlib.import_module("X")` (as bound, see `_PayloadFlow`) with a literal; each one is (the literal absolute directories that `sys.path.insert/append` had put on the path BEFORE it, whether the path
+    is not demonstrated at that point (a non-literal change, or one that may not have happened), whether it surely ran). A definition that is never called, a later `sys.path` change, a local callable named
+    `import_module`, a lambda / generator expression that is only built and a generator function that is called and discarded demonstrate nothing; a binding made in a branch is only maybe made, and a function's local name
+    is not the outer one before its own assignment (see `_PayloadFlow`). `dynamic` = "exec" when an `exec` / `eval` / `compile` of a text that mentions the skill or imports one of its scripts can run (or the analysis was cut short)."""
+    try:
+        tree = ast.parse(code); flow = _PayloadFlow(); flow.block(tree.body, {}, True)
+    except (SyntaxError, ValueError, RecursionError, MemoryError): return None
+    return flow.imports, "exec" if (flow.exec or flow.incomplete) else None
+
+def _py_class(args, here, env):
+    """`python [flags] SCRIPT` / `-m MODULE` / `-c CODE`: SCRIPT is a path (judged against the directory it runs in); a module or an import is the skill's only when the import path demonstrably holds its scripts directory
+    (the directory, a PYTHONPATH entry, a literal `sys.path.insert` / `append` that ran BEFORE the import). The payload is read in order and context (`_payload_imports`): each import is judged against the path of its own
+    moment (a later change resolves nothing backwards), an import that surely ran and resolves is `yes`, one that may or may not run (a condition, a loop, a handler, a definition used as a value, a call through a name
+    bound only in a branch or not bound yet in its function) and would resolve is `unknown`, a definition that is never called or a callable / iterator that is only created demonstrates nothing (`no`), and an `exec` that can run is `unknown`."""
+    i, mod, code, script = 0, None, None, None
+    while i < len(args):
+        a = args[i]
+        if a == "-m": mod = args[i + 1] if i + 1 < len(args) else None; break
+        if a == "-c": code = args[i + 1] if i + 1 < len(args) else None; break
+        if a in ("-W", "-X", "-Q"): i += 2; continue
+        if a.startswith("-m") and len(a) > 2: mod = a[2:]; break
+        if a.startswith("-") and a != "-": i += 1; continue
+        script = a; break
+    def import_dirs(extra=()):
+        dirs, unknown = [here] if here else [], here is None
+        for d in [x for x in (env.get("PYTHONPATH") or "").split(":") if x] + list(extra):
+            r = _resolve(d, here)
+            if r is None: unknown = True
+            else: dirs.append(r)
+        return "yes" if any(_is_scripts_dir(d) for d in dirs) else ("unknown" if unknown else "no")
+    if script is not None: return _path_class(script, here) if script != "-" else "no"
+    if mod is not None: return import_dirs() if mod.split(".")[0] in _STEMS else "no"
+    if code is not None:
+        facts = _payload_imports(code)
+        if facts is None: return "unknown" if _mentions_skill(code) else "no"      # not valid Python: nothing is demonstrated, and a mention alone is not an import
+        imports, dynamic = facts
+        if dynamic == "exec": return "unknown"
+        best = "no"
+        for dirs, path_unknown, sure in imports:                                      # each import against the path of ITS moment
+            r = "unknown" if path_unknown else import_dirs(m for m in dirs if os.path.isabs(m))
+            if r == "yes" and not sure: r = "unknown"
+            if r == "yes": return "yes"
+            if r == "unknown": best = "unknown"
+        return best
+    return "no"
+
+def _split_cmd(words):
+    """(environment assignments, command word, arguments) of one simple command with the wrappers (`env`, `time`, `nohup`, ...) and the leading `NAME=value` words removed, or None when no command word is left."""
+    env, i = {}, 0
+    while i < len(words) and _ASSIGN.match(words[i]): k, v = words[i].split("=", 1); env[k] = v; i += 1
+    while i < len(words) and os.path.basename(words[i]) in _WRAPPERS:
+        w = os.path.basename(words[i]); i += 1
+        while i < len(words) and (words[i].startswith("-") or (w == "env" and _ASSIGN.match(words[i]))):
+            if w == "env" and _ASSIGN.match(words[i]): k, v = words[i].split("=", 1); env[k] = v
+            i += 2 if words[i] in ("-u", "-n") and w in ("env", "nice") else 1
+        if w == "timeout" and i < len(words): i += 1                                  # the duration
+    return (env, words[i], words[i + 1:]) if i < len(words) else None
+
+def _walk(items, cwd, cls="always", rest_ok=True):
+    """The simple commands of `_shell_items` with the directory each one runs in: -> (words, here, before, after, io, plan) (`plan` = (class, tail) of `_plan`, started with `cls` / `rest_ok`). `cd X` moves the following command only through `&&` (a `;` or a newline runs the next command also when the cd
+    failed: the directory is then not demonstrated); behind `||`, `&` or `|`, or as a conditional command, the directory is not demonstrated (None) or unchanged, and a group `( ... )` ends with its parenthesis."""
+    here = cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None; stack, blind_next = [], False; plan = _plan(items, cls, rest_ok)
+    for k, it in enumerate(items):
+        if it[0] == "push": stack.append(here); continue
+        if it[0] == "pop":
+            if stack: here = stack.pop()
+            continue
+        _, before, after, words, io = it
+        if words[0] == "cd" or words[0] in ("pushd", "popd"):
+            target = next((w for w in words[1:] if not w.startswith("-") or w == "-"), None)
+            new = _resolve(target, here) if words[0] == "cd" and target not in (None, "-") else None
+            if before not in (None, ";", "&&"): here = None                      # a conditional or background cd: it may or may not have happened
+            elif after in ("&", "|"): pass                                       # it ran in another process: this directory is unchanged
+            elif after == "||": blind_next = True                                # the next command runs only when the cd failed (this directory), later ones may be in either
+            elif after == "&&": here = new                                       # the next command runs only when the cd succeeded
+            else: here = None                                                    # `;` / a newline runs the next command also when the cd failed: the directory is not demonstrated
+            continue
+        yield words, here, before, after, io, plan[k]
+        if blind_next: here = None; blind_next = False
+
+def _seg_class(words, here):
+    """yes / no / unknown for one simple command: what it RUNS or READS decides, not what it merely names (see `_bash_class`)."""
+    head = _split_cmd(words)
+    if head is None: return "no"
+    env, cmd, args = head; b = os.path.basename(cmd)
+    if _PYTHON.match(b): return _py_class(args, here, env)
+    if b in _SHELLS:
+        for k, a in enumerate(args):
+            if a.startswith("-") and not a.startswith("--") and "c" in a[1:] and k + 1 < len(args): return _bash_class(args[k + 1], here)
+        files = [a for a in args if not a.startswith("-")]
+        return _path_class(files[0], here) if files else "no"
+    if cmd in ("source", "."):
+        return _path_class(args[0], here) if args else "no"
+    if b in _READERS or b in _PATTERN_FIRST:
+        files = _file_operands(b, args) if b in _PATTERN_FIRST else [a for a in args if not a.startswith("-")]
+        out = "no"
+        for f in files:
+            c = _path_class(f, here)
+            if c == "yes": return "yes"
+            if c == "unknown": out = "unknown"
+        return out
+    if b in _INERT and "/" not in cmd: return "no"
+    if "/" in cmd or b in SKILL_SCRIPTS: return _path_class(cmd if "/" in cmd else b, here)   # the command word itself is a path (direct execution) or a bare script name
+    out = "no"
+    for a in args:
+        if ("/" in a or a in SKILL_SCRIPTS) and _path_class(a, here) != "no": out = "unknown"   # an unrecognised command that names a skill script: not demonstrable either way
+    return out
+
+def _bash_class(cmd, cwd):
+    """The shell command is split into simple commands (shlex, no execution) and the operators between them. What a command RUNS (an interpreter on a script / module / import, a shell, `source`, the script as the
+    command word) or READS (cat, head, grep, ...) decides: a skill path that is only named (echo, printf, git, cp, a redirect target) is not activity. `cd X` moves the following command only through `&&` (a `;` or a newline runs the next command
+    also when the cd failed: the directory is then not demonstrated); behind `||`, `&` or `|`, or as a conditional command, the directory is not demonstrated (`unknown`) or unchanged, and a group `( ... )` ends with its parenthesis.
+    Grep-like commands read the values of -f / --file and the operands after the pattern; a pattern given by an option (-e, --regexp) is never a file. A quoted or escaped operator character (`echo '|' x`) is an argument, not a
+    separator. The activity classification does not depend on the exit statuses (`false && python3 report.py` stays `yes`: the conditions matter for the files a call demonstrably wrote or read, see `tool_io`). A command that cannot be tokenised and names
+    a skill script, a relative script name without a recorded directory, or an unrecognised command naming a skill script is `unknown`; anything else is `no`."""
+    try: items = _shell_items(cmd)
+    except ValueError: return "unknown" if _mentions_skill(cmd) else "no"
+    best = "no"
+    for words, here, _, _, _, _ in _walk(items, cwd):
+        c = _seg_class(words, here)
+        if c == "yes": return "yes"
+        if c == "unknown": best = "unknown"
+    return best
+
+def skill_activity(b, cwd=None):
+    """Is the tool_use block `b` verification activity of THIS skill? -> "yes" | "no" | "unknown" (never a guess). yes: the Skill tool with the skill exactly `handoff-verify` or `<plugin>:handoff-verify`; a path field that resolves
+    (against the record's cwd) to a script of the skill or its SKILL.md by path components; a shell command that runs or reads them (see `_bash_class`). A Jev call is not skill activity (it is excluded on its own, see
+    `is_jev`); a mere mention (Write content, a pattern, `toolkit.py`, `echo <path>`) is `no`; a skill-script name that cannot be resolved (relative path or bare module without a recorded cwd, an untokenisable command) is `unknown`."""
+    name = str((b or {}).get("name") or ""); inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+    if is_jev(b): return "no"
+    if name == "Skill":
+        s = inp.get("skill"); return "yes" if isinstance(s, str) and (s == "handoff-verify" or (s.count(":") == 1 and s.endswith(":handoff-verify") and not s.startswith(":"))) else "no"
+    if name == "Bash": return _bash_class(inp.get("command"), cwd) if isinstance(inp.get("command"), str) else "no"
+    out = "no"
+    for k in _PATH_FIELDS:
+        if isinstance(inp.get(k), str):
+            c = _path_class(inp[k], cwd)
+            if c == "yes": return "yes"
+            if c == "unknown": out = "unknown"
+    return out
+
+def _genuine_prompt(d):
+    """A real user prompt (not a tool_result, harness notice, meta record or compaction summary): the end of a verification run."""
+    import scope
+    if d.get("type") != "user" or d.get("isMeta") or d.get("isCompactSummary"): return False
+    c = (d.get("message") if isinstance(d.get("message"), dict) else {}).get("content")
+    if isinstance(c, str): return scope._prompt_text(c) is not None
+    return any(isinstance(b, dict) and b.get("type") == "text" and scope._prompt_text(b.get("text")) is not None for b in c) if isinstance(c, list) else False
+
+def mutation_target(b, cwd):
+    """Canonical path (resolved in the cwd RECORDED for the call, never the process cwd) a Write/Edit/MultiEdit/NotebookEdit tool_use mutates, else None."""
+    import discover as D
+    if not isinstance(b, dict) or b.get("name") not in WRITERS or not isinstance(b.get("input"), dict): return None
+    inp = b["input"]; return D.real_of(inp.get("file_path") or inp.get("notebook_path"), cwd)
+
+def _literal(w):
+    """Is the shell word a literal path (no variable, command substitution, `~` or glob)? Nothing dynamic is guessed."""
+    return isinstance(w, str) and bool(w) and not w.startswith("~") and not any(ch in w for ch in "$`*?[{\x00")
+
+def _reads_of(words, here):
+    """The canonical paths ONE simple command READS (resolved in the directory `here` it runs in, also for operands without a slash): the operands of cat / head / tail / ..., the files of grep / sed / awk / rg (the pattern, a script
+    given by -e is not one: `_file_operands`), a shell or `source` script. echo, printf and the like name a path without reading it."""
+    import discover as D
+    head = _split_cmd(words)
+    if head is None: return set()
+    env, cmd, args = head; b = os.path.basename(cmd)
+    if b in _PATTERN_FIRST: files = _file_operands(b, args)
+    elif b in _READERS: files = [a for a in args if not a.startswith("-")]
+    elif cmd in ("source", ".") or (b in _SHELLS and not any(a.startswith("-") and "c" in a[1:] for a in args)): files = [a for a in args if not a.startswith("-")][:1]
+    else: files = []
+    return {D.real_of(f, here) for f in files if _literal(f)} - {None}
+
+def tool_io(b, cwd):
+    """What a tool_use does with files, by operation: -> dict(reads, reads_always, outs, trunc) of canonical paths (resolved in the cwd recorded for the call, never the process cwd). An ordinary tool names its path fields
+    (`reads`; a mutation is `mutation_target`). A shell command (`_walk`, shlex, nothing is executed) READS what its readers read (`_reads_of`) and what a `<` redirect names, and WRITES (`outs`; `trunc` = the ones a `>`
+    truncates) the LITERAL target of a `>` / `>>` redirect: a dynamic target is never guessed, a `/dev/` file is no artifact, a quoted `'>'` is an argument. Only a command that DEMONSTRABLY ran counts (`_plan`): `reads` /
+    `outs` / `trunc` hold what ran unconditionally or ran whenever the whole call succeeded (the last `&&` chain); `reads_always` only what ran whatever the exit statuses (the caller that knows that the call failed
+    uses it). What a status may have skipped (`false && cat f; ...`, behind `||`, in the background) is in none of them, and a redirect in the later part of a pipeline is no artifact. `bash -c '...'` is followed under the
+    class of the command around it. Identity only: the call is not a supported Write and gives no version."""
+    import discover as D
+    if not isinstance(b, dict) or not isinstance(b.get("input"), dict): return dict(reads=frozenset(), reads_always=frozenset(), outs=frozenset(), trunc=frozenset())
+    inp = b["input"]; reads, always, outs, trunc = set(), set(), set(), set()
+    if b.get("name") == "Bash":
+        def go(cmd, base, depth, cls, rest_ok, piped):
+            try: items = _shell_items(cmd)
+            except ValueError: return
+            for words, here, before, after, io, (c, tail) in _walk(items, base, cls, rest_ok):
+                if c is None: continue
+                got = _reads_of(words, here) | {D.real_of(t, here) for t in io["ins"] if _literal(t)}; reads.update(got)
+                if c == "always": always.update(got)
+                if before != "|" and not piped:
+                    for t, app in io["outs"]:
+                        r = D.real_of(t, here) if _literal(t) else None
+                        if r and not r.startswith("/dev/"): outs.add(r); (None if app else trunc.add(r))
+                head = _split_cmd(words)
+                if head and depth < 3 and os.path.basename(head[1]) in _SHELLS:
+                    for k, a in enumerate(head[2]):
+                        if a.startswith("-") and not a.startswith("--") and "c" in a[1:] and k + 1 < len(head[2]): go(head[2][k + 1], here, depth + 1, c, tail, piped or before == "|"); break
+        if isinstance(inp.get("command"), str): go(inp["command"], cwd, 0, "always", True, False)
+    else: reads |= {D.real_of(inp.get(k), cwd) for k in _PATH_FIELDS}; always |= reads
+    return dict(reads=frozenset(reads - {None}), reads_always=frozenset(always - {None}), outs=frozenset(outs), trunc=frozenset(trunc))
+
+def named_paths(b, cwd):
+    """The canonical paths the tool_use `b` READS (`tool_io`): the path fields of an ordinary tool, the files its shell readers open. A path that is only named (echo, printf, a pattern) is not in it."""
+    return tool_io(b, cwd)["reads"]
+
+def _events(records):
+    """The flat event list of a transcript in order: dict(i, j, kind prompt|text|use|result, pos (tool events: the jevref.timeline position), id, cls (uses: yes|no|unknown|jev), mut (uses: canonical path a writer
+    mutates), name / refs / refs_always / outs / trunc (uses: the tool, the canonical paths it demonstrably reads (refs: when the call succeeded; refs_always: whatever the statuses), the literal redirect targets it demonstrably writes and truncates: `tool_io`), err (results: is_error), role, meta)."""
+    import scope
+    out, n = [], 0
+    for i, d in enumerate(records):
         msg = d.get("message") if isinstance(d.get("message"), dict) else {}; c = msg.get("content"); t = d.get("type")
         if t not in ("user", "assistant"): continue
         if isinstance(c, str):
-            if pos is None or n < pos: out.append(c)
+            out.append(dict(i=i, j=0, kind="prompt" if _genuine_prompt(d) else "text", role=t, meta=bool(d.get("isMeta"))))
             continue
-        for b in c if isinstance(c, list) else []:
+        genuine = _genuine_prompt(d); placed = False
+        for j, b in enumerate(c if isinstance(c, list) else []):
             if not isinstance(b, dict): continue
             ty = b.get("type")
+            if ty == "text" and isinstance(b.get("text"), str):
+                out.append(dict(i=i, j=j, kind="prompt" if genuine and t == "user" and scope._prompt_text(b["text"]) is not None else "text", role=t, meta=bool(d.get("isMeta"))))
+            elif ty == "tool_use":
+                n += 1; io = tool_io(b, d.get("cwd")); out.append(dict(i=i, j=j, kind="use", pos=n, id=b.get("id"), cls="jev" if is_jev(b) else skill_activity(b, d.get("cwd")), mut=mutation_target(b, d.get("cwd")), name=b.get("name"), refs=io["reads"], refs_always=io["reads_always"], outs=io["outs"], trunc=io["trunc"], role=t))
+            elif ty == "tool_result":
+                n += 1; out.append(dict(i=i, j=j, kind="result", pos=n, id=b.get("tool_use_id"), err=bool(b.get("is_error")), role=t))
+    return out
+
+def _generated(ev):
+    """The (record, block) pairs that are verification material in every window: the uses of the skill and of Jev with their results, the harness-loaded skill text right after a skill call, and the assistant narration
+    that sits between or after the events of a verification chain that a SKILL event opened (a bare Jev call opens none) without any other tool call in between (up to the next prompt)."""
+    vids = {e["id"] for e in ev if e["kind"] == "use" and e["cls"] in ("yes", "jev")}; yids = {e["id"] for e in ev if e["kind"] == "use" and e["cls"] == "yes"}; out = set(); nxt = {}
+    ahead = None                                   # None = no tool_use before the next prompt/end; True/False = is the next tool_use verification
+    for k in range(len(ev) - 1, -1, -1):
+        e = ev[k]
+        if e["kind"] == "prompt": ahead = None
+        elif e["kind"] == "use": ahead = e["id"] in vids
+        nxt[k] = ahead
+    chain = False                                  # is the previous tool event part of a chain that a skill event opened
+    for k, e in enumerate(ev):
+        if e["kind"] == "prompt": chain = False
+        elif e["kind"] in ("use", "result"):
+            if e["id"] in vids:
+                out.add((e["i"], e["j"]))
+                if e["id"] in yids: chain = True
+            else: chain = False
+        elif e["kind"] == "text" and chain:
+            if e["role"] == "user" and e.get("meta"): out.add((e["i"], e["j"]))                               # the skill body the harness loads after the Skill call
+            elif e["role"] == "assistant" and nxt[k] in (None, True): out.add((e["i"], e["j"]))
+    return out
+
+def _reread(ev, seed):
+    """The artifacts of a verification and what reads them again. An artifact = a canonical path that a Write/Edit INSIDE `seed` (the generated material and the spans of the verification runs) successfully
+    mutated, or that a successful shell command inside `seed` wrote through a LITERAL `>` / `>>` redirect that demonstrably ran (`tool_io`: not behind `||` / `&`, not followed by `;`, not a quoted `'>'`, `bash -c` under the
+    condition around it; a dynamic target is never guessed; the success of the call proves only the last `&&` chain, never a command a status may have skipped); a full Write (or such a `>` redirect) of the same path outside
+    `seed` ends it (that content is real work). A later tool call, outside `seed`, that READS an artifact (Read, Grep, a shell `cat` / `grep FILE` ... that ran, canonicalised in the cwd recorded for the call: a read a status may have skipped counts only when the call succeeded and it
+    ran then; an echo, a printf or a pattern that only names it is no reading) is a re-read: its use and its result are generated material too, wherever they are (after a prompt, in another window). Path identity only: nothing is excluded by adjacency and a bare Jev call
+    writes no artifact. -> {(record, block)}."""
+    err = {e["id"]: e["err"] for e in ev if e["kind"] == "result"}; art, ids = set(), set()
+    for e in ev:
+        if e["kind"] != "use": continue
+        inside = (e["i"], e["j"]) in seed; ok = err.get(e["id"], True) is False
+        if not inside and art & (e["refs"] if ok else e["refs_always"]) and not (e.get("mut") is not None and ok): ids.add(e["id"])      # a successful write of the path is not a reading of it
+        if e.get("mut") is not None and ok:
+            if inside: art.add(e["mut"])
+            elif e.get("name") == "Write": art.discard(e["mut"])
+        elif ok and e.get("outs"):
+            if inside: art |= e["outs"]
+            else: art -= e["trunc"]
+    return {(e["i"], e["j"]) for e in ev if e["kind"] in ("use", "result") and e["id"] in ids}
+
+def _generated_all(ev, first=0):
+    """`_generated` plus the re-reads of the artifacts that the verification material and the verification runs wrote (`_reread`). The runs that count are those that start after `first` (the position of the first successful
+    mutation of the evaluated note, 0 = every run when no note is evaluated): a run before the note existed verifies nothing of it, what that stretch of the session wrote is real work."""
+    g = _generated(ev); seed = set(g)
+    for r in _runs(ev, first): seed |= _span(ev, r)
+    return g | _reread(ev, seed)
+
+def generated_events(records):
+    """The verification material of a transcript regardless of any write: -> {(record index, block index)} (the generated material and the re-reads of the artifacts a verification wrote)."""
+    return _generated_all(_events(records))
+
+def _own(ev, note):
+    """(uses, results) of the mutations of the note `note` (canonical path) as {(record, block)} sets, and the position of the first successful result."""
+    if note is None: return set(), set(), 0
+    ids = {e["id"] for e in ev if e["kind"] == "use" and e.get("mut") == note}
+    uses = {(e["i"], e["j"]) for e in ev if e["kind"] == "use" and e["id"] in ids}; res = [e for e in ev if e["kind"] == "result" and e["id"] in ids]
+    ok = [e["pos"] for e in res if not e["err"]]
+    return uses, {(e["i"], e["j"]) for e in res}, (min(ok) if ok else None)
+
+def _runs(ev, after):
+    """The verification runs of a transcript: dict(id (tool_use id of the first skill event), pos, start, end (event indexes)). A run starts at a skill event (`cls` yes, never a bare Jev call) whose position is
+    after `after` and lasts until the next genuine user prompt; the next skill event after such a prompt starts the next run."""
+    runs, opened = [], False
+    for k, e in enumerate(ev):
+        if e["kind"] == "prompt":
+            if opened: runs[-1]["end"] = k; opened = False
+        elif e["kind"] == "use" and e["cls"] == "yes" and e["pos"] > after and not opened: runs.append(dict(id=e["id"], pos=e["pos"], start=k, end=len(ev))); opened = True
+    return runs
+
+def _span(ev, run): return {(e["i"], e["j"]) for e in ev[run["start"]:run["end"]]}
+
+def common_exclusions(records, note=None):
+    """What no consumer takes for source of the note `note` (canonical path; None = no note): the verification material (`_generated`) and the re-reads of the artifacts it wrote (`_reread`), the use AND the result of every mutation of the note, and the whole span of every
+    verification run that starts after the note's first successful mutation (a run verifies a version of the note: its reads, results and summary are generated material up to the next prompt). The chunks of
+    prepare.py use exactly this set; `source_window` adds the evaluated window to it."""
+    ev = _events(records); uses, res, first = _own(ev, note); out = set(_generated_all(ev, first if note is not None and first is not None else 0)) | uses | res
+    if note is not None and first is not None:
+        for r in _runs(ev, first): out |= _span(ev, r)
+    return out
+
+def source_window(records, write_id=None, evaluated_against="session_end", run=None):
+    """The ONE window of the eligible source (prepare, omissions.context, scope, the report re-derivation and the chunks of prepare.py all use it). -> dict(limit, excluded, ambiguous, kind, runs [dict(id, pos)], run).
+    `kind` says why `ambiguous` is set: "run" = the evaluated run is not demonstrated (several candidates without a name, a name that is no candidate, a run named for a prefix, an unresolvable event that could start another run):
+    the EVALUATION is then invalid for every consumer (report, gate, omission pair); "events" = an unresolvable event before the limit, "write" = the write is not a recorded writer: only the source is unavailable.
+    Common to all: `excluded` = `common_exclusions` of the evaluated note (the note is the path the write `write_id` mutates, resolved in the cwd recorded for the call) = verification material, the note's own mutations and
+    the spans of the runs that started after its first successful mutation and before the limit. A RUN is a stretch of skill activity (`skill_activity` yes, never a bare Jev call), it starts at the first such event and lasts
+    until the next genuine user prompt. `prefix`: `limit` = the position of the write's tool_use (no run is involved). `session_end`: the candidate runs are those that start after the evaluated write's result and before the
+    next successful mutation of the note (every run of the transcript when no write is given); the evaluated run is the one NAMED by `run` (a tool_use id listed in `runs`) or the only candidate; zero candidates = no run
+    (`limit` None: the whole transcript); several candidates without a name, or a name that is not a candidate, are `ambiguous` (the evaluated run is not demonstrated: UNRESOLVED, never the last one). `limit` = the
+    position of the start of the evaluated run. `ambiguous` is also set when an event that names a script of the skill cannot be resolved (`skill_activity` unknown) before the limit, or, for an unnamed
+    selection, anywhere in the candidate region outside the selected run (it could start another run): no source is eligible then."""
+    import jevref as J
+    ev = _events(records); use_pos, res_pos = J.timeline(records); excluded = set(_generated_all(ev))
+    def amb(why, runs=(), kind="run"): return dict(limit=None, excluded=excluded, ambiguous="source window ambiguous: " + why, kind=kind, runs=list(runs), run=None)
+    note = pw = None
+    if write_id:
+        wev = next((e for e in ev if e["kind"] == "use" and e["id"] == write_id), None)
+        if wev is None or wev.get("mut") is None: return amb("the write %r is not a Write/Edit recorded in the source transcript" % (write_id,), kind="write")
+        note, pw = wev["mut"], wev["pos"]
+    uses, res, first = _own(ev, note); excluded = set(_generated_all(ev, first if note is not None and first is not None else 0)) | uses | res
+    allruns = _runs(ev, first if note is not None and first is not None else 0)
+    def unknown(lo=None, hi=None): return [e for e in ev if e["kind"] == "use" and e["cls"] == "unknown" and (lo is None or e["pos"] > lo) and (hi is None or e["pos"] < hi)]
+    def fail(bad): return "an event names a script of this skill that cannot be resolved (no recorded cwd to resolve it against), so the verification run it belongs to is not demonstrated (position %d)" % bad[0]["pos"]
+    if evaluated_against == "prefix" and write_id:
+        if run is not None: return amb("a verification run only bounds session_end; the prefix of a write is bounded by the write itself")
+        limit = pw
+        for r in allruns:
+            if r["pos"] < limit: excluded |= _span(ev, r)
+        bad = unknown(hi=limit)
+        return dict(limit=limit, excluded=excluded, ambiguous=("source window ambiguous: " + fail(bad)) if bad else None, kind="events" if bad else None, runs=[], run=None)
+    rw = (res_pos.get(write_id) or pw or 0) if write_id else 0
+    done = {e["id"] for e in ev if e["kind"] == "result" and not e["err"]}      # only a SUCCESSFUL mutation changes the note: a failed Write does not end the region of the candidate runs
+    nxt = min([e["pos"] for e in ev if e["kind"] == "use" and note is not None and e.get("mut") == note and e["pos"] > pw and e["id"] in done], default=None) if write_id else None
+    cand = [r for r in allruns if r["pos"] > rw and (nxt is None or r["pos"] < nxt)]; listed = [dict(id=r["id"], pos=r["pos"]) for r in cand]; names = ", ".join(r["id"] for r in cand)
+    if run is not None:
+        sel = next((r for r in cand if r["id"] == run), None)
+        if sel is None: return amb("%r is not a verification run that starts after this write%s" % (run, " (candidates: %s)" % names if cand else " (the transcript has none)"), listed)
+    elif len(cand) > 1: return amb("%d verification runs start after this write (%s): the evaluated run is not demonstrated; name it (`--run ID`, version_ref.run) instead of taking the last one" % (len(cand), names), listed)
+    else: sel = cand[0] if cand else None
+    limit = sel["pos"] if sel else None
+    for r in allruns:
+        if sel is None or r["pos"] < sel["pos"]: excluded |= _span(ev, r)
+    bad, kind = unknown(hi=limit), "events"
+    if not bad and run is None and sel is not None:      # an unresolvable event after the selected run could start another run: the unnamed selection is then not demonstrated
+        bad = [e for k, e in enumerate(ev) if k >= sel["end"] and e["kind"] == "use" and e["cls"] == "unknown" and (nxt is None or e["pos"] < nxt)]; kind = "run"
+    return dict(limit=limit, excluded=excluded, ambiguous=("source window ambiguous: " + fail(bad)) if bad else None, kind=kind if bad else None, runs=listed, run=sel["id"] if sel else None)
+
+def verification_limit(records):
+    """Position (jevref.timeline) of the START of the verification run of the transcript when it has exactly one (`source_window` without a write); None = no run (or several: use `source_window` and name one)."""
+    return source_window(records)["limit"]
+
+def eligible_blocks(records, handoff_real, pos=None, excluded=()):
+    """Source text blocks eligible to evaluate a version of the note: user/assistant text, tool results and tool inputs of the transcript, EXCLUDING every Write/Edit of the handoff path itself AND its result (the note is
+    not its own source; the path is resolved in the cwd recorded for the call), EVERY Jev call (claims and evidence are inputs of a verification, not facts established by the transcript) with its result, and the (record, block)
+    pairs in `excluded` (the window of `source_window`: skill activity, verification narration, earlier runs). `pos` = position on the common timeline (jevref.timeline): only what comes strictly before it is eligible. -> [text]."""
+    out, n, skip = [], 0, set()
+    for i, d in enumerate(records):
+        msg = d.get("message") if isinstance(d.get("message"), dict) else {}; c = msg.get("content"); t = d.get("type")
+        if t not in ("user", "assistant"): continue
+        if isinstance(c, str):
+            if (pos is None or n < pos) and (i, 0) not in excluded: out.append(c)
+            continue
+        for j, b in enumerate(c if isinstance(c, list) else []):
+            if not isinstance(b, dict): continue
+            ty = b.get("type"); gone = (i, j) in excluded
             if ty == "text":
-                if isinstance(b.get("text"), str) and (pos is None or n < pos): out.append(b["text"])
+                if isinstance(b.get("text"), str) and (pos is None or n < pos) and not gone: out.append(b["text"])
             elif ty == "tool_use":
                 n += 1
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-                if str(b.get("name") or "").startswith(JEV_PREFIX): skip.add(b.get("id")); continue
-                if b.get("name") in WRITERS and os.path.realpath(str(inp.get("file_path") or inp.get("notebook_path") or "")) == handoff_real: continue
+                if is_jev(b): skip.add(b.get("id")); continue
+                if mutation_target(b, d.get("cwd")) == handoff_real and handoff_real is not None: skip.add(b.get("id")); continue
+                if gone: continue
                 if pos is None or n < pos: out.append("[tool_use %s] %s" % (b.get("name"), json.dumps(inp, ensure_ascii=False)))
             elif ty == "tool_result":
                 n += 1
-                if b.get("tool_use_id") in skip: continue
+                if b.get("tool_use_id") in skip or gone: continue
                 if pos is None or n < pos:
                     x = b.get("content"); out.append(x if isinstance(x, str) else "".join(y.get("text", "") for y in x if isinstance(y, dict)) if isinstance(x, list) else "")
     return out
@@ -157,18 +1000,80 @@ def passage_matches(raw_texts, passage):
     """The WHOLE evidence of the source call IS the eligible passage that holds the quote (exactly; contiguous chunks that concatenate to it are accepted): no extra claims, no other text."""
     return passage is not None and bool(raw_texts) and "".join(raw_texts) == passage
 
+TRANSPORT_ERRORS = ("transport", "invalid_response")   # the only errors that allow one identical retry (report.TRANSPORT_ERRORS)
+
+def plan_absence(outcome=None):
+    """Scheduling after a successful `prepare`: ABSENCE first. -> dict(disposition, source, finding, reason). A scheduling disposition, never a status; nothing is cleared or confirmed here.
+    `outcome` = the recorded result of the single-claim ABSENCE call, as plain facts: bound, error, error_kind, attempts_identical, verdict, confidence, action, aux_ok (the strict auxiliary filter), version_ok (the
+    version_ref validated by versions.py), material_complete. None = the call has not been made yet. Dispositions: `call_absence` (make the call, complete material, nothing else); `retry_identical` (a transport /
+    invalid_response error, once); `present_resolved` (a resolved `verified`/`contradicted`: the note states or contradicts the detail, no SOURCE call, no finding); `request_source` (a bound, error-free
+    `unsupported` with a finite confidence > 0.95 and an explicit `auto`, on a demonstrated version and complete material: the SOURCE call is now needed, and still confirms nothing alone); `unresolved` (anything
+    else, including a `verified`/`contradicted` that is not resolved: the obligation stays open, never cleared, no SOURCE call)."""
+    import jevref as J
+    def plan(d, source=False, why=""): return dict(disposition=d, source=source, finding=False, reason=why)
+    if outcome is None: return plan("call_absence", why="make the single-claim ABSENCE call with the complete material first")
+    o = outcome if isinstance(outcome, dict) else {}
+    if o.get("error"):
+        if o.get("error_kind") in TRANSPORT_ERRORS and not o.get("attempts_identical"): return plan("retry_identical", why="transport/invalid_response error: one identical retry")
+        return plan("unresolved", why="the ABSENCE call has no usable result")
+    if o.get("bound") is not True: return plan("unresolved", why="the ABSENCE result is not bound to a real call")
+    if o.get("version_ok") is not True: return plan("unresolved", why="the version identity is not demonstrated")
+    if o.get("material_complete") is not True: return plan("unresolved", why="the complete material is not demonstrated")
+    verdict, good = str(o.get("verdict")).lower(), J.strict_pass(o.get("confidence"))
+    if verdict in ("verified", "contradicted"):
+        if good and o.get("aux_ok") is True: return plan("present_resolved", why="the note states or contradicts the detail: no SOURCE call, no finding")
+        return plan("unresolved", why="%s without a resolved confidence/auxiliary result: not cleared" % verdict)
+    if verdict == "unsupported" and good and J._finite(o.get("confidence")) and o.get("action") == "auto": return plan("request_source", True, "unsupported > 0.95 with an explicit auto: the SOURCE call is needed")
+    return plan("unresolved", why="the ABSENCE result is not an unsupported > 0.95 with an explicit auto")
+
+def plan_source(items):
+    """The SOURCE calls the candidates need after their ABSENCE calls. items: [dict(absence=<outcome of plan_absence>, source_claim, source_passage, source, file, version_ref={write_tool_use_id, sha256, evaluated_against})].
+    -> dict(dispositions=[dict(disposition, group, claim_index)], groups=[dict(source, file, write_tool_use_id, sha256, evaluated_against, passage, claims, items)], planned_source_calls).
+    Only a candidate whose `plan_absence` is `request_source` gets a SOURCE call (`no_source` after a resolved present/contradicted, `unresolved` otherwise). Candidates share one call only when the source session, the note,
+    the write, its sha256, `evaluated_against`, the evaluated run (`version_ref.run`) and the eligible passage are all identical (one write has one chronology window); a missing identity never merges. Each claim keeps its exact canonical text and its own
+    result index (`claim_index`), so every result is bound on its own (the pair validator is unchanged); the same claim twice is one claim."""
+    groups, index, disp = [], {}, []
+    for k, it in enumerate(items):
+        it = it if isinstance(it, dict) else {}
+        p = plan_absence(it.get("absence"))
+        if p["disposition"] != "request_source": disp.append(dict(disposition="no_source" if p["disposition"] == "present_resolved" else "unresolved", group=None, claim_index=None)); continue
+        ref = it.get("version_ref") if isinstance(it.get("version_ref"), dict) else {}
+        ident = (it.get("source"), it.get("file"), ref.get("write_tool_use_id"), ref.get("sha256"), ref.get("evaluated_against"), it.get("source_passage"))
+        claim = it.get("source_claim")
+        if not isinstance(claim, str) or not claim: disp.append(dict(disposition="unresolved", group=None, claim_index=None)); continue
+        key = (ident, ref.get("run")) if all(isinstance(x, str) and x for x in ident) else ("ungrouped", k)
+        if key not in index:
+            index[key] = len(groups)
+            groups.append(dict(source=ident[0], file=ident[1], write_tool_use_id=ident[2], sha256=ident[3], evaluated_against=ident[4], run=ref.get("run"), passage=ident[5], claims=[], items=[]))
+        g = groups[index[key]]
+        if claim not in g["claims"]: g["claims"].append(claim)
+        g["items"].append(k); disp.append(dict(disposition="request_source", group=index[key], claim_index=g["claims"].index(claim)))
+    return dict(dispositions=disp, groups=groups, planned_source_calls=len(groups))
+
 _MEMO = {}
-def context(source_jsonl, handoff_real, version, evaluated_against, bases=()):
-    """Everything the validator needs about one version: the eligible source text and the canonical material. -> dict(eligible_source, material, material_reason). Cached by transcript identity."""
-    import discover as D, jevref as J
+def window_for(source_jsonl, write_id, evaluated_against, run=None):
+    """-> (`source_window` of the transcript for ONE evaluation | None when the transcript cannot be read, the records). Cached by transcript identity and window; the one derivation behind `context`, the report and the gate."""
+    import discover as D
     try: key = D.fingerprint(source_jsonl)
-    except OSError: return dict(eligible_source=None, eligible_blocks=None, material=None, material_reason="source transcript unreadable")
-    if key not in _MEMO: recs = D.load_jsonl(source_jsonl); _MEMO[key] = (recs, J.timeline(recs)[0])
-    recs, use_pos = _MEMO[key]
-    pos = use_pos.get(version["write_tool_use_id"]) if evaluated_against == "prefix" else verification_limit(recs)
-    if evaluated_against == "prefix" and pos is None: return dict(eligible_source=None, eligible_blocks=None, material=None, material_reason="position of the write not found")
-    blocks = eligible_blocks(recs, handoff_real, pos); mat, manifest, why, missing = build_material_ex(version["content"], bases)
-    return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=blocks, material=mat, material_reason=why, manifest=manifest, missing_reference=missing)
+    except OSError: return None, None
+    if key not in _MEMO: _MEMO[key] = D.load_jsonl(source_jsonl)
+    recs = _MEMO[key]; wkey = (key, write_id, evaluated_against, run)
+    if wkey not in _MEMO: _MEMO[wkey] = source_window(recs, write_id, evaluated_against, run)
+    return _MEMO[wkey], recs
+
+def context(source_jsonl, handoff_real, version, evaluated_against, bases=(), run=None):
+    """Everything the validator needs about one version: the eligible source text and the canonical material. -> dict(eligible_source, material, material_reason, runs, run). The source is the shared window
+    (`source_window`) of the transcript for THIS write, `evaluated_against` and the evaluated run `run` (version_ref.run; none = the only run after the write); an ambiguous window gives no source, and so does a version of a path written in several streams (`mixed`). Cached by transcript
+    identity and window."""
+    import discover as D, jevref as J
+    def none(why, runs=()): return dict(eligible_source=None, eligible_blocks=None, material=None, material_reason=why, runs=[r["id"] for r in runs], run=None)
+    import versions as V
+    if version.get("mixed"): return none(V.mixed_reason(version))      # the windows of a path written in several streams depend on an order nobody demonstrates, also retrospectively (the bytes of the full Write stay checkable)
+    w, recs = window_for(source_jsonl, version["write_tool_use_id"], evaluated_against, run)
+    if w is None: return none("source transcript unreadable")
+    if w["ambiguous"]: return none(w["ambiguous"], w["runs"])
+    blocks = eligible_blocks(recs, handoff_real, w["limit"], w["excluded"]); mat, manifest, why, missing = build_material_ex(version["content"], bases)
+    return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=blocks, material=mat, material_reason=why, manifest=manifest, missing_reference=missing, runs=[r["id"] for r in w["runs"]], run=w["run"])
 
 def prepare_one(a):
     """The prepare result for one candidate -> (object, exit code); `cmd_prepare` prints it, `cmd_prepare_batch` collects it."""
@@ -180,6 +1085,8 @@ def prepare_one(a):
     if amb: return fail("source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl")
     if not sp or not D.source_exists(sp): return fail("source session not found")
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)
+    prov = V.provenance(sp, path)   # preflight, before anything version-dependent: a note without a recorded supported write has no write identity or window
+    if prov["state"] != "recorded_write": return fail(prov["blocker"])
     vs, canon, _, note = V.versions_of(sp, path); reloc = None
     if canon is None:
         reloc, rnote = V.relocation_candidate(sp, path)
@@ -193,22 +1100,22 @@ def prepare_one(a):
         except OSError: return fail("the copy cannot be read: relocation not verified")
         if disk not in {x["sha256"] for x in vs if x["sha256"]}: return fail("relocated copy: the bytes do not hash to a recoverable version of the written handoff")
     bases = material_bases(path, v, locs); work = R.with_git_roots(bases)
-    ctx = context(sp, canon, v, a.evaluated_against, bases)
-    if ctx["material"] is None: return fail(ctx["material_reason"] or "material not available", work_locations=work, **({"missing_reference": ctx["missing_reference"]} if ctx.get("missing_reference") else {}))
+    ctx = context(sp, canon, v, a.evaluated_against, bases, getattr(a, "run", None))
+    if ctx["material"] is None: return fail(ctx["material_reason"] or "material not available", work_locations=work, **({"runs": ctx["runs"]} if ctx.get("runs") else {}), **({"missing_reference": ctx["missing_reference"]} if ctx.get("missing_reference") else {}))
     if not wsnorm(a.detail): return fail("empty detail", work_locations=work)
     if wsnorm(a.detail).startswith(SOURCE_PREFIX.strip()) or wsnorm(a.detail).startswith(ABSENCE_PREFIX.strip()): return fail("the detail must be the bare detail, not a canonical claim (the helper builds the claims itself)", work_locations=work)
     passage = passage_of(ctx["eligible_blocks"], a.source_quote)
     if passage is None: return fail("the source quote is not (exactly, case-sensitive, whitespace as in the record, inside ONE transcript record) in the eligible source of this version (%s; session_end stops before the verification activity, Jev calls are never source)" % a.evaluated_against, work_locations=work)
     sc, ac = claims(a.detail, "R04")
     return (dict(ok=True, contract="R04", work_locations=work, detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
-                          version_ref=dict(write_tool_use_id=v["write_tool_use_id"], sha256=v["sha256"], evaluated_against=a.evaluated_against), handoff_source_path=reloc,
+                          version_ref=dict(write_tool_use_id=v["write_tool_use_id"], sha256=v["sha256"], evaluated_against=a.evaluated_against, **({"run": ctx["run"]} if a.evaluated_against == "session_end" and ctx.get("run") else {})), handoff_source_path=reloc,
                           omission_ref_template=dict(detail=wsnorm(a.detail), source_check_id="<id of the check whose call used source_claim and source_passage>"),
-                          note="Call jev_verify twice: (1) claims=[source_claim], evidence=source_passage (verbatim, the WHOLE passage, nothing added); (2) claims=[absence_claim] (the bare detail, the ONLY claim of that call), evidence=material, verbatim and complete. Both checks carry the same version_ref. Only if (1) is verified > 0.95 AND (2) comes back `unsupported` > 0.95 with action auto, report a finding (type lost_detail): omission_ref, claim = absence_claim, check_id = the absence check, confidence = its confidence, quote_source = the exact quote. If (2) is verified or contradicted the note states the detail: record the check, report NO finding. Anything else stays UNRESOLVED."), 0)
+                          note="ABSENCE-first, in this order. (1) Call jev_verify with claims=[absence_claim] (the bare detail, the ONLY claim of that call) and evidence=material, verbatim and complete. If it comes back verified or contradicted the note states the detail (or contradicts it): record the check, report NO finding and make NO SOURCE call. (2) Only if (1) is `unsupported` with confidence > 0.95 and action explicitly `auto`, call jev_verify with claims=[source_claim] and evidence=source_passage (verbatim, the WHOLE passage, nothing added); several candidates that print the identical source_passage for the same write may share ONE such call, one source_claim each (omissions.plan_source), never inside a wrapper that hides the inner calls. Both checks carry the same version_ref. Report a finding (type lost_detail) only if (2) is verified > 0.95 with the auxiliary conditions AND (1) was unsupported > 0.95 with action auto: omission_ref, claim = absence_claim, check_id = the absence check, confidence = its confidence, quote_source = the exact quote. An unsupported result alone confirms nothing. Anything else (<= 0.95, review, error, another verdict, incomplete material) stays UNRESOLVED and needs no SOURCE call"), 0)
 
 def cmd_prepare(a):
     obj, code = prepare_one(a); print(json.dumps(obj, indent=1, ensure_ascii=False)); return code
 
-BATCH_KEYS = ("source", "file", "write_id", "evaluated_against", "cwd")
+BATCH_KEYS = ("source", "file", "write_id", "evaluated_against", "cwd", "run")
 
 def cmd_prepare_batch(a):
     """Many candidates in ONE process, also across handoffs and versions: each spec item is {detail, source_quote} plus optional source/file/write_id/evaluated_against/cwd
@@ -224,6 +1131,7 @@ def cmd_prepare_batch(a):
         unknown = set(x) - {"detail", "source_quote"} - set(BATCH_KEYS)
         if unknown: return bad("item %d: unknown keys %s" % (i, sorted(unknown)))
         n = dict(vars(a), **{k: x[k] for k in BATCH_KEYS if k in x}, detail=x["detail"], source_quote=x["source_quote"])
+        if n.get("run") is not None and not (isinstance(n["run"], str) and n["run"]): return bad("item %d: run must be a non-empty string (the tool_use id printed by `prepare` / `versions.py list`)" % i)
         if not all(isinstance(n.get(k), str) and n[k] for k in ("file", "write_id", "evaluated_against")): return bad("item %d: file, write_id and evaluated_against are required (item or command line)" % i)
         if n["evaluated_against"] not in EVALUATED: return bad("item %d: evaluated_against must be one of %s" % (i, list(EVALUATED)))
         args.append(argparse.Namespace(**n))
@@ -232,14 +1140,17 @@ def cmd_prepare_batch(a):
         obj, c = prepare_one(n); out.append(obj); code = max(code, c)
     print(json.dumps(out, indent=1, ensure_ascii=False)); return code
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True); p = sub.add_parser("prepare")
     p.add_argument("--source"); p.add_argument("--file", required=True); p.add_argument("--write-id", required=True, dest="write_id"); p.add_argument("--evaluated-against", choices=EVALUATED, required=True, dest="evaluated_against")
-    p.add_argument("--detail", required=True); p.add_argument("--source-quote", required=True, dest="source_quote"); p.add_argument("--cwd"); p.add_argument("--location", action="append", default=[])
+    p.add_argument("--detail", required=True); p.add_argument("--source-quote", required=True, dest="source_quote"); p.add_argument("--cwd"); p.add_argument("--location", action="append", default=[]); p.add_argument("--run")
     b = sub.add_parser("prepare-batch")
     b.add_argument("--source"); b.add_argument("--file"); b.add_argument("--write-id", dest="write_id"); b.add_argument("--evaluated-against", choices=EVALUATED, dest="evaluated_against")
-    b.add_argument("--spec", required=True); b.add_argument("--cwd"); b.add_argument("--location", action="append", default=[])
-    a = ap.parse_args()
+    b.add_argument("--spec", required=True); b.add_argument("--cwd"); b.add_argument("--location", action="append", default=[]); b.add_argument("--run")
+    return ap
+
+def main():
+    a = build_parser().parse_args()
     return cmd_prepare_batch(a) if a.cmd == "prepare-batch" else cmd_prepare(a)
 
 if __name__ == "__main__": sys.exit(main())

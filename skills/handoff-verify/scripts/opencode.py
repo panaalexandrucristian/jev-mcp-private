@@ -5,16 +5,22 @@ anything it reads (no JavaScript, no patch, no command), writes no export, cache
   opencode-db:<absolute-db-path>#<session-id>        a database at an absolute path (split at the FINAL `#`)
 Canonical identity of a selector: `opencode-db:<realpath(db)>#<session-id>`.
 
-Mapping (everything else is not part of the stream: reasoning, synthetic/system/idle/compaction/agent/model messages, child sessions, read/grep/glob/webfetch/... tools; no Read records are made and
-no OpenCode read result is ever an edit base):
+Mapping (everything else is not part of the stream: reasoning, synthetic/system/idle/compaction/agent/model messages, child sessions, webfetch/... tools):
   tool `write`  -> Write{file_path, content}          tool `edit` -> Edit{file_path, old_string, new_string, replace_all}      tool `shell`/`bash` -> Bash{command}
   tool `patch`  -> one Write/Edit per section, ids `<call id>#<k>`: `*** Add File` -> Write; `*** Update File` -> Edit only when an earlier successful write/add/exact edit supplies the base and every hunk's old
                    block occurs exactly once, in order, without overlap; Delete, Move, non-exact/ambiguous/malformed hunks, unknown base, conflicting paths, concurrent mutation of the same path ->
                    `_unrecoverable` marker (reason) which discover.inventory / slice.reconstruct turn into a version `content not recoverable`
+  tool `read` / `grep` / `glob` -> Read / Grep / Glob: ordinary EVIDENCE only when the call has valid top-level tool times (created and completed, no message-time fallback) and finished (completed or error): the recorded
+                   input and output (sanitised: secrets redacted like prepare.py does), `is_error`, and a truncation marker when `state.metadata.truncated` is true (also on an errored call: both facts are kept). No structured `toolUseResult` is made, so discover.reads
+                   lists them as incomplete: an OpenCode read result is never an edit base and never enters the per-path state of the adapter.
   Jev: a completed-or-failed direct `jev:jev_<tool>` / `jev_<tool>` -> `mcp__jev__jev_<tool>`; an `execute` call only under the single-inner-call rule (see `_jev_execute`), otherwise it is not in the stream.
 Timing: a tool_use is placed at its block's TOP-LEVEL `time.created`, its tool_result at `time.completed` (never `state.time`, never `time.ran`); events are sorted by (timestamp, use before result, message seq,
-content index, section index) because the version/Jev window checks use stream order. A call without valid timing gets no result (never a successful one)."""
-import datetime, json, os, re, sqlite3
+content index, section index) because the version/Jev window checks use stream order. A call without valid timing gets no result (never a successful one).
+Diagnostics: a SUCCESSFUL write/edit/patch call that cannot be placed (no valid top-level time.created/completed) or attributed (no path) is not an event, a time or a version, but it is returned by `diagnostics(selector)`
+(`load(...)[1]`): {call_id, reason, path (realpath | None), seq, ci, sub, created, completed (the real top-level times when valid), kind}. versions.reconstruct_stream marks every version of an affected path (every path for
+a pathless note) as `unpositioned`, which blocks the current-delivery certificate; failed operations are not diagnostics."""
+import datetime, json, os, re, sqlite3, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from urllib.parse import quote
 
 SELECTORS = ("opencode:", "opencode-db:")
@@ -22,6 +28,8 @@ ID_RX = re.compile(r"^[A-Za-z0-9_.\-]+$")
 JEV_DIRECT = re.compile(r"^(?:jev:)?(jev_[a-z0-9_]+)$")
 JEV_INNER = re.compile(r"^jev\.(jev_[a-z0-9_]+)$")
 HEADER = re.compile(r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$")
+EVIDENCE = {"read": "Read", "grep": "Grep", "glob": "Glob"}
+TRUNCATED = "\n[output truncated: the recorded metadata marks this output as incomplete]"
 
 class OpenCodeError(OSError):
     """The selector or the session cannot be used (unreadable, missing, malformed, not a v2 session). An OSError, so callers that treat an unreadable transcript file keep working."""
@@ -91,6 +99,23 @@ def _ms(v): return v if isinstance(v, int) and not isinstance(v, bool) and v >= 
 def _iso(ms): return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 def _text_of(parts):
     return "".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)) if isinstance(parts, list) else ""
+
+def _san(v):
+    """Sanitise every string of a recorded value (secrets redacted exactly like prepare.py); other values are kept."""
+    import sanitize
+    if isinstance(v, str): return sanitize.sanitize(v)[0]
+    if isinstance(v, dict): return {k: _san(x) for k, x in v.items()}
+    if isinstance(v, list): return [_san(x) for x in v]
+    return v
+
+def _times(c):
+    """(created, completed) as recorded, each only when valid; a completion before the creation is malformed."""
+    cr, co = c["created"], c["completed"]
+    return cr, (co if co is not None and (cr is None or co >= cr) else None)
+
+def _diag(c, uid, reason, path, kind, sub=0):
+    cr, co = _times(c)
+    return dict(call_id=uid, reason=reason, path=path, seq=c["seq"], ci=c["ci"], sub=sub, created=cr, completed=co, kind=kind)
 
 def _abs(p, cwd):
     if not isinstance(p, str) or not p: return None
@@ -196,7 +221,7 @@ def load(s):
         if name in ("write", "edit"):
             paths = sorted({_abs(p, c["cwd"]) for p in (inp.get("filePath"), inp.get("path")) if isinstance(p, str) and p})
             if not paths:
-                if base["done"]: notes.append(dict(call_id=c["uid"], reason="%s without a path" % name))
+                if base["done"]: notes.append(_diag(c, c["uid"], "%s without a path (target impact unknown)" % name, None, "pathless"))
                 continue
             for k, p in enumerate(paths, 1): ops.append(dict(base, kind=name, path=p, uid=c["uid"], sub=k, args=inp, conflict=len(paths) > 1))
         elif name == "patch":
@@ -206,7 +231,7 @@ def load(s):
             if secs is None:
                 text = inp.get("patchText") if isinstance(inp.get("patchText"), str) else ""
                 paths = sorted({_abs(m.group(2), c["cwd"]) for l in text.split("\n") for m in [HEADER.match(l)] if m})
-                if not paths: notes.append(dict(call_id=c["uid"], reason="malformed patch without any path: %s" % err))
+                if not paths: notes.append(_diag(c, c["uid"], "malformed patch without any path: %s (target impact unknown)" % err, None, "pathless"))
                 for p in paths: add("patch-bad", p, reason="malformed patch (%s): content not recoverable" % err)
                 continue
             for sec in secs:
@@ -215,6 +240,8 @@ def load(s):
                     for q in dict.fromkeys([p, _abs(sec["move_to"], c["cwd"])]): add("patch-bad", q, reason="patch moves a file (Move to): content not recoverable")
                 elif sec["kind"] == "delete": add("patch-bad", p, reason="patch deletes the file: content not recoverable")
                 else: add("patch-" + sec["kind"], p, sec=sec)
+        elif name in EVIDENCE:
+            if res_ok: ops.append(dict(base, kind="evidence", uid=c["uid"], sub=0, args=inp))
         elif name in ("shell", "bash"):
             if isinstance(inp.get("command"), str): ops.append(dict(base, kind="bash", uid=c["uid"], sub=0, args=inp))
         elif JEV_DIRECT.match(name): ops.append(dict(base, kind="jev", uid=c["uid"], sub=0, tool=JEV_DIRECT.match(name).group(1), args=inp))
@@ -243,6 +270,10 @@ def load(s):
 
 def records(s): return load(s)[0]
 
+def diagnostics(s):
+    """The successful mutations of the session that could not be placed or attributed (see the module docstring): [{call_id, reason, path, seq, ci, sub, created, completed, kind}]."""
+    return load(s)[1]
+
 def _skeleton(name, path):
     return dict(file_path=path, content=None) if name == "Write" else dict(file_path=path, old_string="", new_string="", replace_all=False)
 
@@ -256,17 +287,22 @@ def _decide_mutations(ops):
     for o in ops:
         if o["kind"] == "bash": o["emit_name"], o["emit_input"] = "Bash", dict(command=o["args"]["command"])
         elif o["kind"] == "jev": o["emit_name"], o["emit_input"] = "mcp__jev__" + o["tool"], o["args"]
-    muts = [o for o in ops if o["kind"] not in ("bash", "jev")]
+        elif o["kind"] == "evidence":   # read/grep/glob: ordinary, sanitised evidence; no structure, no state
+            o["emit_name"] = EVIDENCE[o["call"]["name"]]; inp = _san(o["args"])
+            if o["emit_name"] == "Read" and "filePath" in inp: inp["file_path"] = inp.pop("filePath")
+            o["emit_input"] = inp; md = o["call"]["st"].get("metadata")
+            o["out"] = _san(o["out"]) + (TRUNCATED if isinstance(md, dict) and md.get("truncated") is True else "")   # the marker is kept with the error too: a failed call can still have cut its output
+    muts = [o for o in ops if o["kind"] not in ("bash", "jev", "evidence")]
     for o in muts: o["key"] = os.path.realpath(o["path"]); o["concurrent"] = False
     # successful mutations of the same path from DIFFERENT calls whose [created, completed] intervals overlap have no demonstrable order
     for a in (o for o in muts if o["ok"]):
         for b in (o for o in muts if o["ok"] and o["call"] is not a["call"] and o["key"] == a["key"]):
             if a["call"]["created"] < b["call"]["completed"] and b["call"]["created"] < a["call"]["completed"]: a["concurrent"] = True
     state = {}
-    # a completed mutation without a valid top-level time.created has no position: from its message on, the base of its path is unknown
+    # a completed mutation without a valid top-level time.created has no position: the base of its path is unknown after every mutation that is not demonstrably later than its recorded completion
     blind = {}
     for o in muts:
-        if o["done"] and o["use_ts"] is None: blind[o["key"]] = min(blind.get(o["key"], o["call"]["seq"]), o["call"]["seq"])
+        if o["done"] and o["use_ts"] is None: blind.setdefault(o["key"], []).append(o["call"]["completed"])
     def step(o):
         p, k, key = o["path"], o["kind"], o["key"]
         o["emit_name"] = "Write" if k in ("write", "patch-add") else "Edit"
@@ -274,7 +310,7 @@ def _decide_mutations(ops):
         def mark(why): o["emit_input"] = dict(_skeleton(o["emit_name"], p), _unrecoverable=why); state[key] = None
         if not o["done"]: return   # failed/unfinished: nothing changed
         if not o["ok"]:   # completed but without valid timing: no successful result, and the base of the path is no longer known
-            state[key] = None; o.setdefault("notes", []).append(dict(call_id=o["uid"], reason="timing missing or malformed: no successful result")); return
+            state[key] = None; o.setdefault("notes", []).append(_diag(o["call"], o["uid"], "timing missing or malformed: no successful result", key, "untimed", o["sub"])); return
         if k == "patch-bad": mark(o["reason"])
         elif o.get("conflict"): mark("conflicting filePath/path values in the call: content not recoverable")
         elif o["concurrent"]: mark("concurrent mutation of the same path: no demonstrable order, content not recoverable")
@@ -295,7 +331,8 @@ def _decide_mutations(ops):
             if why: mark(why + ": content not recoverable"); return
             o["emit_input"] = dict(file_path=p, old_string=old_span, new_string=new_span, replace_all=False); state[key] = cur.replace(old_span, new_span, 1)
 
-    # an unpositioned (no valid time.created) mutation sorts first by (message seq, content index): its effect is only the conservative base reset above, never an emitted event
+    # an unpositioned (no valid time.created) mutation sorts first by (message seq, content index): its effect is only the conservative base reset above, never an emitted event. The base is restored by POSITIVE temporal
+    # evidence only (the tool time of the mutation is strictly later than the valid completion of every uncertain one, exactly like versions._restores), never by the order of the messages
     for o in sorted(muts, key=lambda o: (o["use_ts"] if o["use_ts"] is not None else float("-inf"), o["call"]["seq"], o["call"]["ci"], o["sub"])):
         step(o)
-        if o["key"] in blind and o["call"]["seq"] <= blind[o["key"]]: state[o["key"]] = None
+        if o["key"] in blind and not all(isinstance(c, int) and o["use_ts"] is not None and o["use_ts"] > c for c in blind[o["key"]]): state[o["key"]] = None

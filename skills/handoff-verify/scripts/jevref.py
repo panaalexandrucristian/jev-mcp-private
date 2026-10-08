@@ -18,9 +18,14 @@ VERDICT_KEYS = ("verdict", "relation", "classification", "decision", "class", "l
 def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and not (isinstance(v, float) and math.isnan(v))
 
+def is_probability(v):
+    """A probability: an int or float (not a bool, not a string), finite and within [0, 1]. The domain test that comes BEFORE the strict threshold: a malformed confidence is unusable, never clamped or rounded.
+    (`_num` stays the looser test of the auxiliary numbers same_subject / subject_at.)"""
+    return _num(v) and 0 <= v <= 1 and math.isfinite(v)   # bounds first: an int beyond float range is out of domain, never an OverflowError (NaN is already excluded by _num)
+
 def strict_pass(confidence):
-    """Strictly > 0.95, no rounding (same rule as report.passes)."""
-    return _num(confidence) and confidence > 0.95
+    """A probability strictly > 0.95, no rounding (same rule as report.passes)."""
+    return is_probability(confidence) and confidence > 0.95
 
 CONTRACTS = ("R02", "R03", "R04")
 def contract_of(x):
@@ -95,15 +100,25 @@ def load_calls(path):
             except Exception: pass
     return calls_from_records(recs)
 
+def field_state(container, key):
+    """What a recorded response says about one protocol field: "absent" (no such key, or no object to hold it), "null" (the key is there with null), "finite" (a finite number, not a bool) or "invalid" (anything else:
+    bool, string, NaN, infinity, list, ...). Kept apart from the normalized values so that a structural incompatibility (`absent`) is not confused with a present-but-unusable value."""
+    if not isinstance(container, dict) or key not in container: return "absent"
+    v = container[key]
+    return "null" if v is None else ("finite" if _finite(v) else "invalid")
+
 def _entry(index, key, r, kind):
     verdict = next((r[k] for k in VERDICT_KEYS if isinstance(r.get(k), str)), None)
     action = r.get("action", r.get("decision"))
-    return dict(index=index, key=key, verdict=verdict, confidence=r.get("confidence") if _num(r.get("confidence")) else None, action=action,
-                same_subject=r.get("same_subject") if _num(r.get("same_subject")) else None, kind=kind)
+    return dict(index=index, key=key, verdict=verdict, confidence=r.get("confidence") if is_probability(r.get("confidence")) else None, action=action,
+                same_subject=r.get("same_subject") if _num(r.get("same_subject")) else None, kind=kind, same_subject_state=field_state(r, "same_subject"))
 
 def _claims_like(call):
-    """jev_verify / jev_gate: results[k] must carry claim == input.claims[k] (exact string)."""
-    claims, res = call["input"].get("claims"), (call["parsed"] or {}).get("results")
+    """jev_verify / jev_gate: results[k] must carry claim == input.claims[k] (exact string). The results sit at the top level (`flat`, jev_verify and the historical gate form) or, for jev_gate ONLY, under
+    `verification.results` (`nested`, the envelope the inspected gate implementations return); a gate response holding both is `ambiguous` and, like any other form, an unknown shape. No recursive search."""
+    claims, shape, p = call["input"].get("claims"), envelope_shape(call), call["parsed"] or {}
+    res = p["verification"]["results"] if shape == "nested" else (p.get("results") if shape == "flat" else None)
+    if shape == "ambiguous": return [], "unknown response shape (gate: results and verification.results both present)"
     if not isinstance(claims, list) or not isinstance(res, list): return [], "unknown response shape (claims/results)"
     out = []
     for k, r in enumerate(res):
@@ -157,9 +172,71 @@ def results_of(call):
     if call["is_error"] or call["parsed"] is None: return [], "call has no usable result (error/missing/unparseable)"
     ad = ADAPTERS.get(call["tool"])
     if not ad: return [], "no adapter for tool %s" % call["tool"]
-    return ad(call)
+    ents, why = ad(call); sa = field_state(call["parsed"], "subject_at")   # subject_at lives at the top level of the response
+    for e in ents: e["subject_at_state"] = sa
+    return ents, why
 
-def _finite(v): return _num(v) and math.isfinite(v)
+def envelope_shape(call):
+    """The explicit envelope shape of a recorded jev_verify / jev_gate response: "flat" (top-level `results`), "nested" (jev_gate only: `verification.results`), "ambiguous" (a gate response with both) or "unknown"."""
+    p = call.get("parsed")
+    if call.get("is_error") or not isinstance(p, dict): return "unknown"
+    flat = isinstance(p.get("results"), list)
+    if call.get("tool") == "gate":
+        v = p.get("verification"); nested = isinstance(v, dict) and isinstance(v.get("results"), list)
+        if "results" in p and isinstance(v, dict) and "results" in v: return "ambiguous"   # both KEYS present, whatever their value types: never choose one location
+        if nested: return "nested"
+    return "flat" if flat else "unknown"
+
+def gate_summary(call):
+    """A separate OBSERVATION of one recorded jev_gate response: the patch review, the aggregate action and the claim results apart. -> dict(tool, shape, claims, results, matched, strict_resolved, review{action, status, reasons},
+    aggregate{action, truncated, reasons}, verification_action, holds, reasons). `holds` is true only when ALL hold: a known unambiguous shape; a nonempty exact claim/result correspondence (as many results as claims, each carrying
+    its claim at its index); every claim `verified` > 0.95 under the strict auxiliary conditions (action auto, finite same_subject >= finite subject_at); a usable review (an object with action `auto`, no
+    `incomplete_context`, and no `status` or `ok`: the real contract omits `status` on success and marks a failed one `invalid_response`); `truncated` false; aggregate `action` auto; and no observed non-auto verification action.
+    Passing claims never imply an accepted patch. It certifies no version binding and changes no report status."""
+    p = call.get("parsed") if isinstance(call.get("parsed"), dict) else {}
+    out = dict(tool=call.get("tool"), shape=envelope_shape(call) if call.get("tool") == "gate" else "unknown", claims=None, results=None, matched=0, strict_resolved=0, review=dict(action=None, status=None, reasons=[]),
+               aggregate=dict(action=None, truncated=None, reasons=[]), verification_action=None, holds=False, reasons=[])
+    why = out["reasons"]
+    if call.get("tool") != "gate": why.append("not a jev_gate call"); return out
+    if out["shape"] not in ("flat", "nested"): why.append("unknown or ambiguous response shape"); return out
+    claims, ents = call["input"].get("claims") if isinstance(call.get("input"), dict) else None, results_of(call)[0]
+    res = p["verification"]["results"] if out["shape"] == "nested" else p["results"]
+    out["claims"], out["results"] = (len(claims) if isinstance(claims, list) else None), len(res)
+    out["matched"] = sum(1 for e in ents if not e.get("mismatch"))
+    out["strict_resolved"] = sum(1 for e in ents if not e.get("mismatch") and str(e.get("verdict")).lower() == "verified" and strict_pass(e.get("confidence")) and aux_ok(e, call, True))
+    rv = p.get("review") if isinstance(p.get("review"), dict) else None
+    if rv is not None: out["review"] = dict(action=rv.get("action"), status=rv.get("status"), reasons=list(rv.get("reason_codes")) if isinstance(rv.get("reason_codes"), list) else [])
+    v = p.get("verification") if isinstance(p.get("verification"), dict) else {}
+    out["aggregate"] = dict(action=p.get("action"), truncated=p.get("truncated"), reasons=list(p.get("reason_codes")) if isinstance(p.get("reason_codes"), list) else [])
+    out["verification_action"] = v.get("action")   # an observed verification action is kept in either shape
+    if not out["claims"] or out["results"] != out["claims"] or len(ents) != out["results"] or out["matched"] != out["results"]: why.append("claim/result correspondence is not complete and exact")
+    if out["strict_resolved"] != out["claims"]: why.append("not every claim is verified > 0.95 under the strict auxiliary conditions")
+    r = out["review"]
+    if rv is None or r["action"] not in ("auto", "review", "escalate"): why.append("no usable patch review")
+    else:
+        if r["action"] != "auto": why.append("patch review action is %s" % r["action"])
+        if r["status"] not in (None, "ok"): why.append("patch review status is %s" % r["status"])
+        if "incomplete_context" in r["reasons"]: why.append("patch review context is incomplete")
+    if out["aggregate"]["truncated"] is not False: why.append("response is truncated or not demonstrably complete")
+    if out["aggregate"]["action"] != "auto": why.append("aggregate action is %s" % out["aggregate"]["action"])
+    if out["verification_action"] not in (None, "auto"): why.append("verification action is %s" % out["verification_action"])
+    out["holds"] = not why
+    return out
+
+def capabilities(calls):
+    """What the RECORDED verify / gate responses show, one row per (tool, explicit envelope shape, state of same_subject, state of subject_at) with `results` (result count) and `calls` (distinct calls): states are
+    absent / null / invalid / finite (`field_state`); an unknown shape is a row with null states and 0 results. Each response stands on its own fields: nothing is attributed from a package version, grouped or voted, and an earlier
+    response never decides a later one. Error and unparseable calls are not observations. -> list sorted by (tool, shape, states)."""
+    obs = {}
+    for c in calls:
+        if c.get("tool") not in ("verify", "gate") or c.get("is_error") or c.get("parsed") is None: continue
+        shape = envelope_shape(c); ents = results_of(c)[0] if shape != "unknown" else []
+        for key in ({(c["tool"], shape, e["same_subject_state"], e["subject_at_state"]) for e in ents} or {(c["tool"], shape, None, None)}):
+            o = obs.setdefault(key, [0, set()]); o[1].add(c["tool_use_id"])
+            if key[2] is not None: o[0] += sum(1 for e in ents if (e["same_subject_state"], e["subject_at_state"]) == key[2:])
+    return [dict(tool=k[0], shape=k[1], same_subject=k[2], subject_at=k[3], results=v[0], calls=len(v[1])) for k, v in sorted(obs.items(), key=lambda kv: tuple(x or "" for x in kv[0]))]
+
+def _finite(v): return _num(v) and (isinstance(v, int) or math.isfinite(v))   # an int is always finite (and math.isfinite overflows beyond float range)
 
 def aux_ok(entry, call, strict=False):
     """Jev auxiliary conditions of the REAL result: action must be auto (absent = auto), and same_subject >= subject_at. Legacy rules (strict=False, unchanged from audit v3): the comparison is made only when both
@@ -183,6 +260,13 @@ def call_evidence(call):
     for k in ("passage_a", "passage_b", "diff"):
         if isinstance(inp.get(k), str): out.append(_norm(inp[k]))
     return [t for t in out if t]
+
+def quote_evidence_raw(call):
+    """The texts a finding's `quote_source` may be found in, each ENTRY unmodified and apart: the evidence entries of verify/gate (`omissions.evidence_raw`), then compare `passage_a` / `passage_b` and the gate `diff`. Case, whitespace
+    and newlines are exactly as the call was given them; a quote must lie inside ONE entry, never across two."""
+    import omissions as O
+    inp = call.get("input") or {}
+    return O.evidence_raw(inp) + [inp[k] for k in ("passage_a", "passage_b", "diff") if isinstance(inp.get(k), str)]
 
 def call_evidence_raw(call):
     """The evidence texts the REAL call was given, in order and unmodified (R03: the absence call must have received the canonical material)."""
@@ -228,7 +312,7 @@ def bind(checks, calls, strict_aux=False):
         # R04: an `unsupported` result is never resolved here whatever its same_subject; only `finalize` can resolve it, and only as the ABSENCE half of a fully valid pair
         r04_unsup = ctr == "R04" and str(e["verdict"]).lower() == "unsupported"
         row.update(bound=True, reason="bound", tool_use_id=tid, result_index=ri, input_hash=call["input_hash"], aux_ok=a, resolved=bool(a and strict_pass(e["confidence"]) and not c.get("error") and not r04_unsup),
-                   real_verdict=e["verdict"], real_confidence=e["confidence"], real_action=e.get("action"), real_same_subject=e.get("same_subject"), tool=call["tool"], check_error=bool(c.get("error")), claim_key=key, call_evidence=call_evidence(call), call_evidence_raw=call_evidence_raw(call))
+                   real_verdict=e["verdict"], real_confidence=e["confidence"], real_action=e.get("action"), real_same_subject=e.get("same_subject"), tool=call["tool"], check_error=bool(c.get("error")), claim_key=key, call_evidence=call_evidence(call), call_evidence_raw=call_evidence_raw(call), call_quote_evidence=quote_evidence_raw(call))
         out.append(row)
     return out
 
@@ -290,15 +374,15 @@ def validate_finding(f, bindings_by_id, handoff_text=None, omission_contract=Fal
     if t != "lost_detail" and not has_qh: return False, "finding depends on a handoff passage but has no quote_handoff"
     if has_qh:   # a passage-dependent finding needs the demonstrated handoff version: unavailable text or a missing passage never confirms (lost_detail may legitimately have no quote_handoff)
         if handoff_text is None: return False, "handoff version text not available/demonstrated (sha256): quote_handoff cannot be checked"
-        if _norm(qh) not in _norm(handoff_text): return False, "quote_handoff not found in the handoff text of the reported version"
+        if qh not in handoff_text: return False, "quote_handoff not found in the handoff text of the reported version"   # exact: case, whitespace and newlines as in the demonstrated version
     if ctr in ("R03", "R04") and t == "lost_detail": return _validate_omission(f, b, bindings_by_id, ctr)
-    q = _norm(f.get("quote_source"))
-    if not q: return False, "no source quote to link the finding to the call's evidence"
+    q = f.get("quote_source")   # exact (case, whitespace, newlines) and inside ONE raw entry of the evidence the call was given
+    if not isinstance(q, str) or not q.strip(): return False, "no source quote to link the finding to the call's evidence"
     if t == "lost_detail":
         # the absence probe's evidence is the HANDOFF, so the source quote lives in the report's source-side probe: a bound, resolved `verified` check whose call evidence holds the quote
-        if not any(x.get("resolved") and str(x.get("real_verdict")).lower() == "verified" and any(q in e for e in x.get("call_evidence") or []) for x in bindings_by_id.values()):
+        if not any(x.get("resolved") and str(x.get("real_verdict")).lower() == "verified" and any(q in e for e in x.get("call_quote_evidence") or []) for x in bindings_by_id.values()):
             return False, "no bound, resolved `verified` source-side check whose call evidence contains the source quote"
-    elif not any(q in e for e in b.get("call_evidence") or []): return False, "source quote not found in the evidence given to the call"
+    elif not any(q in e for e in b.get("call_quote_evidence") or []): return False, "source quote not found in the evidence given to the call"
     return True, "confirmed"
 
 def _validate_omission(f, a, by, contract="R03"):
@@ -323,12 +407,12 @@ def _validate_omission(f, a, by, contract="R03"):
     if contract == "R04":
         if a.get("tool") != "verify" or a.get("check_error"): return False, "the absence check is not an error-free jev_verify check"
         if str(a.get("real_verdict")).lower() != "unsupported": return False, "the absence check verdict is %r: only `unsupported` (the note does not state the detail) can confirm an omission (verified/contradicted: the detail is present or contradicted)" % a.get("real_verdict")
-        if not (_finite(a.get("real_confidence")) and a["real_confidence"] > 0.95): return False, "the absence check confidence is not a finite number > 0.95"
+        if not strict_pass(a.get("real_confidence")): return False, "the absence check confidence is not a finite number in [0, 1] and > 0.95"
         if a.get("real_action") != "auto": return False, "the absence check action is not explicitly `auto`"
     elif not a.get("resolved") or str(a.get("real_verdict")).lower() != "verified" or not strict_pass(a.get("real_confidence")): return False, "absence check is not resolved/verified with confidence > 0.95 (strict auxiliary conditions)"
     va, vs_ = a.get("version"), s.get("version")
     if not (va and va.get("ok") and vs_ and vs_.get("ok")): return False, "version identity of the pair is not demonstrated (version_ref validated by versions.py is required on both checks)"
-    if (va["write_tool_use_id"], va["sha256"], va.get("evaluated_against")) != (vs_["write_tool_use_id"], vs_["sha256"], vs_.get("evaluated_against")): return False, "the two checks do not evaluate the same write, hash and evaluated_against"
+    if (va["write_tool_use_id"], va["sha256"], va.get("evaluated_against"), va.get("run")) != (vs_["write_tool_use_id"], vs_["sha256"], vs_.get("evaluated_against"), vs_.get("run")): return False, "the two checks do not evaluate the same write, hash, evaluated_against and verification run"
     q = f.get("quote_source")
     if not isinstance(q, str) or not q.strip(): return False, "no exact source quote"
     passage = O.passage_of(s.get("eligible_blocks"), q) if isinstance(s.get("eligible_blocks"), list) else None
@@ -378,10 +462,13 @@ def listing(calls):
                         results=[{k: e[k] for k in ("index", "key", "verdict", "confidence", "action", "same_subject")} | ({"mismatch": e["mismatch"]} if e.get("mismatch") else {}) for e in ents]))
     return out
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True)
     l = sub.add_parser("list"); l.add_argument("--session"); l.add_argument("--cwd")
-    a = ap.parse_args()
+    return ap
+
+def main():
+    a = build_parser().parse_args()
     import discover as D
     sp, how, amb = D.resolve_session_info(a.session, a.cwd)
     if amb: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", "resolution": how})); return 3

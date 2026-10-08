@@ -8,12 +8,8 @@ THRESHOLD = 0.95
 SCHEMA_VERSION = "1"
 
 def passes(confidence):
-    """Strictly > 0.95, no rounding. None/NaN/bool/str never pass."""
-    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-        return False
-    if isinstance(confidence, float) and math.isnan(confidence):
-        return False
-    return confidence > THRESHOLD
+    """A probability (finite number in [0, 1], jevref.is_probability) strictly > 0.95, no rounding. None/NaN/infinity/out-of-range/bool/str never pass."""
+    return jevref.is_probability(confidence) and confidence > THRESHOLD
 
 def check_status(check):
     """check: {kind: 'defect'|'obligation', verdict_ok: bool, confidence: float|None, error: str|None, aux_ok: bool=True}
@@ -68,7 +64,7 @@ def input_hash(payload):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 def confidence_or_null(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and not (isinstance(v, float) and math.isnan(v)) else None
+    return v if jevref.is_probability(v) else None   # a malformed confidence is null, never clamped or rounded
 
 def cost_field(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else "unavailable"
@@ -122,15 +118,28 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
         h = doc.get("handoff") if isinstance(doc.get("handoff"), dict) else {}
         hp = h.get("path") if isinstance(h.get("path"), str) else handoff_path
         src = (doc.get("session") or {}).get("jsonl"); same = bool(cpath) and versions.same_session(src, cpath, session_id)
-        rows = versions.bind_versions(checks, bs, hp or "", (cpath if same else src) if isinstance(src, str) else None, calls, same, h.get("source_path") if isinstance(h.get("source_path"), str) else None, doc.get("work_locations"))
+        rows = versions.bind_versions(checks, bs, hp or "", (cpath if same else src) if isinstance(src, str) else None, calls, same, h.get("source_path") if isinstance(h.get("source_path"), str) else None, doc.get("work_locations"), [src] if isinstance(src, str) else ())   # the report's transcript is another representation of the same session when `same`: what its subagent streams demonstrate holds too
         bs = versions.attach(bs, rows)
         bs = jevref.finalize(bs, doc.get("findings", []), htxt, ctr)   # R04: the absence half of a valid pair is resolved once the identity and the material are attached
-        vnote = dict(same_session=same, identity_ok=sum(1 for r in rows.values() if r["ok"]), identity_failed=sum(1 for r in rows.values() if not r["ok"]), reasons=sorted({r["reason"] for r in rows.values() if not r["ok"]}))
+        vnote = dict(same_session=same, identity_ok=sum(1 for r in rows.values() if r["ok"]), identity_failed=sum(1 for r in rows.values() if not r["ok"]), reasons=sorted({r["reason"] for r in rows.values() if not r["ok"]}), unpositioned=sum(1 for r in rows.values() if r["kind"] == "unpositioned"),
+                     unordered=sum(1 for r in rows.values() if r["kind"] == "unordered"))
+        sfile = (cpath if same else src) if isinstance(src, str) else None   # provenance is re-derived here, whether or not the report has checks: a note without a recorded supported write can never be certified
+        try:
+            import discover as D
+            prov = versions.provenance(sfile, hp, h.get("source_path") if isinstance(h.get("source_path"), str) else None, relocate=False) if sfile and hp and D.source_exists(sfile) else None
+        except Exception as e: prov = None
+        if prov: vnote["provenance"] = prov
     for c, b in zip(checks, bs): c["binding"] = {k: b[k] for k in ("bound", "reason", "resolved", "aux_ok")}
     attach_advice(checks, bs, calls, doc.get("findings", []))
     ev = jevref.audited_status(checks, bs, doc.get("findings", []), doc.get("unresolved", []), htxt, ctr)
+    if vnote is not None and vnote.get("provenance") and vnote["provenance"]["state"] != "recorded_write":
+        ev["reasons"].append(vnote["provenance"]["blocker"])   # exposed even without checks; a PASS cannot survive it
+        if ev["status"] == "PASS": ev["status"] = "UNRESOLVED"
     if "scope_exclusions" in doc:   # R05: every declared out-of-scope exclusion is re-derived from the real jev_classify call; one that cannot be demonstrated makes a PASS UNRESOLVED (a FAIL stays FAIL)
-        sa = scope.validate_exclusions(doc["scope_exclusions"], calls, (doc.get("session") or {}).get("jsonl"), doc.get("findings", []))
+        h = doc.get("handoff") if isinstance(doc.get("handoff"), dict) else {}; hp = h.get("path") if isinstance(h.get("path"), str) else handoff_path; src = (doc.get("session") or {}).get("jsonl")
+        sfile = (cpath if vnote is not None and vnote["same_session"] else src) if isinstance(src, str) else None
+        known = versions.write_ids(sfile, hp or "", h.get("source_path") if isinstance(h.get("source_path"), str) else None) if hp and sfile else None   # the writes of the handoff: an exclusion names the evaluation (write, mode, run) it was made in
+        sa = scope.validate_exclusions(doc["scope_exclusions"], calls, src, doc.get("findings", []), known, scope.report_evaluation(checks) if vnote is not None else None)   # a report about versions: an exclusion without `evaluation` is re-derived in the evaluation of the report
         doc["scope_audit"] = dict(threshold=scope.THRESHOLD, **sa)
         if sa["invalid"]:
             ev["reasons"].append("invalid scope exclusions: %d" % sa["invalid"])

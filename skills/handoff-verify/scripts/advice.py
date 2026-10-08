@@ -14,8 +14,9 @@ import argparse, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jevref as J
 
-CODES = ("evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "aux_condition_failed", "result_mismatch", "no_result")
+CODES = ("protocol_fields_absent", "evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "aux_condition_failed", "result_mismatch", "no_result")
 HINTS = {
+    "protocol_fields_absent": "The recorded response does not contain %s, which the strict conditions need (same_subject on each result, subject_at at the top level of the response): this response cannot pass whatever the evidence, so more evidence will not help. Do not spend the single re-verification on it; the check stays UNRESOLVED. A future run needs a server whose recorded verify/gate responses carry these fields (an ABSENCE check of an omission pair does not need them).",
     "evidence_off_subject": "Jev judged the evidence to be about another subject (same_subject below subject_at): give the exact passage about this claim's subject.",
     "fix_fact": "The evidence contradicts the claim with high confidence: correct the fact from the source; more evidence of the same kind will not help.",
     "recheck_fact": "The evidence leans against the claim, below the threshold: compare the claim with the source; if it is wrong, correct it, if it is right, add the exact passage that states it.",
@@ -26,6 +27,9 @@ HINTS = {
     "result_mismatch": "The result does not carry the claim that was sent (%s): no advice can be read from it; the check stays unresolved. Re-verify only with a corrected call that carries this claim.",
     "no_result": "No usable result: only a transport or invalid_response error allows one identical retry; otherwise the check stays unresolved.",
 }
+CAPABILITY_NOTE = ("What the recorded verify/gate responses of this session show, per tool and envelope shape: the state (absent / null / invalid / finite) of same_subject on each result and of subject_at at the top level. Every response is judged on its own fields: "
+                   "strict acceptance needs both finite at those locations, a response without them cannot be accepted whatever the evidence, and a later response that carries them is judged normally. Future runs need a server whose recorded responses carry these fields; "
+                   "this skill installs or restarts nothing, retrofits no old result and leaves the retry rule unchanged.")
 SPLIT_HINT = " It joins several facts: in the same single re-verification, split it into one claim per fact, each with only its own evidence."
 # identifiers that must appear in the evidence when the claim states them: numbers, versions, hashes, paths, file names, code names
 DETAIL = re.compile(r"`[^`]+`|[\w./~:-]*\d[\w./:-]*|[\w-]+(?:/[\w.-]+)+|\w+\.(?:md|txt|json|py|sh|yml|yaml|toml|js|mjs|ts)\b|\b\w+_\w+\b")
@@ -51,12 +55,40 @@ def compound(claim):
     parts = [p for p in JOIN.split(claim or "") if len(p.split()) >= 3]
     return len(parts) >= 2
 
+FIELD_WHERE = (("same_subject", "same_subject (on the result)"), ("subject_at", "subject_at (at the top level)"))
+
+def field_states(entry, call):
+    """-> {same_subject, subject_at}: absent / null / invalid / finite as the REAL recorded response has them (jevref.field_state)."""
+    return dict(same_subject=entry.get("same_subject_state") or J.field_state(entry, "same_subject"), subject_at=entry.get("subject_at_state") or J.field_state(call.get("parsed"), "subject_at"))
+
+def causes_of(entry, call, fields):
+    """Every coexisting reason why the result did not pass, in a FIXED order (the primary code is chosen by `advise`, by its precedence): protocol_fields_absent, subject_fields_null_or_invalid, evidence_off_subject,
+    action_not_auto, verdict_contradicted | verdict_unsupported, confidence_not_above_threshold."""
+    sa, ss, out = (call.get("parsed") or {}).get("subject_at"), entry.get("same_subject"), []
+    if "absent" in fields.values(): out.append("protocol_fields_absent")
+    if any(v in ("null", "invalid") for v in fields.values()): out.append("subject_fields_null_or_invalid")
+    if J._num(ss) and J._num(sa) and ss < sa: out.append("evidence_off_subject")
+    if entry.get("action") not in (None, "auto"): out.append("action_not_auto")
+    verdict = str(entry.get("verdict")).lower()
+    if verdict in ("contradicted", "unsupported"): out.append("verdict_" + verdict)
+    if not J.strict_pass(entry.get("confidence")): out.append("confidence_not_above_threshold")
+    return out
+
 def advise(entry, call):
-    """entry: a jevref.results_of entry of a verify/gate call; -> {code, hint[, details][, split]}, or None when the result passed."""
+    """entry: a jevref.results_of entry of a verify/gate call; -> {code, hint[, details][, split], fields, causes[, evidence_retry]}, or None when the result passed. `fields` = the recorded state of same_subject / subject_at
+    (absent|null|invalid|finite), `causes` = every coexisting reason in a fixed order. protocol_fields_absent (a usable, correctly identified result whose response lacks a field the strict conditions need) comes before the
+    evidence-focused codes and recommends NO evidence retry (`evidence_retry` false)."""
     if entry.get("mismatch"): return dict(code="result_mismatch", hint=HINTS["result_mismatch"] % entry["mismatch"])
     if call.get("is_error") or entry.get("verdict") is None or entry.get("confidence") is None:
         return dict(code="no_result", hint=HINTS["no_result"])
     if passed(entry, call): return None
+    fields = field_states(entry, call)
+    miss = [w for k, w in FIELD_WHERE if fields[k] == "absent"]
+    a = dict(code="protocol_fields_absent", hint=HINTS["protocol_fields_absent"] % " and ".join(miss), evidence_retry=False) if miss else _evidence_advice(entry, call)
+    return dict(a, fields=fields, causes=causes_of(entry, call, fields))
+
+def _evidence_advice(entry, call):
+    """The established evidence-focused advice (precedence unchanged)."""
     sa, ss = (call.get("parsed") or {}).get("subject_at"), entry.get("same_subject")
     verdict = str(entry["verdict"]).lower()
     if J._num(ss) and J._num(sa) and ss < sa: code = "evidence_off_subject"
@@ -82,12 +114,18 @@ def session_advice(calls):
             if a: out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=e["index"], claim=e["key"], verdict=e["verdict"], confidence=e["confidence"], advice=a))
     return out
 
+def build_parser():
+    ap = argparse.ArgumentParser(); ap.add_argument("--session"); ap.add_argument("--cwd")
+    return ap
+
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--session"); ap.add_argument("--cwd"); a = ap.parse_args()
+    a = build_parser().parse_args()
     import discover as D
     sp, how, amb = D.resolve_session_info(a.session, a.cwd)
     if amb: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", "resolution": how})); return 3
     if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
-    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", results=session_advice(J.load_calls(sp))), indent=1, ensure_ascii=False)); return 0
+    calls = J.load_calls(sp)
+    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", results=session_advice(calls), capabilities=J.capabilities(calls), capability_note=CAPABILITY_NOTE,
+                                                                                                         gate_summaries=[dict(tool_use_id=c["tool_use_id"], **J.gate_summary(c)) for c in calls if c["tool"] == "gate"]), indent=1, ensure_ascii=False)); return 0
 
 if __name__ == "__main__": sys.exit(main())

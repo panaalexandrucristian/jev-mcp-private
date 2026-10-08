@@ -78,7 +78,7 @@ def _results(records):
         if d.get("type") == "user" and isinstance(d.get("message", {}).get("content"), list):
             for c in d["message"]["content"]:
                 if isinstance(c, dict) and c.get("type") == "tool_result":
-                    res[c["tool_use_id"]] = {"is_error": bool(c.get("is_error")), "content": c.get("content"), "uuid": d.get("uuid"), "line": d["_line"]}
+                    res[c["tool_use_id"]] = {"is_error": bool(c.get("is_error")), "content": c.get("content"), "uuid": d.get("uuid"), "line": d["_line"], "timestamp": d.get("timestamp")}
     return res
 
 def inventory(path, source="session"):
@@ -95,7 +95,7 @@ def inventory(path, source="session"):
             if c["name"] in ("Write", "Edit") and "file_path" in c["input"]:
                 r = res.get(c["id"])
                 meta.update(op=c["name"], path=c["input"]["file_path"], result_found=r is not None,
-                            success=bool(r) and not r["is_error"], result_uuid=(r or {}).get("uuid"))
+                            success=bool(r) and not r["is_error"], result_uuid=(r or {}).get("uuid"), result_timestamp=(r or {}).get("timestamp"))
                 if d.get("_adapter") == "opencode" and isinstance(c["input"].get("_unrecoverable"), str): meta["unrecoverable"] = c["input"]["_unrecoverable"]   # adapter-only marker (never read from a Claude record)
                 if c["name"] == "Write": meta["content"] = c["input"].get("content")
                 else: meta.update(old_string=c["input"].get("old_string"), new_string=c["input"].get("new_string"),
@@ -107,10 +107,25 @@ def inventory(path, source="session"):
                     bash.append({**meta, "op": "bash-redirect", "path": m.group(2), "linked": False})
     return items, bash
 
+def diagnostics(path):
+    """Successful mutations of an OpenCode session that the adapter could not place or attribute (no valid top-level tool time, or no path): [{call_id, reason, path (realpath | None), seq, ci, sub, created, completed, kind}].
+    A Claude transcript has none ([]). They are never events, times or versions: versions.reconstruct_stream marks every version of an affected path with them."""
+    return O.diagnostics(path) if O.is_selector(path) else []
+
+def real_of(path, cwd=None):
+    """Canonical path of a recorded path: a relative one is resolved against the cwd recorded for the call. Without a recorded absolute cwd a relative path has no demonstrated place: None (the cwd of THIS process is
+    never substituted); None is also the answer for anything that is not a non-empty string."""
+    if not isinstance(path, str) or not path: return None
+    if not os.path.isabs(path):
+        if not (isinstance(cwd, str) and os.path.isabs(cwd)): return None
+        path = os.path.join(cwd, path)
+    return os.path.realpath(path)
+
 def reads(path):
     """Read tool calls of a transcript whose content is DEMONSTRABLY the complete file: the call has no offset/limit, the result is not an error and the recorded structured result
     (`toolUseResult` of a session log, `tool_use_result` of a stream-json) is a text file with startLine 1 and numLines == totalLines; the content comes from that structure (the
-    `cat -n` text cannot tell whether the file ended with a newline, so a Read without the structure is NOT a base). -> [{index (tool_use ordinal, as in inventory), pos, path, content, complete}]"""
+    `cat -n` text cannot tell whether the file ended with a newline, so a Read without the structure is NOT a base). -> [{index (tool_use ordinal, as in inventory), pos, result_pos (common timeline of
+    jevref.timeline), path, cwd, content, complete, file}]; an OpenCode read has no structure, so it is listed as incomplete: evidence, never a base."""
     recs = load_jsonl(path); out, idx, uses = [], 0, {}
     upos, rpos = J.timeline(recs)
     for d in recs:
@@ -119,18 +134,18 @@ def reads(path):
             for c in cont:
                 if isinstance(c, dict) and c.get("type") == "tool_use":
                     idx += 1
-                    if c.get("name") == "Read" and isinstance(c.get("input"), dict): uses[c["id"]] = (idx, c["input"])
+                    if c.get("name") == "Read" and isinstance(c.get("input"), dict): uses[c["id"]] = (idx, c["input"], d.get("cwd"))
         elif d.get("type") == "user" and isinstance(cont, list):
             sr = d.get("toolUseResult", d.get("tool_use_result"))
             for c in cont:
                 if not (isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in uses): continue
-                i, inp = uses[c["tool_use_id"]]
+                i, inp, cwd = uses[c["tool_use_id"]]
                 f = sr.get("file") if isinstance(sr, dict) else None
-                fp = inp.get("file_path")
+                fp = inp.get("file_path"); sp = f.get("filePath") if isinstance(f, dict) else None   # both resolved in the cwd recorded for the call: a relative call path with an absolute structured path is the same file
                 complete = (isinstance(fp, str) and not c.get("is_error") and "offset" not in inp and "limit" not in inp and isinstance(sr, dict) and sr.get("type") == "text" and isinstance(f, dict)
                             and isinstance(f.get("content"), str) and f.get("startLine") == 1 and isinstance(f.get("numLines"), int) and f.get("numLines") == f.get("totalLines")
-                            and (f.get("filePath") is None or os.path.realpath(f["filePath"]) == os.path.realpath(fp)))
-                out.append(dict(index=i, pos=upos.get(c["tool_use_id"]), path=fp, content=f["content"] if complete else None, complete=bool(complete)))
+                            and (sp is None or (real_of(fp, cwd) is not None and real_of(sp, cwd) == real_of(fp, cwd))))
+                out.append(dict(index=i, pos=upos.get(c["tool_use_id"]), result_pos=rpos.get(c["tool_use_id"]), path=fp, cwd=cwd, content=f["content"] if complete else None, complete=bool(complete), file=path))
     return out
 
 def name_matches(path):

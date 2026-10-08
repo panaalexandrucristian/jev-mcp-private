@@ -3,19 +3,35 @@ import re
 
 MAX_CHUNK = 12000  # chars; Jev evidence/claims limits are enforced by callers (compare passages 20000, extract doc 50000)
 
-def reconstruct(items, reads=()):
-    """items: successful+failed Write/Edit inventory entries for ONE real path, in transcript order.
-    reads: [{index, path, content, complete: bool}] full Reads usable as base.
+def _pos(x): return isinstance(x, int) and not isinstance(x, bool)
+
+def _fresh_base(reads, prev, nxt):
+    """The content of the latest demonstrably complete Read that can be the base of the mutation `nxt`. It must be positioned on the common timeline (jevref.timeline): its tool_use AFTER the previous mutation's
+    result (so no Write can have changed the file while the Read was in flight) and its result before `nxt`'s tool_use. A Read without both positions, one that started before the previous mutation's result, or
+    one whose result came late is not a base (nothing is guessed). -> content | None."""
+    lo = 0 if prev is None else prev.get("result_pos"); hi = nxt.get("pos")
+    if not (_pos(lo) and _pos(hi)): return None
+    ok = [r for r in reads if _pos(r.get("pos")) and _pos(r.get("result_pos")) and lo < r["pos"] < r["result_pos"] < hi]
+    return max(ok, key=lambda r: r["result_pos"])["content"] if ok else None
+
+def reconstruct(items, reads=(), taint=None):
+    """items: successful+failed Write/Edit inventory entries for ONE real path (ONE transcript), in transcript order.
+    reads: [{index, pos, result_pos, path, content, complete: bool}] full Reads usable as base: a complete Read positioned on both ends refreshes the base of the next mutation (also when a base exists) if it started after
+    the previous mutation's result and its result came before that mutation's tool_use; it never changes an earlier version.
+    taint: {tool_use_id: reason} Edits whose base is not demonstrated (an uncertain mutation or an interleaved stream may have changed it): such an Edit is `content not recoverable` with that reason, whatever Read
+    or earlier content exists; a later full Write restores the chain.
     Returns versions: [{version, tool_use_id, uuid, index, timestamp, content|None, status: 'ok'|'content not recoverable', reason}]"""
-    events = sorted([dict(i, kind="edit") for i in items if i["success"]] + [dict(r, kind="read") for r in reads if r.get("complete")],
-                    key=lambda e: e["index"])
-    cur, versions = None, []
-    for e in events:
-        if e["kind"] == "read":
-            if cur is None: cur = e["content"]
-            continue
+    taint = taint or {}
+    rds = [r for r in reads if r.get("complete") and isinstance(r.get("content"), str)]
+    cur, versions, prev = None, [], None
+    for e in sorted([i for i in items if i["success"]], key=lambda e: e["index"]):
+        fresh = _fresh_base(rds, prev, e)
+        if fresh is not None: cur = fresh
+        prev = e
         if e.get("unrecoverable"):   # OpenCode adapter marker: a recorded mutation whose content cannot be demonstrated (no base is kept)
             cur = None; ok, reason = False, e["unrecoverable"]
+        elif e["op"] != "Write" and e["tool_use_id"] in taint:
+            cur = None; ok, reason = False, taint[e["tool_use_id"]]
         elif e["op"] == "Write":
             cur = e["content"]; ok, reason = True, ""
         else:
