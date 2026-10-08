@@ -7,6 +7,7 @@ import { HOOK_CLI, makeRepo, run, sandboxEnv, tempDir } from "../../jev-flow/tes
 import { ambiguityArgs, checkText, readClassification, relatedArgs, runChecks } from "../check.mjs";
 import { parseThreshold, runCli } from "../cli.mjs";
 import { handlePromptCheckHook } from "../hook.mjs";
+import { chooseLanguage, detectLanguage, LANG_SETTINGS } from "../language.mjs";
 import { tipLine } from "../messages.mjs";
 import { loadState, promptCheckDir, STATE_FILE, withState } from "../state.mjs";
 import { lastAssistantText } from "../transcript.mjs";
@@ -179,6 +180,33 @@ describe("prompt-check: the two checks", () => {
     assert.deepEqual(roOut.split("\n"), [tipLine("ro", "ambiguity", 0.96), tipLine("ro", "unrelated", 0.91)]);
     assert.match(roOut, /^prompt-check: acest prompt ar putea fi neclar \(Jev este sigur în proporție de 96%\)/);
     assert.match(roOut, /nu pare legat de ultimul răspuns/);
+  });
+
+  it("auto: each prompt gets the tips in its own language within one session", async () => {
+    const both = { ambiguity: classify("needs_clarification", 0.96), related: classify("unrelated", 0.91) };
+    const t = setup();
+    assert.equal(loadState(t.dir).lang, "auto");
+    const en = (await t.submit("please fix the second one in the list", stub(both))).output.systemMessage;
+    assert.deepEqual(en.split("\n"), [tipLine("en", "ambiguity", 0.96), tipLine("en", "unrelated", 0.91)]);
+    const ro = (await t.submit("repară-l pe al doilea din listă", stub(both))).output.systemMessage;
+    assert.deepEqual(ro.split("\n"), [tipLine("ro", "ambiguity", 0.96), tipLine("ro", "unrelated", 0.91)]);
+    const roPlain = (await t.submit("fa un commit si push pentru asta", stub(both))).output.systemMessage;
+    assert.deepEqual(roPlain.split("\n"), [tipLine("ro", "ambiguity", 0.96), tipLine("ro", "unrelated", 0.91)]);
+    assert.equal(loadState(t.dir).lang, "auto");
+  });
+
+  it("auto: an undecidable prompt follows the previous reply, then English; a forced language wins", async () => {
+    const both = { ambiguity: classify("needs_clarification", 0.96), related: classify("unrelated", 0.91) };
+    const roReply = setup({ entries: [assistant([{ type: "text", text: "Am listat trei fișiere și nu am găsit nimic pentru asta." }])] });
+    assert.match((await roReply.submit("git status --short", stub(both))).output.systemMessage, /^prompt-check: acest prompt/);
+    const enReply = setup({ entries: [assistant([{ type: "text", text: "I listed the files and found nothing for this." }])] });
+    assert.match((await enReply.submit("git status --short", stub(both))).output.systemMessage, /^prompt-check: this prompt/);
+    const none = setup();
+    assert.match((await none.submit("git status --short", stub(both))).output.systemMessage, /^prompt-check: this prompt/);
+    const forcedEn = setup({ lang: "en", entries: [assistant([{ type: "text", text: "Am listat fișierele." }])] });
+    assert.match((await forcedEn.submit("repară-l pe al doilea din listă", stub(both))).output.systemMessage, /^prompt-check: this prompt/);
+    const forcedRo = setup({ lang: "ro" });
+    assert.match((await forcedRo.submit("please fix the second one in the list", stub(both))).output.systemMessage, /^prompt-check: acest prompt/);
   });
 
   it("errors, invalid responses, unavailable Jev and thrown calls stay silent", async () => {
@@ -365,14 +393,14 @@ describe("prompt-check: CLI and session lifecycle", () => {
     return { repo, env, run: (...args) => runCli(args, env, repo) };
   }
 
-  it("defaults: off, 0.9, en, zero counters", () => {
+  it("defaults: off, 0.9, auto, zero counters", () => {
     const c = cliEnv();
-    assert.deepEqual(c.run("status").lines, ["prompt-check: off, threshold 0.9, language en, 0 prompts checked, 0 tips shown"]);
+    assert.deepEqual(c.run("status").lines, ["prompt-check: off, threshold 0.9, language auto, 0 prompts checked, 0 tips shown"]);
   });
 
   it("on, threshold, lang, off and status", () => {
     const c = cliEnv();
-    assert.match(c.run("on").lines.at(-1), /^prompt-check: on, threshold 0.9, language en/);
+    assert.match(c.run("on").lines.at(-1), /^prompt-check: on, threshold 0.9, language auto/);
     assert.match(c.run("on", "0.95").lines.at(-1), /on, threshold 0.95/);
     assert.match(c.run("threshold", "0.7").lines.at(-1), /on, threshold 0.7/);
     assert.match(c.run("lang", "ro").lines.at(-1), /language ro/);
@@ -396,11 +424,14 @@ describe("prompt-check: CLI and session lifecycle", () => {
     assert.equal(parseThreshold("0.999"), 0.999);
   });
 
-  it("an unknown language keeps the old one with one notice", () => {
+  it("an unknown language keeps the old one with one notice; auto, ro and en are accepted", () => {
     const c = cliEnv();
     const out = c.run("lang", "fr");
     assert.equal(out.lines.length, 2);
-    assert.match(out.lines[1], /language en/);
+    assert.match(out.lines[0], /use auto, ro or en/);
+    assert.match(out.lines[1], /language auto/);
+    for (const lang of ["en", "ro", "auto"]) assert.match(c.run("lang", lang).lines.at(-1), new RegExp(`language ${lang},`));
+    assert.deepEqual(LANG_SETTINGS, ["auto", "ro", "en"]);
   });
 
   it("status shows the counters; on makes the next prompt not the first", async () => {
@@ -449,7 +480,7 @@ describe("prompt-check: CLI and session lifecycle", () => {
         s.checked = 4;
       });
       await handlePromptCheckHook("SessionStart", { ...base, source }, t.env);
-      assert.deepEqual(loadState(t.dir), { v: 1, mode: "off", threshold: 0.9, lang: "en", seen: 0, checked: 0, tips: 0 });
+      assert.deepEqual(loadState(t.dir), { v: 1, mode: "off", threshold: 0.9, lang: "auto", seen: 0, checked: 0, tips: 0 });
     }
     withState(t.dir, (s) => {
       s.mode = "on";
@@ -502,5 +533,35 @@ describe("prompt-check: adapter and the existing jev-flow output", () => {
     const env = sandboxEnv({ JEV_FLOW: "off" });
     const out = hook("UserPromptSubmit", { session_id: "flow-cmd", cwd: repo, hook_event_name: "UserPromptSubmit", prompt: "/jev:prompt-check status" }, env);
     assert.match(JSON.parse(out.stdout).hookSpecificOutput.additionalContext, /Session capability: pass --session-cap [0-9a-f]{16}\.[0-9a-f]{32}/);
+  });
+});
+
+describe("prompt-check language detection", () => {
+  it("Romanian with and without diacritics, also mixed with English technical words", () => {
+    for (const text of ["rulează testele pentru jev", "ruleaza testele pentru jev", "fa un commit si push", "nu stiu cum sa fac asta", "Șterge fișierul", "ŞTERGE FIŞIERUL", "ț"]) {
+      assert.equal(detectLanguage(text), "ro", text);
+    }
+    assert.equal(detectLanguage("e\u0103".normalize("NFD")), "ro");
+  });
+
+  it("English", () => {
+    for (const text of ["run the tests please", "What does this do?", "Why only 0.61?", "Please fix the bug in the parser", "I want to delete the file"]) {
+      assert.equal(detectLanguage(text), "en", text);
+    }
+  });
+
+  it("no clear signal gives null", () => {
+    for (const text of ["", "ok", "git status", "12345", "{ }", "Ana are mere", null, undefined, 42]) {
+      assert.equal(detectLanguage(text), null, String(text));
+    }
+  });
+
+  it("chooseLanguage: forced setting, then the prompt, then the reply, then English", () => {
+    assert.equal(chooseLanguage("ro", "run the tests please", "x"), "ro");
+    assert.equal(chooseLanguage("en", "rulează testele", "x"), "en");
+    assert.equal(chooseLanguage("auto", "rulează testele", "I listed the files"), "ro");
+    assert.equal(chooseLanguage("auto", "git status", "Am rulat testele si au trecut"), "ro");
+    assert.equal(chooseLanguage("auto", "git status", "git status"), "en");
+    assert.equal(chooseLanguage(undefined, "rulează testele", ""), "ro");
   });
 });

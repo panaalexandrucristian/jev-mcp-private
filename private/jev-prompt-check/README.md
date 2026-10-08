@@ -4,10 +4,10 @@ An opt-in feature of the Claude Code plugin (`/jev:prompt-check`). When you swit
 
 ## Commands
 
-`/jev:prompt-check on [threshold]` | `off` | `status` | `threshold <x>` | `lang ro|en`
+`/jev:prompt-check on [threshold]` | `off` | `status` | `threshold <x>` | `lang auto|ro|en`
 
 - Default threshold 0.90; valid range above 0.5 and below 1. An invalid value keeps the old one and prints one notice.
-- Default language of the tips: `en` (also `ro`).
+- Language of the tips: `auto` (default) picks Romanian or English for each prompt, so both work in one session; `ro` or `en` forces one language. `auto` looks at the words and diacritics of your prompt (Romanian written without diacritics works too), then at the previous reply, then falls back to English. It is a local word-list check: no extra Jev call, no extra time. Prompts with no clear signal (for example `git status`) follow the previous reply.
 - `status` prints on/off, the threshold, the language, how many prompts were checked and how many tips were shown in this session.
 
 ## Behaviour
@@ -25,4 +25,4 @@ For each checked prompt the last 1500 characters of the previous assistant reply
 
 ## Files
 
-`cli.mjs` (the command), `hook.mjs` (UserPromptSubmit and session reset), `check.mjs` (the two checks), `transcript.mjs` (last assistant text), `state.mjs`, `messages.mjs`; tests in `test/`.
+`cli.mjs` (the command), `hook.mjs` (UserPromptSubmit and session reset), `check.mjs` (the two checks), `transcript.mjs` (last assistant text), `state.mjs`, `messages.mjs`, `language.mjs` (language detection); tests in `test/`.

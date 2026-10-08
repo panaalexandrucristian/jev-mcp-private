@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// /jev:prompt-check helper: on [threshold] | off | status | threshold <x> | lang ro|en
+// /jev:prompt-check helper: on [threshold] | off | status | threshold <x> | lang auto|ro|en
 // Usage: node cli.mjs <command> [args] [--session-id <id>] [--session-cap <cap>] [--root <repo>]
 // The session is the one in CLAUDE_CODE_SESSION_ID (or --session-id), or the one proven by the
 // capability the hook injected; it is never guessed.
 import { fileURLToPath } from "node:url";
 import { hasSessionId, sessionKey, verifySessionCap } from "../jev-control/state.mjs";
 import { gitTopLevel } from "../jev-flow/state.mjs";
-import { LANGS } from "./messages.mjs";
+import { LANG_SETTINGS } from "./language.mjs";
 import { DEFAULT_THRESHOLD, loadState, promptCheckDir, validThreshold, withState } from "./state.mjs";
 
 /** The number in a threshold argument, or null when it is not a plain decimal strictly between 0.5 and 1. */
@@ -51,7 +51,7 @@ export function runCli(argv, env = process.env, cwd = process.cwd()) {
   const { flags, positional } = parseArgs(argv);
   const [command, arg] = positional;
   if (!["on", "off", "status", "threshold", "lang"].includes(command)) {
-    return { code: 2, lines: ["usage: on [threshold] | off | status | threshold <x> | lang ro|en"] };
+    return { code: 2, lines: ["usage: on [threshold] | off | status | threshold <x> | lang auto|ro|en"] };
   }
   const repoRoot = flags.root ?? gitTopLevel(cwd);
   if (!repoRoot) return { code: 1, lines: ["prompt-check: not inside a git work tree; nothing was changed"] };
@@ -73,8 +73,8 @@ export function runCli(argv, env = process.env, cwd = process.cwd()) {
       s.seen = Math.max(s.seen, 1);
     } else if (command === "off") s.mode = "off";
     else if (command === "lang") {
-      if (LANGS.includes(arg)) s.lang = arg;
-      else notices.push(`prompt-check: unknown language ${JSON.stringify(String(arg ?? ""))} (use ro or en); kept ${s.lang}`);
+      if (LANG_SETTINGS.includes(arg)) s.lang = arg;
+      else notices.push(`prompt-check: unknown language ${JSON.stringify(String(arg ?? ""))} (use auto, ro or en); kept ${s.lang}`);
     }
     return { ...s };
   });

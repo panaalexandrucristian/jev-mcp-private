@@ -1,6 +1,6 @@
 ---
 description: Switch the prompt check on or off for this session (on/off/status/threshold/lang). When on, Jev checks each later prompt and shows the user one short tip line only if it is at least `threshold` sure of a problem.
-argument-hint: on [threshold] | off | status | threshold <x> | lang ro|en
+argument-hint: on [threshold] | off | status | threshold <x> | lang auto|ro|en
 ---
 
 Run the prompt-check command for this request: `$ARGUMENTS`
@@ -11,7 +11,7 @@ Run exactly one of these (plugin root in Claude Code: `${CLAUDE_PLUGIN_ROOT}`) a
 - `off`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-prompt-check/cli.mjs" off`
 - `status`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-prompt-check/cli.mjs" status`
 - `threshold <x>`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-prompt-check/cli.mjs" threshold <x>` (an invalid value keeps the old one and prints one notice).
-- `lang ro|en`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-prompt-check/cli.mjs" lang <ro|en>` (the language of the tips; default en).
+- `lang auto|ro|en`: `node "${CLAUDE_PLUGIN_ROOT}/private/jev-prompt-check/cli.mjs" lang <auto|ro|en>` (the language of the tips; default `auto`: Romanian or English per prompt, detected locally; `ro` or `en` forces one language).
 
 With no or unknown arguments run `status` and explain the five commands in one short paragraph. Never run `on` unless the user asked for it: the check is off by default and never turns itself on.
 

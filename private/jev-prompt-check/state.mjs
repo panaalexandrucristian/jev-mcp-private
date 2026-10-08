@@ -5,6 +5,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, w
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { controlSessionDir } from "../jev-control/state.mjs";
+import { LANG_SETTINGS } from "./language.mjs";
 
 export const STATE_FILE = "prompt-check.json";
 const LOCK_FILE = "prompt-check.lock";
@@ -12,7 +13,7 @@ const LOCK_WAIT_MS = 500;
 export const DEFAULT_THRESHOLD = 0.9;
 
 export function defaultState() {
-  return { v: 1, mode: "off", threshold: DEFAULT_THRESHOLD, lang: "en", seen: 0, checked: 0, tips: 0 };
+  return { v: 1, mode: "off", threshold: DEFAULT_THRESHOLD, lang: "auto", seen: 0, checked: 0, tips: 0 };
 }
 
 export function promptCheckDir(repoRoot, sessionId, env = process.env) {
@@ -31,7 +32,7 @@ export function loadState(dir) {
         v: 1,
         mode: raw.mode === "on" ? "on" : "off",
         threshold: validThreshold(raw.threshold) ? raw.threshold : base.threshold,
-        lang: raw.lang === "ro" ? "ro" : "en",
+        lang: LANG_SETTINGS.includes(raw.lang) ? raw.lang : base.lang,
         seen: count(raw.seen),
         checked: count(raw.checked),
         tips: count(raw.tips),

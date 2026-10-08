@@ -3,6 +3,7 @@
 import { gitTopLevel } from "../jev-flow/state.mjs";
 import { ensureSessionCap, hasSessionId, sessionKey } from "../jev-control/state.mjs";
 import { MIN_PROMPT_CHARS, runChecks } from "./check.mjs";
+import { chooseLanguage } from "./language.mjs";
 import { loadState, promptCheckDir, resetState, STATE_FILE, withState } from "./state.mjs";
 import { lastAssistantText } from "./transcript.mjs";
 
@@ -52,7 +53,7 @@ export async function handlePromptCheckHook(event, input, env = process.env, dep
   // 3. Shorter than 8 characters as received, or a slash command (leading whitespace allowed).
   if (prompt.length < MIN_PROMPT_CHARS || prompt.trimStart().startsWith("/")) return none;
   // 4-6. The two checks.
-  const result = await (deps.runChecks ?? runChecks)({ assistant, prompt, threshold: state.threshold, lang: state.lang, env, open: deps.open, startedAt });
+  const result = await (deps.runChecks ?? runChecks)({ assistant, prompt, threshold: state.threshold, lang: chooseLanguage(state.lang, prompt, assistant), env, open: deps.open, startedAt });
   if (result.reason) process.stderr.write(`[prompt-check] skipped: ${result.reason}\n`);
   if (result.dispatched || result.tips.length) {
     try {
