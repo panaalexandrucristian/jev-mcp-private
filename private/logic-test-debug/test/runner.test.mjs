@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { LOGIC_DIRECTIVE } from "../check.mjs";
+import { readLedger } from "../eval/lib/ledger.mjs";
+import { startBudgeted } from "../eval/lib/budget.mjs";
+import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, ensurePluginCopy, promptFor, runSession } from "../eval/lib/run.mjs";
+
+const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../eval/budget.json", import.meta.url)), "utf8"));
+const tmp = (name) => mkdtempSync(join(tmpdir(), `ltd-${name}-`));
+
+// A stand-in for the claude binary: prints a canned stream-json run and records how it was called. It starts no model.
+function fakeClaude(dir) {
+  const path = join(dir, "claude-fake.mjs");
+  writeFileSync(path, `#!/usr/bin/env node
+import { appendFileSync, readFileSync } from "node:fs";
+// The runner passes a minimal environment, so this stand-in reads its settings from a file next to it.
+const config = JSON.parse(readFileSync(new URL("./fake.json", import.meta.url), "utf8"));
+appendFileSync(config.record, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }) + "\\n");
+const emit = (o) => console.log(JSON.stringify(o));
+const mode = config.mode;
+emit({ type: "system", subtype: "init", model: "claude-haiku-fake", tools: ["Read", "Skill"], plugins: [], skills: [], mcp_servers: [], slash_commands: [] });
+if (mode === "normal") {
+  emit({ type: "system", subtype: "hook_response", output: ${JSON.stringify(LOGIC_DIRECTIVE)} });
+  emit({ type: "assistant", message: { id: "m1", content: [{ type: "thinking", thinking: "..." }] } });
+  emit({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "t1", name: "Skill", input: { skill: "jev:logic-test-debug" } }] } });
+  emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
+  emit({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "Scope: canProceed(true, false).\\nMethod: reading rule N4.\\nResult: dry-run by hand, nothing executed." }] } });
+  emit({ type: "result", subtype: "success", result: "The condition evaluates to true.", total_cost_usd: 0.04 });
+} else if (mode === "turns") {
+  for (let i = 0; i < 200; i += 1) emit({ type: "assistant", message: { id: "m" + i, content: [{ type: "text", text: "x" }] } });
+  setInterval(() => {}, 1000);
+} else {
+  setInterval(() => {}, 1000);
+}
+`);
+  chmodSync(path, 0o755);
+  return path;
+}
+const setMode = (root, mode, record = join(root, "record.jsonl")) => writeFileSync(join(root, "fake.json"), JSON.stringify({ mode, record }));
+const setup = () => {
+  const root = tmp("run");
+  const bin = fakeClaude(root);
+  const record = join(root, "record.jsonl");
+  setMode(root, "normal", record);
+  const budget = { ...REAL, ledger: join(root, "ledger", "ledger.tsv") };
+  const pluginDir = join(root, "plugin");
+  mkdirSync(pluginDir);
+  return { root, bin, record, budget, pluginDir };
+};
+const calls = (record) => (existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+describe("the claude command line and environment", () => {
+  const args = buildArgs({ prompt: "P", pluginDir: "/plugin", sessionId: "11111111-1111-1111-1111-111111111111" });
+  const at = (flag) => args[args.indexOf(flag) + 1];
+  it("uses only flags that exist in claude 2.1.296, and no turn flag", () => {
+    for (const flag of ["-p", "--model", "--output-format", "--verbose", "--include-hook-events", "--session-id", "--plugin-dir", "--setting-sources", "--settings", "--strict-mcp-config", "--permission-mode", "--allowedTools", "--max-budget-usd"]) assert.ok(args.includes(flag), flag);
+    assert.ok(!args.includes("--max-turns"), "the CLI has no such flag; the runner counts turns itself");
+    assert.ok(!args.includes("--no-session-persistence"));
+  });
+  it("runs haiku, streaming JSON, with the copied plugin, user settings left out and a hard cost cap", () => {
+    assert.equal(at("--model"), "haiku");
+    assert.equal(at("--output-format"), "stream-json");
+    assert.equal(at("--plugin-dir"), "/plugin");
+    assert.equal(at("--setting-sources"), "project,local");
+    assert.deepEqual(JSON.parse(at("--settings")), { enabledPlugins: { "jev@jev-private": false } });
+    assert.equal(at("--max-budget-usd"), String(LIMITS.maxBudgetUsd));
+    assert.equal(at("--allowedTools"), ALLOWED_TOOLS);
+    assert.equal(args[1], "P");
+  });
+  it("starts from a minimal environment and sets the switch only for the OFF arm", () => {
+    const parent = { PATH: "/bin", HOME: "/h", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "x", JEV_FLOW: "on", JEV_LOGIC_TEST_DEBUG: "on", SECRET_TOKEN: "s" };
+    const on = buildEnv({ arm: "ON", parentEnv: parent, cacheDir: "/c" });
+    const off = buildEnv({ arm: "OFF", parentEnv: parent, cacheDir: "/c" });
+    for (const env of [on, off]) {
+      assert.equal(env.PATH, "/bin");
+      assert.equal(env.HOME, "/h");
+      assert.ok(!("CLAUDECODE" in env) && !("CLAUDE_CODE_ENTRYPOINT" in env) && !("JEV_FLOW" in env) && !("SECRET_TOKEN" in env));
+      assert.equal(env.JEV_FLOW_CACHE_DIR, "/c/flow");
+    }
+    assert.ok(!("JEV_LOGIC_TEST_DEBUG" in on));
+    assert.equal(off.JEV_LOGIC_TEST_DEBUG, "off");
+  });
+  it("picks the prompt of a scenario and the right non-code prompt by run number", () => {
+    assert.match(promptFor("activation", 1), /^Explain the Boolean condition/);
+    assert.match(promptFor("nocode", 3), /^Fix my CV/);
+    assert.equal(promptFor("nocode", 9), undefined);
+  });
+});
+
+describe("runSession with a stand-in binary (no model is started)", () => {
+  it("runs, scores and evaluates a complete session and closes the ledger line with its cost", async () => {
+    const { root, bin, record, budget, pluginDir } = setup();
+    const verdict = await runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root });
+    assert.equal(verdict.status, "complete");
+    assert.equal(verdict.model.resolved, "claude-haiku-fake");
+    assert.equal(verdict.turns, 2, "three assistant events, two model responses (they share a message id)");
+    assert.equal(verdict.score.loaded, "loaded");
+    assert.equal(verdict.score.directiveDelivered, true);
+    assert.equal(verdict.score.record.present, true);
+    assert.equal(verdict.evaluation.success, true, JSON.stringify(verdict.evaluation.oracle));
+    assert.equal(verdict.usd, 0.04);
+    const [call] = calls(record);
+    assert.equal(call.argv[0], "-p");
+    assert.ok(call.cwd.includes("ltd-activation-") && !call.cwd.includes("eval"), "a fresh workspace outside the repository");
+    assert.ok(!Object.keys(call.env).some((k) => /^(CLAUDE|JEV_LOGIC)/.test(k)), "ON arm: no switch, no inherited variable");
+    const rows = readLedger(budget.ledger);
+    assert.deepEqual(rows.map((r) => r.status), ["started", "complete"]);
+    assert.equal(rows[1].usd, 0.04);
+    for (const file of ["transcript.jsonl", "stderr.txt", "command.json", "final.txt", "verdict.json"]) assert.ok(existsSync(join(verdict.dir, file)), file);
+  });
+  it("passes the switch to the OFF arm only", async () => {
+    const { root, bin, record, budget, pluginDir } = setup();
+    await runSession({ budget, scenario: "activation", arm: "OFF", run: 1, claudeBin: bin, pluginDir, root });
+    assert.equal(calls(record)[0].env.JEV_LOGIC_TEST_DEBUG, "off");
+  });
+  it("stops a session that goes over the turn limit and records it as incomplete", async () => {
+    const { root, bin, budget, pluginDir } = setup();
+    setMode(root, "turns");
+    const verdict = await runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root, limits: { ...LIMITS, maxTurns: 5 } });
+    assert.equal(verdict.status, "limit-turns");
+    assert.equal(verdict.limit, "turns");
+    assert.equal(verdict.score.limitExit, true);
+    assert.equal(verdict.score.loaded, "unknown");
+    assert.equal(verdict.evaluation.success, false);
+  });
+  it("stops a session that goes over the time limit", async () => {
+    const { root, bin, budget, pluginDir } = setup();
+    setMode(root, "hang");
+    const verdict = await runSession({ budget, scenario: "bug", arm: "ON", run: 1, claudeBin: bin, pluginDir, root, limits: { ...LIMITS, timeoutMs: 700 } });
+    assert.equal(verdict.status, "limit-time");
+    assert.equal(verdict.evaluation.success, false);
+  });
+  it("refuses to start when the budget says no, and then never calls the binary", async () => {
+    const { root, bin, record, budget, pluginDir } = setup();
+    for (let n = 1; n <= 4; n += 1) startBudgeted(budget, { kind: "planned", scenario: "activation", arm: "ON", run: String(n), model: "haiku" });
+    await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 5, claudeBin: bin, pluginDir, root }), /^Error: refused: /);
+    assert.deepEqual(calls(record), []);
+  });
+  it("runs a non-code prompt in an empty working directory and has no oracle", async () => {
+    const { root, bin, record, budget, pluginDir } = setup();
+    const verdict = await runSession({ budget, scenario: "nocode", arm: "ON", run: 3, claudeBin: bin, pluginDir, root });
+    assert.equal(verdict.evaluation, null);
+    assert.equal(calls(record)[0].argv[1], "Fix my CV.");
+  });
+});
+
+describe("the plugin copy under test", () => {
+  it("is a git archive of HEAD without the MCP server, reused while HEAD is unchanged", () => {
+    const repo = tmp("repo");
+    const git = (...a) => spawnSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...a], { encoding: "utf8" });
+    git("init", "-q");
+    mkdirSync(join(repo, ".claude-plugin"));
+    writeFileSync(join(repo, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "jev", version: "9.9.9", mcpServers: { jev: { command: "npx" } } }));
+    writeFileSync(join(repo, "extra.txt"), "x");
+    git("add", ".");
+    git("commit", "-q", "-m", "x");
+    const dest = join(tmp("copy"), "plugin");
+    const first = ensurePluginCopy({ repo, dest });
+    const plugin = JSON.parse(readFileSync(join(dest, ".claude-plugin", "plugin.json"), "utf8"));
+    assert.equal(plugin.version, "9.9.9");
+    assert.ok(!("mcpServers" in plugin));
+    assert.ok(existsSync(join(dest, "extra.txt")));
+    writeFileSync(join(dest, "marker-of-reuse"), "1");
+    assert.equal(ensurePluginCopy({ repo, dest }).commit, first.commit);
+    assert.ok(existsSync(join(dest, "marker-of-reuse")), "same commit: reused, not rebuilt");
+  });
+});
