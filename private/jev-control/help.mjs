@@ -36,6 +36,7 @@ const DONE = [
   'done --claims jev-claims.json [--check \'["cmd","arg"]\']...: the completion gate (also /jev:jev-done). Headless runs refused a /tmp file and a heredoc; an inline JSON is avoided for the same risk.',
   '- Write a NEW file jev-claims.json in the repository root (never overwrite another file): {"request":"<the user\'s request, verbatim>","claims":[{"text":"<one concrete claim>","evidence":["file:<path>","cmd-1"]}],"checks":[["node","--test"]]}',
   '- evidence: file:<path> (the changed hunks of that file; every changed or new file must be cited), an excerpt id, or cmd-N (the Nth check, run by the gate itself; cite it for any claim about tests).',
+  '- claims: state what the changed lines establish ("pageCount uses Math.ceil, so exact multiples give no extra page"); do not restate an example outcome ("10 items give 2 pages"): the gate cannot check a computed result from the diff and scores it lower.',
   '- Edit nothing more, then run done --claims jev-claims.json ALONE (a pipe, ; or && voids the grant). The helper reads the file, removes it before the snapshot and prints claims_removed: do not remove it yourself.',
   '- outcome accepted = done, for that tree only. Otherwise fix, rewrite the WHOLE file and run once more, or start the final message with "Incomplete:" and the outcome. Never rerun for a better verdict.',
 ].join("\n");

@@ -92,6 +92,14 @@ export function splitClaims(object, { validate = true } = {}) {
     refuse("the claims input must be a JSON object {request, claims, excerpts?, checks?}");
   }
   const { checks, ...claims } = object;
+  // A claim written with the key `claim` instead of `text` (6 of 16 real gate sessions did, and lost a call to not_ready) is read as `text`; `text` wins when both exist.
+  if (Array.isArray(claims.claims)) {
+    claims.claims = claims.claims.map((c) => {
+      if (!c || typeof c !== "object" || Array.isArray(c) || Object.hasOwn(c, "text") || typeof c.claim !== "string") return c;
+      const { claim, ...rest } = c;
+      return { text: claim, ...rest };
+    });
+  }
   const fileChecks = [];
   if (checks !== undefined) {
     if (!Array.isArray(checks)) refuse("checks must be an array of argv arrays, for example [[\"node\",\"--test\"]]");

@@ -810,6 +810,14 @@ describe("help without SKILL.md (R04)", () => {
     assert.match(on.json.next, /\/jev:jev-done or cli\.mjs done --claims jev-claims\.json/);
     assert.ok(Buffer.byteLength(on.stdout.trim()) <= 1500);
   });
+  it("a claim written with the key `claim` is read as `text`, and `text` wins when both are present", () => {
+    const base = { request: "fix it", claims: [{ claim: "pageCount uses Math.ceil", evidence: ["file:a.js"] }, { text: "node --test passes", evidence: ["cmd-1"] }] };
+    const { claims } = splitClaims(base);
+    assert.deepEqual(claims.claims, [{ text: "pageCount uses Math.ceil", evidence: ["file:a.js"] }, { text: "node --test passes", evidence: ["cmd-1"] }]);
+    const both = splitClaims({ request: "x", claims: [{ text: "kept", claim: "ignored", evidence: ["cmd-1"] }] });
+    assert.equal(both.claims.claims[0].text, "kept");
+    assert.equal(splitClaims({ request: "x", claims: [{ claim: 7, evidence: ["cmd-1"] }] }).claims.claims[0].text, undefined, "a non-string claim is not rescued (the runner reports the missing text)");
+  });
   it("`help search`, `search --help`, the other commands and an unknown topic", () => {
     const search = cli(["help", "search"], { env: controlEnv(), cwd: outside() });
     assert.equal(search.code, 0);
