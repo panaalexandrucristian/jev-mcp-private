@@ -7,7 +7,7 @@ usage: python3 -B test_provenance.py [-v]"""
 import contextlib, hashlib, io, json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
-import discover as D, omissions, prepare, report, versions
+import discover as D, omissions, prepare, report, skilldocs, versions
 from test_stream_reconstruction import Tx
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
@@ -107,7 +107,7 @@ class Report(Base):
 
 class SkillText(unittest.TestCase):
     def test_skill_md_documents_targets_fail_fast_names_window_and_the_report(self):
-        t = open(os.path.join(os.path.dirname(HERE), "SKILL.md"), encoding="utf-8").read()
+        t = skilldocs.text()      # the active documentation: the rules live in SKILL.md, the preparation reference and the OpenCode reference (unpositioned, evidence only), the reporting ones in the report reference
         for needle in ("--target", "external_unlinked", "versions.provenance", "no recorded supported", "stays UNRESOLVED", "source_file", "<hash8 of the real path>", "Source window", "unpositioned", "evidence only"): self.assertIn(needle, t, needle)
 
 if __name__ == "__main__": unittest.main()

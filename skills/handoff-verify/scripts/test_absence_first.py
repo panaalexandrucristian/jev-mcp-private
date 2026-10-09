@@ -6,10 +6,9 @@ usage: python3 -B test_absence_first.py [-v]"""
 import json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
-import jevref, omissions
+import jevref, omissions, skilldocs
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-SKILL_MD = os.path.join(os.path.dirname(HERE), "SKILL.md")
 
 def out(**kw):
     """A recorded ABSENCE result, bound, error-free, with a demonstrated version and complete material, unless a key says otherwise."""
@@ -162,10 +161,10 @@ class PreparedInstructions(unittest.TestCase):
 
 class SkillText(unittest.TestCase):
     def test_skill_md_describes_the_absence_first_order(self):
-        t = open(SKILL_MD, encoding="utf-8").read()
+        t = skilldocs.doc("reference/candidates.md"); every = skilldocs.text()      # the order is documented in the candidates reference; a stale instruction may survive in no active file
         self.assertIn("ABSENCE-first", t)
         for must in ("plan_absence", "plan_source", "never combine", "no SOURCE call"): self.assertIn(must, t)
-        self.assertNotIn("Make the two `jev_verify` calls it describes", t)
-        self.assertNotIn("Then call `jev_verify` twice", t)
+        self.assertNotIn("Make the two `jev_verify` calls it describes", every)
+        self.assertNotIn("Then call `jev_verify` twice", every)
 
 if __name__ == "__main__": unittest.main()

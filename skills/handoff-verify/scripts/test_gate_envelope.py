@@ -8,7 +8,7 @@ import copy, json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import audit_fixtures as AF
-import advice, jevref, report
+import advice, jevref, report, skilldocs
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 OMIT = object()
@@ -223,7 +223,7 @@ class Summary(unittest.TestCase):
 
 class SkillText(unittest.TestCase):
     def test_skill_md_documents_the_nested_adapter_and_its_limits(self):
-        t = open(os.path.join(os.path.dirname(HERE), "SKILL.md"), encoding="utf-8").read()
+        t = skilldocs.doc("reference/jev-and-audit.md")
         for must in ("verification.results", "gate_summary", "unknown response shape", "both", "does not by itself"): self.assertIn(must, t)
 
 if __name__ == "__main__": unittest.main()

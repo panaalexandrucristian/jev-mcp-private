@@ -6,7 +6,7 @@ usage: python3 -B test_confidence_quotes.py [-v]"""
 import json, math, os, sys, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
-import jevref, omissions, report
+import jevref, omissions, report, skilldocs
 
 BAD = [float("inf"), float("-inf"), float("nan"), -0.1, -1, 1.0000001, 1.5, 2, 100, True, False, "0.99", "1", None, [0.99], {}, 0.95, 0, 0.5, 0.0]
 DEFAULT = object()
@@ -190,7 +190,7 @@ class Quotes(unittest.TestCase):
 
 class SkillText(unittest.TestCase):
     def test_skill_md_states_the_exact_quotation_and_probability_rules(self):
-        t = open(os.path.join(os.path.dirname(HERE), "SKILL.md"), encoding="utf-8").read(); i = t.index("## Output"); out = t[i:t.index("\n## ", i + 5)]
+        t = skilldocs.doc("reference/report.md"); i = t.index("## Output"); out = t[i:t.index("\n## ", i + 5)]
         for must in ("exact", "case, whitespace and newlines", "finite number in [0, 1]", "one raw entry"): self.assertIn(must, out)
 
 if __name__ == "__main__": unittest.main()

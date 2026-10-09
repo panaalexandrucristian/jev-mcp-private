@@ -38,6 +38,36 @@ class Mentions(unittest.TestCase):
         for cmd in ("python3 toolkit.py --run", "pytest tests/test_telescope.py -q", "cat /work/proj/src/versions.py", "echo handoff-verify is a nice name", "git status", "python3 -m http.server", "grep report src/ -r"):
             with self.subTest(cmd): self.assertEqual(cls(cmd), "no", cmd)
 
+REFS = ("prepare.md", "opencode-sessions.md", "jev-and-audit.md", "candidates.md", "report.md")      # the five reference files of the split skill (SKILL.md names them in its loading rules)
+REF = SKILL + "/reference"
+
+class References(unittest.TestCase):
+    """The five reference files are read as SKILL.md is: by path components, against the recorded directory. Naming one is not reading it, and no other file under a `reference` directory is the skill's."""
+    def test_reading_a_reference_file_is_verification_activity(self):
+        for n in REFS:
+            for cmd in ("cat %s/%s" % (REF, n), "head -50 %s/%s" % (REF, n), "grep -n audit %s/%s" % (REF, n), "sed -n '1,20p' %s/%s" % (REF, n), "bash -c 'cat %s/%s'" % (REF, n), "cd %s && cat reference/%s" % (SKILL, n), "echo go && wc -c %s/%s" % (REF, n)):
+                with self.subTest(cmd): self.assertEqual(cls(cmd), "yes", cmd)
+            with self.subTest("relative to the recorded directory: " + n): self.assertEqual(cls("cat reference/%s" % n, SKILL), "yes")
+
+    def test_a_mention_of_a_reference_file_is_not_activity(self):
+        for n in REFS:
+            for cmd in ("echo %s/%s" % (REF, n), "printf '%%s\\n' %s/%s" % (REF, n), "ls %s/%s" % (REF, n), "git diff -- %s/%s" % (REF, n), "cp %s/%s /tmp/copy.md" % (REF, n), "echo hi > %s/%s" % (REF, n), "grep -e %s/%s /virtual/file.txt" % (REF, n)):
+                with self.subTest(cmd): self.assertEqual(cls(cmd), "no", cmd)
+
+    def test_a_relative_path_into_the_skill_is_unknown_without_a_recorded_directory_and_a_bare_name_is_no(self):
+        for n in REFS:
+            with self.subTest(n):
+                self.assertEqual(cls("cat skills/handoff-verify/reference/%s" % n, None), "unknown"); self.assertEqual(cls("cat ../handoff-verify/reference/%s" % n, None), "unknown")
+                self.assertEqual(cls("cat reference/%s" % n, None), "no")      # as for a bare SKILL.md: every project has a `reference/report.md` of its own, the name alone proves nothing
+
+    def test_homonyms_and_other_files_under_reference_are_not_the_skills(self):
+        for n in REFS:
+            for cmd in ("cat /other/reference/%s" % n, "cat /work/proj/reference/%s" % n, "cat /virtual/handoff-verify-copy/reference/%s" % n, "cat /virtual/other-skill/reference/%s" % n, "cat %s/reference/sub/%s" % (SKILL, n),
+                        "cat %s/%s" % (SCRIPTS, n), "cat %s/%s" % (SKILL, n), "cat %s/%s.bak" % (REF, n)):
+                with self.subTest(cmd): self.assertEqual(cls(cmd), "no", cmd)
+        for other in ("README.md", "evidence.md", "notes.md", "prepare.py", "Report.md"):
+            with self.subTest(other): self.assertEqual(cls("cat %s/%s" % (REF, other)), "no", other)      # only the five names count, never every file under reference/
+
 class Options(unittest.TestCase):
     def test_a_pattern_given_as_an_option_argument_is_not_a_file_that_is_read(self):
         P = SCRIPTS + "/report.py"

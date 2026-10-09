@@ -1,6 +1,6 @@
 # handoff-verify: historical measurements and observations (on demand, NOT normative)
 
-This file holds the measurement narratives that used to sit in `SKILL.md`. Nothing here is a rule: the rules are in `SKILL.md`, the behavior is in the scripts and pinned by their tests. Every number below is a small, dated sample of one machine or one Jev version, kept only so a reader can see where a rule came from. Production savings and wall time of the scheduling are UNMEASURED.
+This file holds the measurement narratives that used to sit in `SKILL.md`. Nothing here is a rule: the rules are in `SKILL.md` and in the five files under `reference/` (the sections named below as `SKILL.md used to say` now live there: the loading rules of `SKILL.md` say which file holds which), the behavior is in the scripts and pinned by their tests. Every number below is a small, dated sample of one machine or one Jev version, kept only so a reader can see where a rule came from. Production savings and wall time of the scheduling are UNMEASURED.
 
 ## Direct probes of the omission rules (R03 / R04)
 SKILL.md used to say (section Statuses):

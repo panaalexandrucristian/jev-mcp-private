@@ -191,7 +191,7 @@ def _by_id(field):
     return f
 
 VERDICT_DOMAIN = {"verify": ("verified", "contradicted", "unsupported"), "gate": ("verified", "contradicted", "unsupported")}
-# The successful verdicts of the tools whose contract is a closed verdict domain (SKILL.md "Jev tool contracts"), applied PER TOOL: a bound result whose verdict is outside its tool's contract is recorded faithfully (bound, with
+# The successful verdicts of the tools whose contract is a closed verdict domain (reference/jev-and-audit.md, "Jev tool contracts"), applied PER TOOL: a bound result whose verdict is outside its tool's contract is recorded faithfully (bound, with
 # `contract_reason`) but never resolved. jev_verify also returns `unknown` (an invalid_response shape) and a stray label such as `supported` is not a verdict at all: neither can resolve a check, hold a gate or PASS.
 # NO global three-verdict rule: jev_compare relations (same_fact, contradicts, different_facts) and jev_classify / jev_extract labels (the caller's own class or field ids: `out_of_scope`, `handoff`, ...) keep their own contracts.
 

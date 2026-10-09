@@ -81,7 +81,7 @@ QUOTED = ("# Raport de verificare\n\nCum arată o stare în ghid:\n\n\"Stare: **
 def only_quoted_main(final): return QUOTED.replace("## Rezumat\n\nStare: **PASS**", "## Rezumat\n\nStare: **%s**" % final, 1)
 
 class QuotationsExamplesAndCode(unittest.TestCase):
-    """Round 3, fix 4. THE RULE (SKILL.md, report.rewrite_status_lines): the main status line is the first line whose label is at the start of the line, preceded by nothing but up to three spaces, a heading marker, a list marker and markdown emphasis,
+    """Round 3, fix 4. THE RULE (reference/report.md "Output", report.rewrite_status_lines): the main status line is the first line whose label is at the start of the line, preceded by nothing but up to three spaces, a heading marker, a list marker and markdown emphasis,
     outside a fence, a blockquote, inline code, an indented code block, a table cell, an HTML comment, a quotation, and not under a per-version or an example heading. Quotations, examples and code are preserved byte for byte."""
     def test_every_quotation_example_and_code_context_before_the_summary_is_kept_and_only_the_summary_changes(self):
         for final in ("FAIL", "UNRESOLVED"):

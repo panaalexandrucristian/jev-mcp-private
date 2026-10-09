@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Documentation-driven synthetic end-to-end fixture (item 19; stdlib only, offline, no Jev call, never reads .handoff-verify/). The stories are READ from SKILL.md (Example 02 and Example 06: the transcript excerpt, the handoff excerpt and the detail), the
+"""Documentation-driven synthetic end-to-end fixture (item 19; stdlib only, offline, no Jev call, never reads .handoff-verify/). The stories are READ from the report reference of the documentation (SKILL.md until the split; Example 02 and Example 06: the transcript excerpt, the handoff excerpt and the detail), the
 transcript is a synthetic Claude Code log, and the procedure is the documented one: real preparation (prepare.py CLI, omissions.prepare_one, `audit.py register` / `audit.py template`), recorded Jev calls (invented responses), the bound report
 (report.write_report) and the delivery gate (versions.gate and the `versions.py status` CLI). Four outcomes:
  - a qualifying omission (a valid R04 ABSENCE-first pair): FAIL, with a complete audit and also without one (FAIL keeps its precedence);
@@ -11,17 +11,17 @@ usage: python3 -B test_doc_end_to_end.py [-v]"""
 import argparse, json, os, re, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
-import audit as A, discover, jevref, omissions, report, scope, versions
+import audit as A, discover, jevref, omissions, report, scope, skilldocs, versions
 import contract_fixtures as CF
 import audit_fixtures as AF
 import test_run_binding as RB
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-SKILL = open(os.path.join(HERE, "..", "SKILL.md"), encoding="utf-8").read()
+ROOT, REPORT, AUDIT, DOCS = skilldocs.doc("SKILL.md"), skilldocs.doc("reference/report.md"), skilldocs.doc("reference/jev-and-audit.md"), skilldocs.text()      # the active documentation: the one SKILL.md today (every name reads it), split later
 
 def example(n):
-    """-> (section text, [fenced blocks]) of `### Example 0N` of SKILL.md."""
-    i = SKILL.index("### Example %02d" % n); j = SKILL.find("\n### Example", i + 5); sec = SKILL[i:j if j > 0 else len(SKILL)]
+    """-> (section text, [fenced blocks]) of `### Example 0N` of the report reference."""
+    i = REPORT.index("### Example %02d" % n); j = REPORT.find("\n### Example", i + 5); sec = REPORT[i:j if j > 0 else len(REPORT)]
     return sec, re.findall(r"```\n(.*?)```", sec, re.S)
 
 def cli(script, args, cwd=None):
@@ -42,14 +42,14 @@ class Doc(unittest.TestCase):
         sec, blocks = example(6); self.assertIn("COMPLETE audit block", sec); self.assertIn("would not justify a PASS", sec); self.assertIn("audit complet", sec)
 
     def test_the_checklist_has_the_seven_steps_in_order_and_each_names_its_home(self):
-        i = SKILL.index("## Current-run checklist"); sec = SKILL[i:SKILL.index("\n## ", i + 5)]
+        i = ROOT.index("## Current-run checklist"); sec = ROOT[i:ROOT.index("\n## ", i + 5)]
         order = ["**Provenance**", "**Locations**", "**Coverage and events**", "**Scope**", "**Prepared calls**", "**Bound report**", "**Delivery gate**"]
         pos = [sec.index(o) for o in order]; self.assertEqual(pos, sorted(pos))
         for home in ("Explicit targets and provenance", "Work locations", "Mandatory audit", "Scope filter (R05)", "Omissions (R04)", "Binding checks to Jev calls", "Hard rules"): self.assertIn(home, sec, home)
         self.assertLess(len(sec), 4500)      # short: the rules themselves live in their own sections
 
     def test_the_audit_section_documents_what_audit_py_enforces(self):
-        i = SKILL.index("## Mandatory audit"); sec = SKILL[i:SKILL.index("\n## ", i + 5)]
+        i = AUDIT.index("## Mandatory audit"); sec = AUDIT[i:AUDIT.index("\n## ", i + 5)]
         for o in A.OUTCOMES: self.assertIn("`%s`" % o, sec)
         for must in ("prefix_chunks", "scope_exclusions", "audit.max_chars", "audit.py register", "audit.py template", "`valid`", "`invalidated`", "`unavailable`", "`present`", "`excluded`", "`omission`", "editable files", "a hash binds a snapshot only", "certifying: false", "`verified_version` answers a different question"):
             self.assertIn(must, sec, must)
@@ -57,8 +57,8 @@ class Doc(unittest.TestCase):
 
     def test_the_historical_narratives_are_not_in_the_skill_body_but_in_the_on_demand_file(self):
         for gone in ("Measured on this Jev version", "Measured on the 9 real notes", "Measured once on this Jev version", "Backtest on this machine", "results/T2.md", "results/rounds", "results/evidence", "direct probes", "after the two R01 live sessions", "validates nothing"):
-            self.assertNotIn(gone, SKILL, gone)
-        hist = open(os.path.join(HERE, "HISTORY.md"), encoding="utf-8").read(); self.assertIn("scripts/HISTORY.md", SKILL)
+            self.assertNotIn(gone, DOCS, gone)
+        hist = open(os.path.join(HERE, "HISTORY.md"), encoding="utf-8").read(); self.assertIn("scripts/HISTORY.md", ROOT)
         for kept in ("Measured on this Jev version", "Measured on the 9 real notes", "Measured once on this Jev version", "Backtest on this machine", "results/T2.md", "validates nothing", "examples/02-omission.md", "no `results/` directory"): self.assertIn(kept, hist, kept)
         self.assertEqual(os.path.basename(HERE), "scripts")      # a non-test file under scripts/ (the Python discovery pattern is test_*.py)
 
@@ -68,7 +68,7 @@ class Base(unittest.TestCase):
         self.n = 0
 
     def story(self, n):
-        """(user request text, handoff lines, detail, quote) of the Example n of SKILL.md."""
+        """(user request text, handoff lines, detail, quote) of the Example n of the report reference."""
         sec, blocks = example(n); transcript, handoff = blocks[0], blocks[1]
         user = re.search(r"\[u-\d+ [a-z_ ]+\] (.*)", transcript).group(1)
         note = "".join(l + "\n" for l in handoff.splitlines() if l.strip() and not l.startswith("("))

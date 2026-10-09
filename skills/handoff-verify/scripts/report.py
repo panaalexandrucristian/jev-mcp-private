@@ -97,7 +97,7 @@ FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*)$")
 VERSION_HEADING = re.compile(r"\b(versiun\w*|versi[oó]n\w*|version\w*|v\d+)\b", re.I)   # a heading of a per-version section ("Versiunea 2", "Version 2", "v3"): the statuses under it are those of that version, not the report's
 EXAMPLE_HEADING = re.compile(r"\b(exempl\w*|example\w*|ejempl\w*)\b", re.I)     # a heading of an example section ("Exemplu", "Exemple de stare", "Example", "Ejemplo"): a status under it is an illustration, not the report's
-# What may precede the label on the MAIN status line (the rule, documented in SKILL.md): at most three spaces of indentation, an optional heading marker (`## `), an optional list marker (`- `, `* `, `+ `) and markdown emphasis (`*`, `_`, `~`).
+# What may precede the label on the MAIN status line (the rule, documented in reference/report.md, "Output"): at most three spaces of indentation, an optional heading marker (`## `), an optional list marker (`- `, `* `, `+ `) and markdown emphasis (`*`, `_`, `~`).
 # Anything else before the label makes the line a quotation or a literal: a quotation mark (`"Stare: PASS"`, `'Stare: PASS'`, curly or guillemet quotes), a blockquote `>`, an opening backtick (inline code), a table cell `|`, an HTML comment `<!--`,
 # and four or more spaces / a tab of indentation (an indented code block).
 MAIN_LEAD = re.compile(r"^ {0,3}(?![ \t])(?:#{1,6}[ \t]+)?(?:[-*+][ \t]+)?[*_~ \t]*$")

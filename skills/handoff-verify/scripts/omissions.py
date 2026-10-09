@@ -20,6 +20,7 @@ EVALUATED = ("prefix", "session_end")
 WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 BLOCK_SEP = "\n\u0000\n"   # joins the eligible records; a quote can never span two records
 SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py", "checks.py", "ledger.py", "audit.py")   # the skill's own scripts (verification activity)
+SKILL_REFERENCES = ("prepare.md", "opencode-sessions.md", "jev-and-audit.md", "candidates.md", "report.md")   # the five reference files of the split skill, named by SKILL.md's loading rules (never every file under reference/)
 JEV_PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
 
 def sha256_text(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
@@ -181,22 +182,24 @@ def _resolve(p, base):
     return os.path.normpath(os.path.join(base, p)) if isinstance(base, str) and os.path.isabs(base) else None
 
 def _is_skill_file(path):
-    """`.../handoff-verify/scripts/<one of the skill's scripts>` or `.../handoff-verify/SKILL.md`, by path components (never a substring or a bare basename)."""
+    """`.../handoff-verify/scripts/<one of the skill's scripts>`, `.../handoff-verify/reference/<one of its five reference files>` or `.../handoff-verify/SKILL.md`, by path components (never a substring or a bare basename)."""
     parts = [x for x in path.split(os.sep) if x]
-    return (len(parts) >= 3 and parts[-3:-1] == ["handoff-verify", "scripts"] and parts[-1] in SKILL_SCRIPTS) or (len(parts) >= 2 and parts[-2] == "handoff-verify" and parts[-1] == "SKILL.md")
+    return (len(parts) >= 3 and parts[-3:-1] == ["handoff-verify", "scripts"] and parts[-1] in SKILL_SCRIPTS) or (len(parts) >= 3 and parts[-3:-1] == ["handoff-verify", "reference"] and parts[-1] in SKILL_REFERENCES) \
+        or (len(parts) >= 2 and parts[-2] == "handoff-verify" and parts[-1] == "SKILL.md")
 
 def _is_scripts_dir(path):
     parts = [x for x in (path or "").split(os.sep) if x]
     return parts[-2:] == ["handoff-verify", "scripts"]
 
 def _named(p):
-    """Does the path text name a script of the skill (its basename) or its SKILL.md (directly inside a `handoff-verify` component)? Only the name: where it is, is `_path_class`'s question."""
+    """Does the path text name a script of the skill (its basename), its SKILL.md (directly inside a `handoff-verify` component) or one of its five reference files (inside `handoff-verify/reference`: a bare `report.md` proves nothing, as a bare SKILL.md)?
+    Only the name: where it is, is `_path_class`'s question."""
     if not isinstance(p, str) or not p: return False
     parts = [x for x in p.split(os.sep) if x]
-    return bool(parts) and (parts[-1] in SKILL_SCRIPTS or (parts[-1] == "SKILL.md" and len(parts) >= 2 and parts[-2] == "handoff-verify"))
+    return bool(parts) and (parts[-1] in SKILL_SCRIPTS or (parts[-1] == "SKILL.md" and len(parts) >= 2 and parts[-2] == "handoff-verify") or (len(parts) >= 3 and parts[-3:-1] == ["handoff-verify", "reference"] and parts[-1] in SKILL_REFERENCES))
 
 def _path_class(p, base):
-    """yes / no / unknown for ONE path argument: yes = it resolves to a script of the skill or its SKILL.md; unknown = a path that names a script of the skill but cannot be resolved (relative without a recorded
+    """yes / no / unknown for ONE path argument: yes = it resolves to a script of the skill, one of its five reference files or its SKILL.md; unknown = a path that names a script of the skill but cannot be resolved (relative without a recorded
     absolute base, `$VAR`, `~`): no resolution is ever invented from the components of the text (`..` or a leading `skills/handoff-verify/scripts/` do not make a path absolute); `no` for anything else."""
     r = _resolve(p, base)
     if r is not None: return "yes" if _is_skill_file(r) else "no"
@@ -790,7 +793,7 @@ def _bash_class(cmd, cwd):
 
 def skill_activity(b, cwd=None):
     """Is the tool_use block `b` verification activity of THIS skill? -> "yes" | "no" | "unknown" (never a guess). yes: the Skill tool with the skill exactly `handoff-verify` or `<plugin>:handoff-verify`; a path field that resolves
-    (against the record's cwd) to a script of the skill or its SKILL.md by path components; a shell command that runs or reads them (see `_bash_class`). A Jev call is not skill activity (it is excluded on its own, see
+    (against the record's cwd) to a script of the skill, one of its five reference files or its SKILL.md by path components; a shell command that runs or reads them (see `_bash_class`). A Jev call is not skill activity (it is excluded on its own, see
     `is_jev`); a mere mention (Write content, a pattern, `toolkit.py`, `echo <path>`) is `no`; a skill-script name that cannot be resolved (relative path or bare module without a recorded cwd, an untokenisable command) is `unknown`."""
     name = str((b or {}).get("name") or ""); inp = b.get("input") if isinstance(b.get("input"), dict) else {}
     if is_jev(b): return "no"

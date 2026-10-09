@@ -12,6 +12,7 @@ import discover, omissions, scope, versions
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 SKILL = "/home/u/.claude/plugins/cache/jev/skills/handoff-verify"
 SCRIPTS = SKILL + "/scripts"
+REFS = ("prepare.md", "opencode-sessions.md", "jev-and-audit.md", "candidates.md", "report.md")      # the five reference files of the split skill
 CONSTRAINT = "Never run migrate.sh against prod."
 
 def bash(cmd): return dict(type="tool_use", id="x", name="Bash", input=dict(command=cmd))
@@ -66,6 +67,21 @@ class Classifier(unittest.TestCase):
     def test_a_relative_path_that_looks_like_the_skills_is_unknown_without_a_recorded_cwd(self):
         for p in ("skills/handoff-verify/scripts/prepare.py", "../handoff-verify/scripts/report.py"): self.assertEqual(omissions.skill_activity(use("Read", file_path=p), None), "unknown", p)
 
+    def test_the_five_reference_files_follow_the_rules_of_skill_md_and_no_other_reference_file_does(self):
+        REF = SKILL + "/reference"
+        for n in REFS:
+            with self.subTest(n):
+                for b, cwd in ((use("Read", file_path=REF + "/" + n), None), (use("Read", file_path="reference/" + n), SKILL), (use("Read", file_path="./reference/" + n), SKILL), (use("Read", file_path="../reference/" + n), SCRIPTS),
+                               (use("Grep", pattern="audit", path=REF + "/" + n), "/work/proj"), (bash("cat reference/%s" % n), SKILL), (bash("head -20 %s/%s" % (REF, n)), "/work/proj")):
+                    self.assertEqual(omissions.skill_activity(b, cwd), "yes", (b["input"], cwd))
+                for b, cwd in ((use("Read", file_path="reference/" + n), "/work/proj"), (use("Read", file_path="/other/reference/" + n), None), (use("Read", file_path=SKILL + "/scripts/" + n), None),
+                               (use("Read", file_path=REF + "/sub/" + n), None), (use("Read", file_path="/home/u/other-skill/reference/" + n), None), (use("Write", file_path="/work/proj/reference/" + n, content="x"), "/work/proj"),
+                               (use("Grep", pattern=REF + "/" + n, path="/work/proj"), "/work/proj"), (bash("echo %s/%s" % (REF, n)), "/work/proj")):
+                    self.assertEqual(omissions.skill_activity(b, cwd), "no", (b["input"], cwd))
+                for p in ("skills/handoff-verify/reference/" + n, "../handoff-verify/reference/" + n): self.assertEqual(omissions.skill_activity(use("Read", file_path=p), None), "unknown", p)
+                self.assertEqual(omissions.skill_activity(use("Read", file_path="reference/" + n), None), "no")      # a bare name proves nothing (as for SKILL.md)
+        for other in ("README.md", "evidence.md", "notes.md"): self.assertEqual(omissions.skill_activity(use("Read", file_path=SKILL + "/reference/" + other), None), "no", other)
+
     def test_without_a_recorded_cwd_a_skill_script_name_is_unknown_not_a_guess(self):
         for b in (use("Read", file_path="scripts/omissions.py"), bash("python3 omissions.py prepare"), bash("python3 -m report"), bash("python3 -c 'import versions'"), bash("python3 'unterminated omissions.py")):
             self.assertEqual(omissions.skill_activity(b, None), "unknown", b["input"])
@@ -97,6 +113,15 @@ class Window(unittest.TestCase):
         for kept in ("WORK-1", "thanks, now also check the retry loop", "WORK-2: retry loop has a bug"): self.assertIn(kept, text, kept)
         for gone in ("RUN1-OUT", "RUN1-SUMMARY", "RUN1-READ", "RUN2-SUMMARY", "LATE-PROMPT", "omissions.py"): self.assertNotIn(gone, text, gone)
         self.assertEqual([r["id"] for r in w["runs"]], ["a1", "a2"])
+
+    def test_a_run_that_opens_a_reference_file_is_bounded_and_the_rules_it_reads_are_not_source(self):
+        for n in REFS:
+            with self.subTest(n):
+                t = Tx(); t.user("do the work"); t.say("WORK-1"); t.tool("p1", "Read", dict(file_path="/work/proj/reference/" + n), "PROJECT-DOC")      # a file of the project that has the same name: ordinary work
+                t.tool("w1", "Write", dict(file_path="/nope/HANDOFF.md", content="NOTE"), "created"); t.tool("r1", "Read", dict(file_path=SKILL + "/reference/" + n), "REFERENCE-RULES"); t.say("RUN-NARRATION"); t.user("LATE-PROMPT")
+                w, bl = blocks(t.recs, "w1"); text = "\n".join(bl)
+                self.assertEqual([r["id"] for r in w["runs"]], ["r1"]); self.assertIn("WORK-1", text); self.assertIn("PROJECT-DOC", text)
+                for gone in ("REFERENCE-RULES", "RUN-NARRATION", "LATE-PROMPT"): self.assertNotIn(gone, text, gone)
 
     def test_prefix_is_strictly_before_the_write(self):
         t = Tx(); t.user("before the write"); t.tool("w1", "Write", dict(file_path="/nope/HANDOFF.md", content="NOTE"), "created"); t.user("after the write")
