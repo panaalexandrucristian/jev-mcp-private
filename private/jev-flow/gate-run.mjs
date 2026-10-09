@@ -752,8 +752,9 @@ export async function runGate(opts) {
           reconnect = true;
           continue;
         }
-        let { route } = interpretGate(reply.result, { claims: call.input.claims, ...accept });
-        if (route === "accepted" && !validateGateResult(reply.result, { claims: call.input.claims, ...accept }).accepted) route = "ask_user";
+        const interpreted = interpretGate(reply.result, { claims: call.input.claims, ...accept });
+        let { route } = interpreted;
+        if (route === "accepted" && interpreted.rule !== "completion" && !validateGateResult(reply.result, { claims: call.input.claims, ...accept }).accepted) route = "ask_user";
         if (!summary.jev) summary.jev = { provider: clip(reply.result.provider ?? "unknown", 40), model: clip(reply.result.model ?? "unknown", 60) };
         const verdict = partVerdict(route, reply.result.action);
         parts.push({

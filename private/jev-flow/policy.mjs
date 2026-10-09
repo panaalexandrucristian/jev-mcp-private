@@ -248,12 +248,41 @@ export function validateGateResult(result, { claims, minimums = FLOW_GATE_MINIMU
 }
 
 /**
+ * The jev-control completion rule (opt-in through interpretGate's `completion`): an answer counts as completion
+ * evidence when it is complete and untruncated, carries no error status, returns every claim of the call in order with
+ * the same text, each verified with a confidence strictly above `above`, and its safe_to_apply is strictly above
+ * `above`. The server's own action is not consulted: its review escalates whenever one rubric (blast_radius, test_gap)
+ * cannot reach review_at, which a small correct patch never does (measured: confidence 0-0.46 on a correct one-line fix),
+ * while safe_to_apply and the claim verdicts separated correct from wrong patches (0.85-0.87 against 0.09-0.38).
+ */
+export function completionAccepts(result, claims, above) {
+  if (!result || result.tool !== "jev_gate" || result.truncated !== false || !inUnit(above)) return false;
+  const review = result.review;
+  if (!review || review.status !== undefined || !isNumber(review.safe_to_apply) || !(review.safe_to_apply > above)) return false;
+  const verification = result.verification;
+  const results = verification?.results;
+  if (!verification || verification.status !== undefined || !Array.isArray(results) || results.length === 0) return false;
+  if (!Array.isArray(claims) || claims.length !== results.length || !claims.every((c) => typeof c === "string")) return false;
+  return results.every(
+    (r, i) =>
+      r !== null &&
+      typeof r === "object" &&
+      r.status === undefined &&
+      r.verdict === "verified" &&
+      isNumber(r.confidence) &&
+      r.confidence > above &&
+      claims[i].length <= MAX_CLAIM_CHARS &&
+      r.claim === claims[i],
+  );
+}
+
+/**
  * Interpret a jev_gate result. Order matters: a valid contradiction wins even
  * when another part of the answer is invalid.
  * Routes: stop_contradiction | retry_or_unavailable | ask_user | needs_evidence | accepted
  * (a well-formed auto below the flow minimums routes to ask_user, a malformed one to retry_or_unavailable)
  */
-export function interpretGate(result, { claims, minimums, strictAbove } = {}) {
+export function interpretGate(result, { claims, minimums, strictAbove, completion } = {}) {
   if (!result || result.tool !== "jev_gate") {
     return { route: "retry_or_unavailable", reasons: ["missing_or_unparseable_result"] };
   }
@@ -270,6 +299,8 @@ export function interpretGate(result, { claims, minimums, strictAbove } = {}) {
   if (codes.includes("invalid_response") || result.review?.status === "invalid_response") {
     return { route: "retry_or_unavailable", reasons: ["invalid_response"] };
   }
+  // jev-control only: a verified, safe answer is accepted whatever the server's own action says (see completionAccepts).
+  if (completion && completionAccepts(result, claims, completion.above)) return { route: "accepted", reasons: codes, rule: "completion" };
   if (result.action === "auto") {
     const check = validateGateResult(result, { claims, ...(minimums ? { minimums } : {}), ...(strictAbove !== undefined ? { strictAbove } : {}) });
     if (check.accepted) return { route: "accepted", reasons: codes };
