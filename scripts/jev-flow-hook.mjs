@@ -36,6 +36,16 @@ try {
   } catch (error) {
     process.stderr.write(`[prompt-check] hook error: ${String(error?.message ?? error).slice(0, 200)}\n`);
   }
+  // logic-test-debug (default on, JEV_LOGIC_TEST_DEBUG=off turns it off) adds its own directive on code prompts only.
+  // It is loaded by a guarded dynamic import so that a failure, even at load time, leaves the output above unchanged.
+  try {
+    if (name === "UserPromptSubmit") {
+      const logic = await import("../private/logic-test-debug/hook.mjs");
+      output = logic.composeOutput(output, logic.handleLogicHook(name, input, process.env));
+    }
+  } catch {
+    process.stderr.write("[logic-test-debug] activation unavailable\n");
+  }
   const line = output ? `${JSON.stringify(output)}\n` : "";
   // After a Jev check exit as soon as the output is flushed, so no child process can hold the prompt.
   if (ran) process.stdout.write(line, () => process.exit(0));

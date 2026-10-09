@@ -1,0 +1,12 @@
+{
+  "project": "logic-test-debug",
+  "decision": "own pool of 50 claude -p sessions, chosen with jev_decide on 2026-10-10 (own_pool_50, confidence 0.96) after the user delegated the cap; the user can change any number here",
+  "sessionsCap": 50,
+  "prior": 0,
+  "usdGuard": 5,
+  "usdGuardNote": "guessed safety net; the calculated cost of 50 haiku sessions is about 1.9 USD (0.038 per session, measured on 5 sessions of another campaign)",
+  "ledger": "~/Dev/jev-test-runs/logic-test-debug/ledger.tsv",
+  "plan": { "planned": { "activation": 8, "conditions": 16, "bug": 16, "nocode": 4 }, "reserve": 6 },
+  "openCode": { "sessions": 4, "tracked": "separately, not claude -p sessions" },
+  "model": "haiku alias, resolved id recorded per session"
+}

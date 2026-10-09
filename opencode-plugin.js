@@ -73,5 +73,14 @@ export default {
     } catch (error) {
       console.warn(`[jev-flow] disabled: ${error?.message ?? error}`);
     }
+
+    // Private logic-test-debug extension (default on; JEV_LOGIC_TEST_DEBUG=off turns it off). Isolated like the flow:
+    // a separate dynamic import after everything above, with a fixed diagnostic and no raw error text.
+    try {
+      const { setupLogicTestDebug } = await import("./private/logic-test-debug/opencode.mjs");
+      await setupLogicTestDebug(ctx, process.env);
+    } catch {
+      console.warn("[logic-test-debug] activation unavailable");
+    }
   }
 };
