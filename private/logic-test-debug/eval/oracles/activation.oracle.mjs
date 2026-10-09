@@ -16,14 +16,15 @@ try {
 } catch (error) {
   note("canProceed(true, false)", error);
 }
-// Heuristic (guessed, not measured): only phrases that state the overall result count ("evaluates to", "returns", "the result
-// is", "=>"), never "a=true" or "b is false". A pass needs at least one such statement and no contradicting one; an answer
-// with no result phrase is "unclear" and fails, so a human reads it.
+// Heuristic (guessed, not measured): only phrases that state a result count ("evaluates to", "returns", "the result is",
+// "=>"), never "a=true" or "b is false", and the FIRST such statement is the answer: a later "any other combination returns
+// false" is about other inputs. An answer with no result phrase is "unclear" and fails, so a human reads it. (The first
+// version failed an answer on any "false"; two correct answers of the first live runs were failed that way.)
 try {
   const text = readFileSync(process.argv[3], "utf8");
   const results = [...text.matchAll(/(?:evaluates?|results?|returns?|yields?|gives?|=>|comes? out)\s*(?:to\s*|in\s*|as\s*|is\s*|:\s*)?[*`"']*\b(true|false)\b/gi)].map((m) => m[1].toLowerCase());
   assert.ok(results.length > 0, "unclear: no result phrase");
-  assert.ok(!results.includes("false"), "states false as a result");
+  assert.equal(results[0], "true", "the first stated result is false");
   out.passed += 1;
 } catch (error) {
   note("answer says true", error);

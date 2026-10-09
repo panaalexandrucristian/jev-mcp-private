@@ -56,7 +56,8 @@ export function scoreTranscript(input, { limitExit = false } = {}) {
 
   const finalText = typeof resultEvent?.result === "string" ? resultEvent.result : (texts.at(-1) ?? "");
   const all = [...texts, finalText].join("\n");
-  const field = (name) => all.match(new RegExp(`^${name}:\\s*(.+)$`, "m"))?.[1]?.trim() ?? null;
+  // Markdown emphasis around the label ("**Scope:**", "**Scope**:") still counts: the live sessions wrote the record both ways.
+  const field = (name) => all.match(new RegExp(`^\\s*[*_]{0,2}${name}[*_]{0,2}:[*_]{0,2}\\s*(.+)$`, "m"))?.[1]?.trim() ?? null;
   const record = { scope: field("Scope"), method: field("Method"), result: field("Result") };
   const resultText = record.result ?? "";
   // Heuristic (guessed): a Result line that claims a check succeeded, without any command having been run. A statement that

@@ -62,6 +62,12 @@ describe("transcript scoring: application is separate from loading", () => {
     assert.equal(result.record.present, true);
     assert.equal(result.loaded, "not_loaded");
   });
+  it("reads a record written with markdown emphasis, as the live sessions sometimes did", () => {
+    const bold = "**Scope:** `canProceed(a, b)`.\n\n**Method:** Read the file by hand.\n\n**Result:** `true`.";
+    assert.equal(score([end({ result: bold })]).record.present, true);
+    assert.equal(score([end({ result: "**Scope**: x\n**Method**: y\n**Result**: z" })]).record.present, true);
+    assert.equal(score([end({ result: "The Scope: is not at the start of a line" })]).record.present, false);
+  });
   it("reads the three record fields and reports a missing one", () => {
     assert.equal(score([end({ result: "Scope: x\nMethod: y" })]).record.present, false);
     assert.equal(score([said(record), end()]).record.scope, "canAccess; token, member, paid, trial, suspended.");

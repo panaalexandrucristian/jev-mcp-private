@@ -108,7 +108,9 @@ describe("activation oracle", () => {
     assert.equal(run("The result is true, because b is false.").success, true);
     assert.equal(run("The result is false. Note that a is true.").success, false);
     assert.equal(run("The condition is false even though a=true.").success, false, "no result phrase is unclear and fails for a human to read");
-    assert.equal(run("It evaluates to true, but also returns false in another case.").success, false, "a contradicting statement fails");
+    assert.equal(run("It evaluates to true, but also returns false in another case.").success, true, "a later result about other inputs does not count");
+    assert.equal(run("For a = true, b = false, `canProceed` returns `true`. Any other combination returns `false`.").success, true, "a case seen in the live sessions");
+    assert.equal(run("At first glance it returns false, but a=true and !b=true, so overall it evaluates to true.").success, false, "the first stated result decides");
   });
   it("rejects a wrong answer, a missing result and a modified file", () => {
     assert.equal(run("The condition evaluates to false.").success, false);

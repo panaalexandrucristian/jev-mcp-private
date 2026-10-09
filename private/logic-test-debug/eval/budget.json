@@ -4,7 +4,7 @@
   "sessionsCap": 50,
   "prior": 0,
   "usdGuard": 5,
-  "usdGuardNote": "guessed safety net. Measured: the first session (activation, ON) cost 0.0033 USD; another campaign measured 0.038 USD per haiku session on larger tasks. The conditions and bug scenarios are not measured yet.",
+  "usdGuardNote": "guessed safety net. Measured: the first session (activation, ON) cost 0.0033 USD; another campaign measured 0.038 USD per haiku session on larger tasks. All 44 planned sessions together cost 0.23 USD (measured), so the guard is far above the real cost.",
   "ledger": "~/Dev/jev-test-runs/logic-test-debug/ledger.tsv",
   "plan": {
     "planned": {
