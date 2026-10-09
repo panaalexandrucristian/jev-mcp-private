@@ -13,12 +13,12 @@ const frontmatter = (text) => {
   return Object.fromEntries(m[1].split("\n").map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]));
 };
 
-describe("the plugin ships jev-control as 0.8.1", () => {
-  it("both manifests carry 0.8.1", () => {
+describe("the plugin ships jev-control as 0.9.0", () => {
+  it("both manifests carry 0.9.0", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.8.1");
-    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.8.1");
+    assert.equal(plugin.version, "0.9.0");
+    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.9.0");
   });
   it("PRIVATE.md documents the version, the section and the new check", () => {
     const text = read("PRIVATE.md");
