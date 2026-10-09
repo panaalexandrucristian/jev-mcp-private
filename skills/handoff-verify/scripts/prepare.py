@@ -41,7 +41,7 @@ def flatten(path, gone, splits=(), recs=None):
         cuts = sorted(j for ln, j in splits if ln == d["_line"]); groups = {}
         for j, t in parts: groups.setdefault(sum(1 for x in cuts if x <= j), []).append((j, t))
         for k in sorted(groups):
-            g = groups[k]; out.append(dict(uuid=d.get("uuid") or "no-uuid", role=d["type"], text=" ".join(t for _, t in g), line=d["_line"], jlo=g[0][0], jhi=g[-1][0], ts=d.get("timestamp") or "", file=path))
+            g = groups[k]; out.append(dict(uuid=d.get("uuid") or "no-uuid", role=d["type"], text=" ".join(t for _, t in g), line=d["_line"], jlo=g[0][0], jhi=g[-1][0], ts=d.get("timestamp") or "", file=path, parts=list(g)))   # parts = (block index, text) of every block the entry holds (the audit bounds an entry by the window of an evaluation)
     return out
 
 def build_parser():
@@ -65,24 +65,23 @@ def explicit_targets(given, base, files, recorded):
         rows.append(dict(path=real, aliases=sorted(set(info["given"]) - {real}), disposition="external_unlinked", linked=False, versions=[], exists_now=os.path.exists(real), disk_sha256=disk, provenance=best["state"], blockers=[best["blocker"]]))
     return targets, rows
 
-def main():
-    a = build_parser().parse_args()
-    locs, why = O.check_locations(a.location)
-    if why: print(json.dumps({"error": why})); return 3
-    sp, how, ambiguous = D.resolve_session_info(a.session, a.cwd)
-    if ambiguous: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions in this project; pass the session id or .jsonl path", "resolution": how})); return 3
-    if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
-    sid = D.session_label(sp)
+def inspect_session(sp):
+    """The transcripts of a session (the session line + its subagents) with their inventory -> (files, items, bash, by_file, reads_of, diags_of)."""
     files = [(sp, "session")] + [(f, "subagent") for f in D.subagent_files(sp)]
     items, bash, by_file, reads_of, diags_of = [], [], {}, {}, {}
     for f, src in files:
         i, b = D.inventory(f, src); items += i; bash += b; by_file[f] = i; reads_of[f] = D.reads(f); diags_of[f] = D.diagnostics(f)
-    cwd0 = next((i["cwd"] for i in items if i.get("cwd")), a.cwd or os.getcwd())
+    return files, items, bash, by_file, reads_of, diags_of
+
+def derive(sp, cwd_arg, targets_arg=(), max_chars=9000, workdir=None):
+    """The deterministic preparation of ONE session, shared by `main` and by the full-report audit (audit.py), so that both see exactly the same versions, exclusions, stream boundaries and chunks. With `workdir` (a path, or a
+    callable taking the first recorded cwd and returning the path) the artifacts are written there; with None nothing is written (a pure derivation). -> dict(files, items, bash, by_file, diags_of, cwd0, cwds, work, cls, targets, external,
+    unplaced, handoff_reals, flat_of, flat_all, san_total, inv_h, chunks_meta, chunk_texts); every chunk of `chunks_meta` carries `index`, `file`, `sha256` (of the chunk text as written, UTF-8) and its stream positions."""
+    files, items, bash, by_file, reads_of, diags_of = inspect_session(sp)
+    cwd0 = next((i["cwd"] for i in items if i.get("cwd")), cwd_arg or os.getcwd())
     cwds = list(dict.fromkeys(d["cwd"] for f, _ in files for d in D.load_jsonl(f) if isinstance(d.get("cwd"), str) and d["cwd"]))   # every cwd the selected session and its subagents recorded, in order of appearance (not only the Write/Edit calls)
-    if a.out: work = a.out
-    else:
-        rd, run_id = R.new_run_dir(a.cwd or cwd0, sid); work = os.path.join(rd, "work")
-    os.makedirs(os.path.join(work, "handoffs"), exist_ok=True); os.makedirs(os.path.join(work, "transcript"), exist_ok=True)
+    work = workdir(cwd0) if callable(workdir) else workdir
+    if work: os.makedirs(os.path.join(work, "handoffs"), exist_ok=True); os.makedirs(os.path.join(work, "transcript"), exist_ok=True)
     cls = D.classify_candidates(items)
     # group by real path (resolved in the cwd recorded for the call); identical copies share analysis, but every write keeps its own temporal evaluation
     by_real, unplaced = {}, [dict(path=i["path"], tool_use_id=i["tool_use_id"], op=i["op"], source_file=i["file"], reason="a relative path with no cwd recorded for the call: its place is not demonstrated (the cwd of this process is never substituted)")
@@ -91,7 +90,7 @@ def main():
         real = D.real_of(it["path"], it.get("cwd"))
         if real is not None: by_real.setdefault(real, []).append(it)
     recorded = {D.real_of(i["path"], i.get("cwd")) for i in items if i["success"]} - {None}
-    targets, external = explicit_targets(a.target, a.cwd or cwd0, files, recorded)
+    targets, external = explicit_targets(targets_arg, cwd_arg or cwd0, files, recorded)
     handoff_reals = sorted(set(by_real) | {r for r in targets if r in recorded})
     flat_of, wpos = {}, {}   # per transcript, in stream order: the entries without what no consumer takes for source (the same exclusions as the source window), cut at the tool_use of every note write
     for f, src in files:
@@ -120,7 +119,7 @@ def main():
                 fn = None
                 if txt is not None:
                     fn = artifact(real, f, v, multi)
-                    open(os.path.join(work, fn), "w", encoding="utf-8", newline="").write(txt)
+                    if work: open(os.path.join(work, fn), "w", encoding="utf-8", newline="").write(txt)
                 vrows.append(dict(version=v["version"], file=fn, sha256=v["sha256"], tool_use_id=v["write_tool_use_id"], uuid=v["uuid"], timestamp=v["timestamp"], status=v["status"], reason=v["reason"], op=v["op"],
                                   write_pos=[v.get("timestamp") or "", src, v["line"]], write_line=v["line"], write_block=wpos[f].get(v["write_tool_use_id"], (v["line"], 0))[1], sanitized_ambiguous=rep["ambiguous_redacted"], source_file=f, source_kind=src, unpositioned=v["unpositioned"], mixed=v["mixed"],
                                   evaluated_against=None if multi else ("session_end" if v is vs[-1] else "prefix"),   # several transcripts: no demonstrated common order, so no "last version" and no window
@@ -132,21 +131,27 @@ def main():
         for v in (x for _, _, vs in streams for x in vs):
             if v["unpositioned"]: blockers.append("%s: %s" % (real, V.unpositioned_reason(v))); break
         inv_h.append(dict(path=real, aliases=sorted({i["path"] for i in items if D.real_of(i["path"], i.get("cwd")) == real and i["path"] != real}),
-                          disposition=("included_by_name" if D.name_matches(real) else "needs_jev_classify") if real in by_real else "included_by_target", linked=True, versions=vrows, exists_now=os.path.exists(real),
+                          disposition=("included_by_name" if D.auto_name(real) else "needs_jev_classify") if real in by_real else "included_by_target", linked=True, versions=vrows, exists_now=os.path.exists(real),
                           streams=[dict(source_file=f, source_kind=src, versions=len(vs)) for f, src, vs in streams], ordering=dict(demonstrated=not multi, reason="independent transcripts have no demonstrated common order" if multi else None),
-                          provenance="recorded_write", blockers=blockers))
+                          provenance="recorded_write", blockers=blockers, **({"explanation": D.TARGET_EXPLANATION} if real in targets and not D.is_text_note(real) else {})))
+    for row in external:
+        if not D.is_text_note(row["path"]): row["explanation"] = D.TARGET_EXPLANATION
     inv_h += external
     by_path = {h["path"]: h for h in inv_h}
     for real, info in targets.items():   # a verified copy of a written note is a copy of it, not a note of its own
         if info.get("relocated_from") in by_path: by_path[info["relocated_from"]].setdefault("copies", []).extend(info["given"])
     # chunk each transcript in stream order; force a break at every handoff write position (its stream line) so prefixes are chunk-aligned; a chunk never mixes two transcripts
-    chunks_meta, buf, size, n = [], [], 0, 0
+    chunks_meta, chunk_texts, buf, size, n = [], [], [], 0, 0
     def flush():
         nonlocal buf, size, n
         if buf:
-            fn = "transcript/chunk-%04d.txt" % n
-            open(os.path.join(work, fn), "w", encoding="utf-8", newline="").write("".join(x[1] for x in buf))
-            chunks_meta.append(dict(file=fn, source_file=buf[0][3], uuids=[x[0] for x in buf], first_pos=list(buf[0][2]), last_pos=list(buf[-1][2]), first_line=buf[0][4], last_line=buf[-1][4], first_block=buf[0][5], last_block=buf[-1][6], chars=size)); buf, size, n = [], 0, n + 1
+            fn = "transcript/chunk-%04d.txt" % n; text = "".join(x[1] for x in buf)
+            if work: open(os.path.join(work, fn), "w", encoding="utf-8", newline="").write(text)
+            chunk_texts.append(text)
+            ents, at = [], 0
+            for x in buf:   # where every piece lies in the chunk text (offsets), for the audit; `eoff` = the offset of the piece inside its (sanitized) entry; nothing of this is written to the artifacts
+                ents.append(dict(uuid=x[0], role=x[7]["role"], line=x[4], jlo=x[5], jhi=x[6], start=at, end=at + len(x[1]), eoff=x[8], entry_text=x[9], parts=x[7]["parts"])); at += len(x[1])
+            chunks_meta.append(dict(index=n, file=fn, sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), source_file=buf[0][3], uuids=[x[0] for x in buf], first_pos=list(buf[0][2]), last_pos=list(buf[-1][2]), first_line=buf[0][4], last_line=buf[-1][4], first_block=buf[0][5], last_block=buf[-1][6], chars=size, entries=ents)); buf, size, n = [], 0, n + 1
     for f, src in files:
         marks = sorted((v["write_line"], v["write_block"]) for h in inv_h for v in h["versions"] if v["source_file"] == f); mi = 0
         for r in flat_of[f]:
@@ -154,16 +159,41 @@ def main():
             t, rep = S.sanitize("[%s %s] %s\n" % (r["uuid"], r["role"], r["text"]))
             for k, c in rep["redactions"].items(): san_total["redactions"][k] = san_total["redactions"].get(k, 0) + c
             san_total["ambiguous_redacted"] += rep["ambiguous_redacted"]
-            for piece in [t[i:i + a.max_chars] for i in range(0, len(t), a.max_chars)] or [t]:
-                if size + len(piece) > a.max_chars: flush()
-                buf.append((r["uuid"], piece, (r["ts"], src, r["line"]), f, r["line"], r["jlo"], r["jhi"])); size += len(piece)
+            for off, piece in [(i, t[i:i + max_chars]) for i in range(0, len(t), max_chars)] or [(0, t)]:
+                if size + len(piece) > max_chars: flush()
+                buf.append((r["uuid"], piece, (r["ts"], src, r["line"]), f, r["line"], r["jlo"], r["jhi"], r, off, t)); size += len(piece)
         flush()
     for h in inv_h:
         for v in h["versions"]: v["prefix_chunks"] = [c["file"] for c in chunks_meta if c["source_file"] == v["source_file"] and (c["last_line"], c["last_block"]) < (v["write_line"], v["write_block"])]
-    covered = {u for c in chunks_meta for u in c["uuids"]}; flat_all = [r for f, _ in files for r in flat_of[f]]
+    return dict(files=files, items=items, bash=bash, by_file=by_file, diags_of=diags_of, cwd0=cwd0, cwds=cwds, work=work, cls=cls, targets=targets, external=external, unplaced=unplaced, handoff_reals=handoff_reals,
+                flat_of=flat_of, flat_all=[r for f, _ in files for r in flat_of[f]], san_total=san_total, inv_h=inv_h, chunks_meta=chunks_meta, chunk_texts=chunk_texts)
+
+def main():
+    a = build_parser().parse_args()
+    locs, why = O.check_locations(a.location)
+    if why: print(json.dumps({"error": why})); return 3
+    sp, how, ambiguous = D.resolve_session_info(a.session, a.cwd)
+    if ambiguous: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions in this project; pass the session id or .jsonl path", "resolution": how})); return 3
+    if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": O.shown(a.session)})); return 2
+    sid = D.session_label(sp)
+    def workdir(cwd0):
+        if a.out: return a.out
+        rd, run_id = R.new_run_dir(a.cwd or cwd0, sid); return os.path.join(rd, "work")
+    P = derive(sp, a.cwd, a.target, a.max_chars, workdir)
+    work, files, cls, bash, unplaced, targets, inv_h, chunks_meta, flat_all, san_total, cwd0, cwds, diags_of = (P[k] for k in ("work", "files", "cls", "bash", "unplaced", "targets", "inv_h", "chunks_meta", "flat_all", "san_total", "cwd0", "cwds", "diags_of"))
+    items = P["items"]
+    import audit as AU   # preparation establishes the session's candidate registry (its location is derived from the source, not chosen by a report): the audit expects it
+    try:
+        rp = AU.registry_path_of(sp)
+        if a.out: reg_state = "not touched (--out writes only its directory): audit.py template / register establishes it"
+        else: reg_state = "unavailable: the session records no usable cwd" if rp is None else ("created" if AU.ensure_registry(rp, D.canon(sp)) else "present")
+    except (ValueError, OSError) as e: reg_state = "refused: %s" % S.sanitize(str(e))[0][:160]
+    covered = {u for c in chunks_meta for u in c["uuids"]}
     cov = dict(records=len(flat_all), chunks=len(chunks_meta), uuids_in_chunks=len(covered), complete=covered == {r["uuid"] for r in flat_all}, sanitization=san_total,
                merged_view="informational: the transcripts one after the other, each in stream order (first_pos/last_pos carry the recorded timestamps, which order nothing); the audit windows are the stream positions up to a write's tool_use (versions[].prefix_chunks), and verification material is not part of it",
-               continuation="links not demonstrated: leafUuid only points inside the same file (results/PROTOCOL.md P1); sibling sessions are NOT included")
+               continuation="links not demonstrated: leafUuid only points inside the same file (results/PROTOCOL.md P1); sibling sessions are NOT included",
+               chunk_list=[dict(index=c["index"], file=c["file"], sha256=c["sha256"], chars=c["chars"]) for c in chunks_meta],   # no path: a name of work/ and a hash of the text
+               audit_registry=reg_state, audit_note="`complete` says the chunks were produced for every record; it is NOT a review. The full-report audit (audit.py) needs a review record per expected chunk (index + sha256 above) and an outcome for each of the nine categories.")
     json.dump(cov, open(os.path.join(work, "coverage.json"), "w"), indent=1)
     inv = dict(session=dict(session_id=sid, jsonl=sp, cwd=cwd0, work_locations=locs, subagents=[f for f, s in files if s == "subagent"], diagnostics=[dict(d, source_file=f) for f in diags_of for d in diags_of[f]]), handoffs=inv_h, unplaced_writes=unplaced,
                needs_jev_classify=[dict(path=i["path"], tool_use_id=i["tool_use_id"], uuid=i["uuid"], excerpt_hint="read handoffs/ file; classify with jev_classify (>0.95 decides)") for i in cls["needs_jev_classify"]],

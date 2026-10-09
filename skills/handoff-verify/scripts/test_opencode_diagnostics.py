@@ -9,6 +9,7 @@ import json, os, subprocess, sys, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import discover as D, jevref as J, report, versions
+import audit_fixtures as AF
 from test_opencode_adapter import Base, T0, CLAIM, assistant, user, tool, patch, jev_input, jev_json, sha, uses
 
 C1 = "# Handoff\n- alpha\n"
@@ -28,8 +29,8 @@ class Chain(Base):
 
     def doc(self, sel, which=0, call="j1"):
         v = versions.versions_of(sel, self.path())[0][which]
-        chk = dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id=call, result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
-        return dict(session=dict(session_id="ses_d", jsonl=sel, cwd=self.cwd), handoff=dict(path=self.path(), versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS")
+        chk = dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id=call, result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
+        return AF.shell(dict(session=dict(session_id="ses_d", jsonl=sel, cwd=self.cwd), handoff=dict(path=self.path(), versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS"))
 
     def certify(self, sel, content, which=0, call="j1"):
         """Write the report for the check bound to version `which`, then run the gate against the disk file. -> (report doc, gate result)."""

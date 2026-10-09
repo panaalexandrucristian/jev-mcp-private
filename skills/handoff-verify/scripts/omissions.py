@@ -12,18 +12,38 @@ CLI: omissions.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB
   exit 0 = ready (JSON on stdout), 3 = something is ambiguous or not recoverable (JSON with `reasons`; the omission stays UNRESOLVED)."""
 import argparse, ast, collections, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import refs as R
+import refs as R, sanitize as S
 
 SOURCE_PREFIX = "The supplied source passage states this detail: "
 ABSENCE_PREFIX = "The complete supplied handoff material neither states nor implies this detail: "
 EVALUATED = ("prefix", "session_end")
 WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 BLOCK_SEP = "\n\u0000\n"   # joins the eligible records; a quote can never span two records
-SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py", "checks.py")   # the skill's own scripts (verification activity)
+SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py", "checks.py", "ledger.py", "audit.py")   # the skill's own scripts (verification activity)
 JEV_PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
 
 def sha256_text(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 def wsnorm(s): return " ".join(str(s if s is not None else "").split())
+
+_CLEAN = {}
+def clean_text(t):
+    """The text under the shared sanitization policy (sanitize.sanitize_material); memoized by text."""
+    if t not in _CLEAN:
+        if len(_CLEAN) > 200000: _CLEAN.clear()
+        _CLEAN[t] = S.sanitize_material(t)[0]
+    return _CLEAN[t]
+
+_INFO = {}
+def info_of(t):
+    """The `info` of sanitize.sanitize_material for the text; memoized by text (a pure function of the text)."""
+    if t not in _INFO:
+        if len(_INFO) > 200000: _INFO.clear()
+        _INFO[t] = S.sanitize_material(t)[1]
+    return _INFO[t]
+
+def redaction_dependent(t):
+    """Does the text hold a secret that the policy would redact, or a redaction marker? Such a detail, quote or passage cannot be audited: what is hidden is not demonstrated."""
+    return S.altered(t)["redaction_dependent"]
 
 def claims(detail, contract="R04"):
     """-> (source_claim, absence_claim) for one detail (whitespace-normalized): the two canonical claims, never typed by the model. SOURCE claim = SOURCE_PREFIX + detail in every contract. ABSENCE claim: R04 = the BARE detail
@@ -39,6 +59,29 @@ def material(note_text, references=()):
     for ref, content in references: out += "=== DIRECT REFERENCE %s (sha256: %s) ===\n%s\n=== END DIRECT REFERENCE ===\n" % (ref, sha256_text(content), content)
     return out
 
+def identity_dependent(*vals, role=None):
+    """Would the shared policy alter an identity field that leaves the preparation (a path, a location, a resolution)? Such an identity is never altered and never echoed: the material that carries it is not ready. `role` = "tool_use_id"
+    for a recorded write / run / stage id (sanitize.identity_altered: a recognized credential-free id is kept byte-for-byte); the default is the strict policy."""
+    return any(S.identity_altered(v, role)["redaction_dependent"] for v in vals if isinstance(v, str))
+
+ID_WITHHELD = "[REDACTED:identity]"   # DISPLAY only: a refused recorded id is shown as this marker; it is never an identity (a marker is refused by every consumer, see sanitize.identity_altered)
+
+def safe_list(vals, role=None):
+    """Diagnostic copy of a list of paths (or, with role="tool_use_id", of recorded ids): the shared policy applied, clean values byte-identical. A path the strict policy alters is rendered by that policy; an id that the role-aware policy
+    refuses is rendered as `ID_WITHHELD` (the generic sanitizer would miss a credential behind a provider prefix, so it never renders an id), never as a replacement identity."""
+    def one(v):
+        if not isinstance(v, str) or not S.identity_altered(v, role)["redaction_dependent"]: return v
+        return ID_WITHHELD if role == S.ID_ROLE else S.sanitize(v)[0]
+    return [one(v) for v in vals]
+
+def id_text(v):
+    """A recorded or given id for the PROSE of a diagnostic: itself when the id-role policy keeps it, else `ID_WITHHELD` (never echoed)."""
+    return ID_WITHHELD if isinstance(v, str) and S.identity_altered(v, S.ID_ROLE)["redaction_dependent"] else v
+
+def shown(v, role=None):
+    """A value the CALLER gave (a selector, a run, a report path) for a diagnostic: itself when the shared identity policy keeps it, else None (never echoed, never a placeholder)."""
+    return None if identity_dependent(v, role=role) else v
+
 def bad_location(loc):
     """None when `loc` is a usable work location (an absolute path of an existing directory), else "relative" / "missing"."""
     if not isinstance(loc, str) or not os.path.isabs(loc): return "relative"
@@ -47,6 +90,7 @@ def bad_location(loc):
 def check_locations(locs):
     """The user-given work locations (`--location`): -> (list, None) or (None, reason). Order and strings are kept as given."""
     for loc in locs or ():
+        if identity_dependent(loc): return None, "a work location holds a secret or a redaction marker: an identity that needs redaction is not used (UNRESOLVED; the value is not echoed)"
         w = bad_location(loc)
         if w == "relative": return None, "work location %r is not an absolute path" % (loc,)
         if w: return None, "work location %r is not an existing directory" % (loc,)
@@ -66,15 +110,47 @@ def build_material(note_text, bases=()):
 
 def build_material_ex(note_text, bases=()):
     """-> (material | None, manifest, reason, missing_reference | None). Direct references (refs.py: one level, existing files; the git roots of the bases are extra bases) found in the note are part of the eligible material; a reference that cannot be resolved or read means that
-    completeness is not demonstrated (None, reason). A note without references: the note alone."""
+    completeness is not demonstrated (None, reason). A note without references: the note alone. The material is sent to Jev, so the shared sanitization policy (sanitize.py) applies to it: the references are resolved from the note as written, a reference that is an excluded file
+    (.env family, also through an alias) is never opened, and a note or reference that holds a secret or a redaction marker makes the material unavailable (fail closed, UNRESOLVED; what a hidden value says is not demonstrated, and the raw text is never returned).
+    Material that needs no redaction is exactly what it always was (the delimiters carry the sha256 of the note and of each reference as read)."""
+    return _build_material(note_text, bases)[:4]
+
+def _redaction_reason(what, info):
+    kinds = ", ".join("%s x%d" % (k, n) for k, n in sorted(info["redactions"].items())) + (", ambiguous x%d" % info["ambiguous_redacted"] if info["ambiguous_redacted"] else "")
+    return "%s holds redacted or redaction-dependent content (%s): what it hides is not demonstrated, so the complete material is not demonstrated (UNRESOLVED; nothing is sent)" % (what, kinds or "an existing redaction marker")
+
+_MAT = {}   # (sha256 of the note, bases, ((reference as written, resolved path, resolution, sha256 of the content read)...)) -> (material, manifest, found) of a material that needs no redaction
+
+def _build_material(note_text, bases=()):
+    """-> (material | None, manifest, reason, missing_reference | None, found [(ref, text)]). On EVERY call the references are found in the note, resolved, checked (excluded files, remote links, availability) and read again; only
+    when the ordered result (reference spelling, resolved path, resolution, sha256 of the content as read) and the note are exactly what a previous construction saw is that canonical material reused
+    (`STATS` material_hits); any difference constructs it again (`material_builds`). The caller gets independent copies."""
     manifest, found, bases = [], [], R.with_git_roots(bases)
+    if identity_dependent(*bases): return None, manifest, "a work location holds a secret or a redaction marker: an identity that needs redaction is not used, so the complete material is not demonstrated (UNRESOLVED; nothing is sent)", dict(ref=None, reason="redaction", kind="redaction", searched=safe_list(bases)), found
+    info = info_of(note_text)
+    if info["redaction_dependent"]: return None, manifest, _redaction_reason("the handoff note", info), dict(ref=None, reason="redaction", kind="redaction", searched=bases), found
+    facts = []
     for ref in R.direct_refs(note_text, bases):
+        if any(S.is_excluded_file(x) for x in R.path_forms(ref)): return None, manifest, "direct reference %r is an excluded file (.env family): it is never opened or sent, so the complete material is not demonstrated" % ref, dict(ref=ref, reason="excluded file", kind="excluded", searched=bases), found
         real, how = R.resolve_info(ref, bases)
-        if real is None: return None, manifest, "direct reference %r cannot be resolved (%s): the complete material is not demonstrated" % (ref, how), dict(ref=ref, reason=how, searched=bases)
+        if real is None:
+            if R.is_remote(ref): return None, manifest, "direct reference %r is a remote link: it is not fetched, its content is unavailable, so the complete material is not demonstrated" % ref, dict(ref=ref, reason=how, kind="remote_url", searched=[]), found
+            return None, manifest, "direct reference %r cannot be resolved (%s): the complete material is not demonstrated" % (ref, how), dict(ref=ref, reason=how, searched=bases), found
+        if S.is_excluded_file(real): return None, manifest, "direct reference %r resolves to an excluded file (.env family): it is never opened or sent, so the complete material is not demonstrated" % ref, dict(ref=ref, reason="excluded file", kind="excluded", searched=bases), found
+        if identity_dependent(real, how): return None, manifest, "direct reference %r resolves to a path that holds a secret or a redaction marker: an identity that needs redaction is not used, so the complete material is not demonstrated (UNRESOLVED; nothing is sent)" % ref, dict(ref=ref, reason="redaction", kind="redaction", searched=bases), found
         try: txt = open(real, encoding="utf-8", newline="").read()   # newline="": no newline translation, the text (and its sha256) is exactly the bytes presented
-        except (OSError, UnicodeDecodeError): return None, manifest, "direct reference %r cannot be read: the complete material is not demonstrated" % ref, dict(ref=ref, reason="cannot be read (%s)" % real, searched=bases)
-        manifest.append(dict(ref=ref, path=real, sha256=sha256_text(txt), resolution=how)); found.append((ref, txt))
-    return material(note_text, found), manifest, None, None
+        except (OSError, UnicodeDecodeError): return None, manifest, "direct reference %r cannot be read: the complete material is not demonstrated" % ref, dict(ref=ref, reason="cannot be read (%s)" % real, searched=bases), found
+        info = info_of(txt)
+        if info["redaction_dependent"]: return None, manifest, _redaction_reason("the direct reference %r" % ref, info), dict(ref=ref, reason="redaction", kind="redaction", searched=bases), found
+        facts.append((ref, real, how, txt))
+    key = (sha256_text(note_text), tuple(bases), tuple((ref, real, how, sha256_text(txt)) for ref, real, how, txt in facts))
+    if key not in _MAT:
+        if len(_MAT) > 2000: _MAT.clear()
+        STATS["material_builds"] += 1
+        _MAT[key] = (material(note_text, [(ref, txt) for ref, _, _, txt in facts]), [dict(ref=ref, path=real, sha256=sha256_text(txt), resolution=how) for ref, real, how, txt in facts], [(ref, txt) for ref, _, _, txt in facts])
+    else: STATS["material_hits"] += 1
+    mat, man, fnd = _MAT[key]
+    return mat, [dict(m) for m in man], None, None, list(fnd)
 
 def _blocks_of(content):
     if isinstance(content, str): return [content]
@@ -917,7 +993,7 @@ def source_window(records, write_id=None, evaluated_against="session_end", run=N
     note = pw = None
     if write_id:
         wev = next((e for e in ev if e["kind"] == "use" and e["id"] == write_id), None)
-        if wev is None or wev.get("mut") is None: return amb("the write %r is not a Write/Edit recorded in the source transcript" % (write_id,), kind="write")
+        if wev is None or wev.get("mut") is None: return amb("the write %r is not a Write/Edit recorded in the source transcript" % (id_text(write_id),), kind="write")
         note, pw = wev["mut"], wev["pos"]
     uses, res, first = _own(ev, note); excluded = set(_generated_all(ev, first if note is not None and first is not None else 0)) | uses | res
     allruns = _runs(ev, first if note is not None and first is not None else 0)
@@ -933,10 +1009,10 @@ def source_window(records, write_id=None, evaluated_against="session_end", run=N
     rw = (res_pos.get(write_id) or pw or 0) if write_id else 0
     done = {e["id"] for e in ev if e["kind"] == "result" and not e["err"]}      # only a SUCCESSFUL mutation changes the note: a failed Write does not end the region of the candidate runs
     nxt = min([e["pos"] for e in ev if e["kind"] == "use" and note is not None and e.get("mut") == note and e["pos"] > pw and e["id"] in done], default=None) if write_id else None
-    cand = [r for r in allruns if r["pos"] > rw and (nxt is None or r["pos"] < nxt)]; listed = [dict(id=r["id"], pos=r["pos"]) for r in cand]; names = ", ".join(r["id"] for r in cand)
+    cand = [r for r in allruns if r["pos"] > rw and (nxt is None or r["pos"] < nxt)]; listed = [dict(id=r["id"], pos=r["pos"]) for r in cand]; names = ", ".join(id_text(r["id"]) for r in cand)   # the prose never holds a refused id (the structured `runs` keep the real ids)
     if run is not None:
         sel = next((r for r in cand if r["id"] == run), None)
-        if sel is None: return amb("%r is not a verification run that starts after this write%s" % (run, " (candidates: %s)" % names if cand else " (the transcript has none)"), listed)
+        if sel is None: return amb("%r is not a verification run that starts after this write%s" % (id_text(run), " (candidates: %s)" % names if cand else " (the transcript has none)"), listed)
     elif len(cand) > 1: return amb("%d verification runs start after this write (%s): the evaluated run is not demonstrated; name it (`--run ID`, version_ref.run) instead of taking the last one" % (len(cand), names), listed)
     else: sel = cand[0] if cand else None
     limit = sel["pos"] if sel else None
@@ -955,30 +1031,36 @@ def eligible_blocks(records, handoff_real, pos=None, excluded=()):
     """Source text blocks eligible to evaluate a version of the note: user/assistant text, tool results and tool inputs of the transcript, EXCLUDING every Write/Edit of the handoff path itself AND its result (the note is
     not its own source; the path is resolved in the cwd recorded for the call), EVERY Jev call (claims and evidence are inputs of a verification, not facts established by the transcript) with its result, and the (record, block)
     pairs in `excluded` (the window of `source_window`: skill activity, verification narration, earlier runs). `pos` = position on the common timeline (jevref.timeline): only what comes strictly before it is eligible. -> [text]."""
+    return [t for t, _ in eligible_blocks_indexed(records, handoff_real, pos, excluded)]
+
+def eligible_blocks_indexed(records, handoff_real, pos=None, excluded=()):
+    """`eligible_blocks` with the provenance of every block: -> [(text, dict(record, line, block, kind, uuid))]; `record` = index in the parsed records, `line` = line of the JSONL (when the loader recorded it), `block` = index of the
+    content block in its record, `kind` = text | tool_use | tool_result. The texts and their order are exactly those of `eligible_blocks`."""
     out, n, skip = [], 0, set()
     for i, d in enumerate(records):
         msg = d.get("message") if isinstance(d.get("message"), dict) else {}; c = msg.get("content"); t = d.get("type")
         if t not in ("user", "assistant"): continue
+        def prov(j, kind): return dict(record=i, line=d.get("_line"), block=j, kind=kind, uuid=d.get("uuid"))
         if isinstance(c, str):
-            if (pos is None or n < pos) and (i, 0) not in excluded: out.append(c)
+            if (pos is None or n < pos) and (i, 0) not in excluded: out.append((c, prov(0, "text")))
             continue
         for j, b in enumerate(c if isinstance(c, list) else []):
             if not isinstance(b, dict): continue
             ty = b.get("type"); gone = (i, j) in excluded
             if ty == "text":
-                if isinstance(b.get("text"), str) and (pos is None or n < pos) and not gone: out.append(b["text"])
+                if isinstance(b.get("text"), str) and (pos is None or n < pos) and not gone: out.append((b["text"], prov(j, "text")))
             elif ty == "tool_use":
                 n += 1
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                 if is_jev(b): skip.add(b.get("id")); continue
                 if mutation_target(b, d.get("cwd")) == handoff_real and handoff_real is not None: skip.add(b.get("id")); continue
                 if gone: continue
-                if pos is None or n < pos: out.append("[tool_use %s] %s" % (b.get("name"), json.dumps(inp, ensure_ascii=False)))
+                if pos is None or n < pos: out.append(("[tool_use %s] %s" % (b.get("name"), json.dumps(inp, ensure_ascii=False)), prov(j, "tool_use")))
             elif ty == "tool_result":
                 n += 1
                 if b.get("tool_use_id") in skip or gone: continue
                 if pos is None or n < pos:
-                    x = b.get("content"); out.append(x if isinstance(x, str) else "".join(y.get("text", "") for y in x if isinstance(y, dict)) if isinstance(x, list) else "")
+                    x = b.get("content"); out.append((x if isinstance(x, str) else "".join(y.get("text", "") for y in x if isinstance(y, dict)) if isinstance(x, list) else "", prov(j, "tool_result")))
     return out
 
 def passage_of(blocks, quote):
@@ -1051,10 +1133,21 @@ def plan_source(items):
     return dict(dispositions=disp, groups=groups, planned_source_calls=len(groups))
 
 _MEMO = {}
+_SRC = {}       # (transcript content identity, write id, evaluated_against, run, note path) -> the sanitized eligible source with its provenance (the source index of ONE evaluation)
+_PREP = {}      # (content identities of the session and its subagent streams, note path, content identity of the note on disk) -> the reconstruction of the versions
+STATS = collections.Counter()   # counts only: how many reconstructions / source indexes were built and how many were reused in this process (a run)
+
+def reset_caches():
+    """Forget everything reused within a run (the next candidate prepares from scratch)."""
+    import refs
+    import scope
+    import versions
+    _MEMO.clear(); _SRC.clear(); _PREP.clear(); _CLEAN.clear(); _INFO.clear(); _MAT.clear(); STATS.clear(); refs.reset_cache(); scope._MEMO.clear(); versions._STREAMS.clear()
+
 def window_for(source_jsonl, write_id, evaluated_against, run=None):
-    """-> (`source_window` of the transcript for ONE evaluation | None when the transcript cannot be read, the records). Cached by transcript identity and window; the one derivation behind `context`, the report and the gate."""
+    """-> (`source_window` of the transcript for ONE evaluation | None when the transcript cannot be read, the records). Cached by the CONTENT identity of the transcript (sha256 of its bytes, not size and mtime) and the window; the one derivation behind `context`, the report and the gate."""
     import discover as D
-    try: key = D.fingerprint(source_jsonl)
+    try: key = D.content_fingerprint(source_jsonl)
     except OSError: return None, None
     if key not in _MEMO: _MEMO[key] = D.load_jsonl(source_jsonl)
     recs = _MEMO[key]; wkey = (key, write_id, evaluated_against, run)
@@ -1062,38 +1155,81 @@ def window_for(source_jsonl, write_id, evaluated_against, run=None):
     return _MEMO[wkey], recs
 
 def context(source_jsonl, handoff_real, version, evaluated_against, bases=(), run=None):
-    """Everything the validator needs about one version: the eligible source text and the canonical material. -> dict(eligible_source, material, material_reason, runs, run). The source is the shared window
-    (`source_window`) of the transcript for THIS write, `evaluated_against` and the evaluated run `run` (version_ref.run; none = the only run after the write); an ambiguous window gives no source, and so does a version of a path written in several streams (`mixed`). Cached by transcript
-    identity and window."""
+    """Everything the validator needs about one version: the eligible source text and the canonical material. -> dict(eligible_source, eligible_blocks, eligible_prov [provenance of every block], material, material_reason, manifest,
+    missing_reference, note_text, references [(ref, text)], runs, run). The source is the shared window (`source_window`) of the transcript for THIS write, `evaluated_against` and the evaluated run `run` (version_ref.run; none = the only run after the write); an ambiguous
+    window gives no source, and so does a version of a path written in several streams (`mixed`). The source index (window + sanitized blocks) is reused by content identity within a run; the references are re-resolved and re-read every time,
+    so a changed reference or resolution always shows (the canonical material itself is reused only while the ordered references and their content are exactly the same, see `_build_material`). The result is the caller's own copy."""
     import discover as D, jevref as J
-    def none(why, runs=()): return dict(eligible_source=None, eligible_blocks=None, material=None, material_reason=why, runs=[r["id"] for r in runs], run=None)
+    def none(why, runs=()): return dict(eligible_source=None, eligible_blocks=None, eligible_prov=None, material=None, material_reason=why, runs=[r["id"] for r in runs], run=None)
     import versions as V
     if version.get("mixed"): return none(V.mixed_reason(version))      # the windows of a path written in several streams depend on an order nobody demonstrates, also retrospectively (the bytes of the full Write stay checkable)
     w, recs = window_for(source_jsonl, version["write_tool_use_id"], evaluated_against, run)
     if w is None: return none("source transcript unreadable")
     if w["ambiguous"]: return none(w["ambiguous"], w["runs"])
-    blocks = eligible_blocks(recs, handoff_real, w["limit"], w["excluded"]); mat, manifest, why, missing = build_material_ex(version["content"], bases)
-    return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=blocks, material=mat, material_reason=why, manifest=manifest, missing_reference=missing, runs=[r["id"] for r in w["runs"]], run=w["run"])
+    key = (D.content_fingerprint(source_jsonl), version["write_tool_use_id"], evaluated_against, run, handoff_real)
+    if key not in _SRC:
+        STATS["source_index_builds"] += 1
+        ib = eligible_blocks_indexed(recs, handoff_real, w["limit"], w["excluded"])   # the shared sanitization policy: what Jev gets (and what the validator re-derives) is never the raw text
+        _SRC[key] = (tuple(clean_text(t) for t, _ in ib), tuple(tuple(sorted(p.items())) for _, p in ib), [r["id"] for r in w["runs"]], w["run"])
+    else: STATS["source_index_hits"] += 1
+    blocks, prov, runs, run_id = _SRC[key]
+    mat, manifest, why, missing, found = _build_material(version["content"], bases)
+    return dict(eligible_source=BLOCK_SEP.join(blocks), eligible_blocks=list(blocks), eligible_prov=[dict(p) for p in prov], material=mat, material_reason=why, manifest=manifest, missing_reference=missing,
+                note_text=clean_text(version["content"]), references=[(r, clean_text(t)) for r, t in found], runs=list(runs), run=run_id)   # a raw (secret-bearing) text never travels in the context
 
-def prepare_one(a):
-    """The prepare result for one candidate -> (object, exit code); `cmd_prepare` prints it, `cmd_prepare_batch` collects it."""
+def _file_sha(path):
+    try: return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    except OSError: return None
+
+def _session_prep(sp, path):
+    """The reconstruction behind one candidate -> (provenance, versions, canonical path, note, relocated-from | None, relocation note). Reused within a run by the CONTENT identity of the session and of its subagent streams
+    and of the note on disk (relocation reads it); every call gets its own copy."""
+    import copy, discover as D, versions as V
+    key = (tuple(D.content_fingerprint(f) for f in [sp] + D.subagent_files(sp)), os.path.realpath(path), _file_sha(path))
+    if key in _PREP: STATS["session_prep_hits"] += 1
+    else:
+        STATS["session_prep_builds"] += 1
+        prov = V.provenance(sp, path)   # preflight, before anything version-dependent: a note without a recorded supported write has no write identity or window
+        vs = canon = note = reloc = rnote = None
+        if prov["state"] == "recorded_write":
+            vs, canon, _, note = V.versions_of(sp, path)
+            if canon is None:
+                reloc, rnote = V.relocation_candidate(sp, path)
+                if reloc: vs, canon, _, note = V.versions_of(sp, path, reloc)
+        _PREP[key] = (prov, vs, canon, note, reloc, rnote)
+    return copy.deepcopy(_PREP[key])
+
+def prepare_one(a, extra=None):
+    """The prepare result for one candidate -> (object, exit code); `cmd_prepare` prints it, `cmd_prepare_batch` collects it. The transcript is hashed once per candidate (discover.fingerprint_scope). `extra` (a dict) receives what the
+    obligation ledger needs and `prepare` does not print: source (canonical), note_real, evaluated_sha256 (the sanitized eligible source of the evaluation)."""
+    import discover as D
+    with D.fingerprint_scope(): return _prepare_one(a, {} if extra is None else extra)
+
+def _prepare_one(a, extra):
     import discover as D, versions as V
-    def fail(*reasons, **extra): return dict(ok=False, reasons=list(reasons), **extra), 3
+    def fail(*reasons, **extra):   # a diagnostic never echoes a credential
+        if isinstance(extra.get("work_locations"), list): extra["work_locations"] = safe_list(extra["work_locations"])
+        if isinstance(extra.get("runs"), list): extra["runs"] = safe_list(extra["runs"], S.ID_ROLE)
+        mr = extra.get("missing_reference")
+        if isinstance(mr, dict): extra["missing_reference"] = dict(mr, **{k: (S.sanitize(mr[k])[0] if isinstance(mr[k], str) else safe_list(mr[k]) if isinstance(mr[k], list) else mr[k]) for k in ("ref", "reason", "searched") if k in mr})
+        return dict(ok=False, reasons=[S.sanitize(r)[0] for r in reasons], **extra), 3
     locs, why = check_locations(getattr(a, "location", None))
     if why: return fail(why)
+    if identity_dependent(a.write_id, getattr(a, "run", None), role=S.ID_ROLE): return fail("the write id or the run id holds a secret or a redaction marker: an identity that needs redaction is not used (UNRESOLVED; the value is not echoed)")
     sp, how, amb = D.resolve_session_info(a.source, a.cwd)
     if amb: return fail("source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl")
     if not sp or not D.source_exists(sp): return fail("source session not found")
+    if identity_dependent(sp, D.canon(sp)): return fail("the source session path holds a secret or a redaction marker: an identity that needs redaction is not used (UNRESOLVED; the value is not echoed)")
+    extra["source"] = D.canon(sp)
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)
-    prov = V.provenance(sp, path)   # preflight, before anything version-dependent: a note without a recorded supported write has no write identity or window
+    prov, vs, canon, note, reloc, rnote = _session_prep(sp, path)
     if prov["state"] != "recorded_write": return fail(prov["blocker"])
-    vs, canon, _, note = V.versions_of(sp, path); reloc = None
-    if canon is None:
-        reloc, rnote = V.relocation_candidate(sp, path)
-        if reloc: vs, canon, _, note = V.versions_of(sp, path, reloc)
-        else: return fail("%s; relocation: %s" % (note, rnote))
+    if canon is None: return fail("%s; relocation: %s" % (note, rnote))
+    if identity_dependent(path, canon, reloc): return fail("the handoff path holds a secret or a redaction marker: an identity that needs redaction is not used (UNRESOLVED; the value is not echoed)")
+    extra["note_real"] = canon
     v = next((x for x in vs if x["write_tool_use_id"] == a.write_id), None)
     if v is None: return fail("--write-id is not a write of this handoff in the source session (copy it from `versions.py list`)")
+    if identity_dependent(v["write_tool_use_id"], role=S.ID_ROLE): return fail("the recorded write id holds a secret or a redaction marker: an identity that needs redaction is not used (UNRESOLVED; the value is not echoed)")
     if v["status"] != "ok" or v["sha256"] is None: return fail("the version is not recoverable: %s" % v["reason"])
     if reloc:
         try: disk = hashlib.sha256(open(path, "rb").read()).hexdigest()
@@ -1101,16 +1237,81 @@ def prepare_one(a):
         if disk not in {x["sha256"] for x in vs if x["sha256"]}: return fail("relocated copy: the bytes do not hash to a recoverable version of the written handoff")
     bases = material_bases(path, v, locs); work = R.with_git_roots(bases)
     ctx = context(sp, canon, v, a.evaluated_against, bases, getattr(a, "run", None))
+    if identity_dependent(ctx.get("run"), role=S.ID_ROLE): return fail("the selected verification run id holds a secret or a redaction marker: an identity that needs redaction is not used (UNRESOLVED; the value is not echoed)", work_locations=work)
+    if ctx["eligible_source"] is not None: extra["evaluated_sha256"] = sha256_text(ctx["eligible_source"])
     if ctx["material"] is None: return fail(ctx["material_reason"] or "material not available", work_locations=work, **({"runs": ctx["runs"]} if ctx.get("runs") else {}), **({"missing_reference": ctx["missing_reference"]} if ctx.get("missing_reference") else {}))
     if not wsnorm(a.detail): return fail("empty detail", work_locations=work)
+    for what, val in (("detail", a.detail), ("source quote", a.source_quote)):
+        if redaction_dependent(val): return fail("the %s holds a secret or a redaction marker: a redaction-dependent %s cannot be audited (UNRESOLVED; nothing is sent and the value is not echoed)" % (what, what), work_locations=work)
     if wsnorm(a.detail).startswith(SOURCE_PREFIX.strip()) or wsnorm(a.detail).startswith(ABSENCE_PREFIX.strip()): return fail("the detail must be the bare detail, not a canonical claim (the helper builds the claims itself)", work_locations=work)
     passage = passage_of(ctx["eligible_blocks"], a.source_quote)
     if passage is None: return fail("the source quote is not (exactly, case-sensitive, whitespace as in the record, inside ONE transcript record) in the eligible source of this version (%s; session_end stops before the verification activity, Jev calls are never source)" % a.evaluated_against, work_locations=work)
+    if redaction_dependent(passage): return fail("the source passage that holds the quote contains redacted content: what it hides is not demonstrated (UNRESOLVED; nothing is sent)", work_locations=work)
     sc, ac = claims(a.detail, "R04")
-    return (dict(ok=True, contract="R04", work_locations=work, detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
+    out = (dict(ok=True, contract="R04", work_locations=work, detail=wsnorm(a.detail), source_claim=sc, absence_claim=ac, source_passage=passage, material=ctx["material"], material_manifest=ctx.get("manifest", []),
                           version_ref=dict(write_tool_use_id=v["write_tool_use_id"], sha256=v["sha256"], evaluated_against=a.evaluated_against, **({"run": ctx["run"]} if a.evaluated_against == "session_end" and ctx.get("run") else {})), handoff_source_path=reloc,
                           omission_ref_template=dict(detail=wsnorm(a.detail), source_check_id="<id of the check whose call used source_claim and source_passage>"),
                           note="ABSENCE-first, in this order. (1) Call jev_verify with claims=[absence_claim] (the bare detail, the ONLY claim of that call) and evidence=material, verbatim and complete. If it comes back verified or contradicted the note states the detail (or contradicts it): record the check, report NO finding and make NO SOURCE call. (2) Only if (1) is `unsupported` with confidence > 0.95 and action explicitly `auto`, call jev_verify with claims=[source_claim] and evidence=source_passage (verbatim, the WHOLE passage, nothing added); several candidates that print the identical source_passage for the same write may share ONE such call, one source_claim each (omissions.plan_source), never inside a wrapper that hides the inner calls. Both checks carry the same version_ref. Report a finding (type lost_detail) only if (2) is verified > 0.95 with the auxiliary conditions AND (1) was unsupported > 0.95 with action auto: omission_ref, claim = absence_claim, check_id = the absence check, confidence = its confidence, quote_source = the exact quote. An unsupported result alone confirms nothing. Anything else (<= 0.95, review, error, another verdict, incomplete material) stays UNRESOLVED and needs no SOURCE call"), 0)
+    import scope as SC
+    out[0]["hints"] = build_hints(wsnorm(a.detail), passage, ctx, SC.scope_of(sp, a.write_id, a.evaluated_against, getattr(a, "run", None))[1], D.canon(sp))   # navigation only: nothing above depends on it
+    return out
+
+HINT_CAP = 5        # at most this many records per identifier are listed (the rest is counted in `truncated`)
+HINT_OFFSETS = 3    # and this many offsets per record
+HINT_IDENTIFIERS = 12
+HINT_NOTE = "Occurrence hints, for NAVIGATION only: positions of the detail's identifiers in the eligible records, in the requests of the session and in the complete material. A literal match never clears, excludes or proves anything (a negated, quoted, superseded or stale assertion matches too, and so does a different case): the ABSENCE-first plan, the semantic checks and all nine categories stay required. A list that is capped (`truncated`) says nothing about the records it does not list."
+
+def identifiers_of(detail):
+    """The identifiers of a detail (numbers, versions, hashes, paths, file names, code names: the DETAIL rule of advice.py), as written, in order, without repeats."""
+    import advice as A
+    out = []
+    for m in A.DETAIL.findall(detail or ""):
+        d = m.strip("`").rstrip(".,:;)")
+        if len(d) > 1 and d not in out: out.append(d)
+    return out[:HINT_IDENTIFIERS]
+
+def _positions(text, ident):
+    """-> (exact count, [offsets of the first matches: the exact ones, or the case-insensitive ones when there is no exact match], case-insensitive count)."""
+    def scan(t, x):
+        offs, i, n = [], t.find(x), 0
+        while i != -1:
+            n += 1
+            if len(offs) < HINT_OFFSETS: offs.append(i)
+            i = t.find(x, i + max(len(x), 1))
+        return n, offs
+    n, offs = scan(text, ident)
+    m, foffs = scan(text.lower(), ident.lower()) if ident else (0, [])
+    return n, (offs if n else foffs), m
+
+def _where(text, off):
+    line = text.count("\n", 0, off) + 1
+    return line, off - (text.rfind("\n", 0, off) + 1) + 1
+
+def build_hints(detail, passage, ctx, requests, source):
+    """The occurrence hints of one candidate (see HINT_NOTE). source_records: the eligible records of THIS evaluation (`block_index` = index in the printed eligible source, `line`/`block`/`record`/`kind`/`uuid` = exact provenance in the
+    transcript, `offsets` = character offsets in the sanitized record text, `case_sensitive` False = only a case-insensitive match); requests: the user's requests of the session window (`request_index` as in scope.py); material_matches:
+    where the identifier stands in the complete material (`section` note | reference, `ref`, `line`, `column` 1-based in that file's own text)."""
+    ids = identifiers_of(detail); blocks, prov = ctx["eligible_blocks"], ctx["eligible_prov"]
+    h = dict(navigation_only=True, note=HINT_NOTE, source=source, identifiers=ids, source_records=[], requests=[], material_matches=[], truncated={}, limits="caps only bound the listing: a missing record is never evidence that an identifier is absent from it, and a literal match is never evidence that it is current",
+             quote_block_index=next((i for i, b in enumerate(blocks) if b is passage or b == passage), None))
+    for ident in ids:
+        hit = 0
+        for i, (b, p) in enumerate(zip(blocks, prov)):
+            n, offs, m = _positions(b, ident)
+            if not m: continue
+            hit += 1
+            if hit <= HINT_CAP: h["source_records"].append(dict(identifier=ident, block_index=i, line=p.get("line"), record=p["record"], block=p["block"], kind=p["kind"], uuid=p.get("uuid"), case_sensitive=n > 0, count=n or m, offsets=offs))
+        if hit > HINT_CAP: h["truncated"][ident] = hit - HINT_CAP
+        for k, r in enumerate(requests, 1):
+            rt = clean_text(r); n, offs, m = _positions(rt, ident)
+            if m: h["requests"].append(dict(identifier=ident, request_index=k, case_sensitive=n > 0, count=n or m, offsets=offs))
+        sections = [("note", None, ctx.get("note_text") or "")] + [("reference", ref, txt) for ref, txt in ctx.get("references") or []]
+        for sec, ref, txt in sections:
+            n, offs, m = _positions(txt, ident)
+            if m:
+                line, col = _where(txt, offs[0])
+                h["material_matches"].append(dict(identifier=ident, section=sec, ref=ref, line=line, column=col, case_sensitive=n > 0, count=n or m))
+    return h
 
 def cmd_prepare(a):
     obj, code = prepare_one(a); print(json.dumps(obj, indent=1, ensure_ascii=False)); return code
@@ -1120,9 +1321,9 @@ BATCH_KEYS = ("source", "file", "write_id", "evaluated_against", "cwd", "run")
 def cmd_prepare_batch(a):
     """Many candidates in ONE process, also across handoffs and versions: each spec item is {detail, source_quote} plus optional source/file/write_id/evaluated_against/cwd
     overriding the command-line defaults; element i is exactly the object `prepare` prints for item i with those arguments (exit 3 if any element is not ok)."""
-    def bad(reason): print(json.dumps(dict(ok=False, reasons=[reason]), indent=1, ensure_ascii=False)); return 3
-    try: spec = json.load(open(a.spec, encoding="utf-8"))
-    except (OSError, ValueError) as e: return bad("spec unreadable: %s" % e)
+    def bad(reason): print(json.dumps(dict(ok=False, reasons=[S.sanitize(reason)[0]]), indent=1, ensure_ascii=False)); return 3
+    try: spec = json.load(sys.stdin) if a.spec == "-" else json.load(open(a.spec, encoding="utf-8"))   # `--spec -`: the JSON comes from stdin, no temporary file
+    except (OSError, ValueError) as e: return bad("spec unreadable: %s" % ("stdin is not valid JSON" if a.spec == "-" else e))
     items = spec.get("candidates") if isinstance(spec, dict) else spec
     if not isinstance(items, list) or not items: return bad('spec must be a non-empty list (or {"candidates": [...]}) of {"detail", "source_quote"[, %s]}' % ", ".join(BATCH_KEYS))
     args = []
@@ -1135,9 +1336,25 @@ def cmd_prepare_batch(a):
         if not all(isinstance(n.get(k), str) and n[k] for k in ("file", "write_id", "evaluated_against")): return bad("item %d: file, write_id and evaluated_against are required (item or command line)" % i)
         if n["evaluated_against"] not in EVALUATED: return bad("item %d: evaluated_against must be one of %s" % (i, list(EVALUATED)))
         args.append(argparse.Namespace(**n))
-    out, code = [], 0
+    L = doc = None
+    if getattr(a, "ledger", None):   # fail closed BEFORE any work: a malformed ledger is never written over
+        import ledger as L
+        try: doc = L.load(a.ledger, must_exist=False)
+        except L.LedgerError as e: return bad(str(e))
+    if L:   # preparation establishes the association BEFORE any row is written: the mandatory audit (audit.py) expects every obligation of a ledger of the session whatever the report names
+        import audit as AU, discover as D
+        for src, cwd in dict.fromkeys((n.source, n.cwd) for n in args):
+            sp, _, amb = D.resolve_session_info(src, cwd)
+            if amb or not sp or not D.source_exists(sp): continue      # an unresolvable source: its rows are `unavailable` (kept by the ledger) and no registry exists to associate
+            try: AU.associate_session_ledger(sp, a.ledger)
+            except ValueError as e: return bad("the ledger cannot be associated with the candidate registry of the session: %s" % e)
+    out, code, rows = [], 0, []
     for n in args:
-        obj, c = prepare_one(n); out.append(obj); code = max(code, c)
+        extra = {}; obj, c = prepare_one(n, extra); out.append(obj); code = max(code, c)
+        if L: rows.append(L.row_of(n, obj, extra))
+    if L:
+        try: L.add_rows(doc, rows); L.save(a.ledger, doc)
+        except (L.LedgerError, OSError) as e: return bad(str(e))
     print(json.dumps(out, indent=1, ensure_ascii=False)); return code
 
 def build_parser():
@@ -1146,11 +1363,25 @@ def build_parser():
     p.add_argument("--detail", required=True); p.add_argument("--source-quote", required=True, dest="source_quote"); p.add_argument("--cwd"); p.add_argument("--location", action="append", default=[]); p.add_argument("--run")
     b = sub.add_parser("prepare-batch")
     b.add_argument("--source"); b.add_argument("--file"); b.add_argument("--write-id", dest="write_id"); b.add_argument("--evaluated-against", choices=EVALUATED, dest="evaluated_against")
-    b.add_argument("--spec", required=True); b.add_argument("--cwd"); b.add_argument("--location", action="append", default=[]); b.add_argument("--run")
+    b.add_argument("--spec", required=True, help="the JSON spec file, or - for stdin"); b.add_argument("--cwd"); b.add_argument("--location", action="append", default=[]); b.add_argument("--run")
+    b.add_argument("--ledger", help="add the obligations of this batch to the resumable obligation ledger FILE (created if missing; rows are never dropped)")
+    g = sub.add_parser("ledger"); gs = g.add_subparsers(dest="ledger_cmd", required=True)
+    r = gs.add_parser("record"); r.add_argument("--ledger", required=True); r.add_argument("--id", required=True); r.add_argument("--stage", required=True, choices=("absence", "source")); r.add_argument("--tool-use-id", required=True, dest="tool_use_id")
+    u = gs.add_parser("resume"); u.add_argument("--ledger", required=True); u.add_argument("--session", help="the session that holds the Jev calls (default: the source of each obligation)"); u.add_argument("--cwd")
     return ap
+
+def cmd_ledger(a):
+    import ledger as L
+    def bad(reason): print(json.dumps(dict(ok=False, reasons=[S.sanitize(reason)[0]]), indent=1, ensure_ascii=False)); return 3
+    try:
+        doc = L.load(a.ledger)
+        if a.ledger_cmd == "record":
+            r = L.record(doc, a.id, a.stage, a.tool_use_id); L.save(a.ledger, doc); print(json.dumps(dict(ok=True, id=r["id"], stages=r["stages"], note="recorded only as a reference to re-read: nothing about the result is stored or trusted"), indent=1)); return 0
+        print(json.dumps(L.resume(doc, a.session, a.cwd), indent=1, ensure_ascii=False)); return 0
+    except (L.LedgerError, OSError) as e: return bad(str(e))
 
 def main():
     a = build_parser().parse_args()
-    return cmd_prepare_batch(a) if a.cmd == "prepare-batch" else cmd_prepare(a)
+    return cmd_ledger(a) if a.cmd == "ledger" else cmd_prepare_batch(a) if a.cmd == "prepare-batch" else cmd_prepare(a)
 
 if __name__ == "__main__": sys.exit(main())

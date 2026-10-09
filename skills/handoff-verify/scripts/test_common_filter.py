@@ -19,6 +19,7 @@ import argparse, contextlib, io, json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import discover, jevref, omissions, prepare, report, versions
+import contract_fixtures as CF
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 
@@ -405,7 +406,7 @@ class FalseOmissionPair(Base):
         sc, ac = omissions.claims(detail, "R04"); mat = omissions.material(self.NOTE2)
         c = Tx(self.d)
         c.tool("a1", "mcp__jev__jev_verify", dict(claims=[ac], evidence=[dict(text=mat)]), json.dumps(dict(subject_at=0.5, results=[dict(claim=ac, verdict="unsupported", confidence=0.98, action="auto")])))
-        c.tool("s1", "mcp__jev__jev_verify", dict(claims=[sc], evidence=[dict(text=passage)]), json.dumps(dict(subject_at=0.5, results=[dict(claim=sc, verdict="verified", confidence=0.99, action="auto", same_subject=0.9)])))
+        c.tool("s1", "mcp__jev__jev_verify", dict(claims=[sc], evidence=[dict(text=passage)]), CF.verify_body([dict(claim=sc, verdict="verified", confidence=0.99)], compatible_synthetic=True))
         for r in c.recs: r["sessionId"] = "calls-session"
         c.save(calls_log)
         checks = [dict(id="abs", tool="verify", verdict="unsupported", confidence=0.98, jev_ref=dict(tool_use_id="a1", result_index=0, key=ac), version_ref=ref),

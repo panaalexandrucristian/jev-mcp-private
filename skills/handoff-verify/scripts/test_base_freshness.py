@@ -76,7 +76,7 @@ class Diagnosed(OBase):
         sel = self.build([self.blind()], [self.edit()], [tool("j1", "jev:jev_verify", jev_input(), T0 + 60, T0 + 65, out=jev_json())])
         open(self.path(), "w").write("alpha gamma")
         v = versions.versions_of(sel, self.path())[0][0]
-        chk = dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id="j1", result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
+        chk = dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id="j1", result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
         d = dict(session=dict(session_id=self.sid, jsonl=sel, cwd=self.cwd), handoff=dict(path=self.path(), versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS")
         rd = os.path.join(self.base, "run"); os.makedirs(rd); md, js = report.write_report(rd, self.path(), d, "Stare: **PASS**\n", calls_jsonl=sel); doc = json.load(open(os.path.join(rd, js)))
         self.assertNotEqual(doc["status"], "PASS"); g = versions.gate(sel, self.path(), doc, disk_path=self.path())

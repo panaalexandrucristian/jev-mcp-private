@@ -73,7 +73,7 @@ def other_streams(source_jsonl, real):
     """The subagent transcripts of the session `source_jsonl` that also hold a successful Write/Edit of the canonical path `real` (the streams of ONE session whose order against the parent is not demonstrated)."""
     out = []
     for f in D.subagent_files(source_jsonl):
-        try: key = D.fingerprint(f)
+        try: key = D.content_fingerprint(f)
         except OSError: continue
         if key not in _STREAMS: _STREAMS[key] = {D.real_of(i["path"], i.get("cwd")) for i in D.inventory(f, "subagent")[0] if i["success"]} - {None}
         if real in _STREAMS[key]: out.append(f)
@@ -195,6 +195,18 @@ def same_session(report_source, calls_path, session_id=None):
     common = set(ta) & set(tb)
     return bool(sid_ok and common and all(ta[i] == tb[i] for i in common) and (set(ta) <= set(tb) or set(tb) <= set(ta)))
 
+def distinct_sessions(a, b):
+    """Is it DEMONSTRATED that the transcripts `a` and `b` are two different sessions? Not the mere failure of `same_session` (which is also false when an identity cannot be shown): both must exist and be readable with a recorded
+    identity, and either they are two different OpenCode selectors, or both are JSONL transcripts that name session ids (metadata) and tool uses, and no session id is common. An empty, malformed, unreadable, metadata-deficient or mixed
+    (selector / JSONL) pair is NOT demonstrated distinct."""
+    try:
+        if not (isinstance(a, str) and a and isinstance(b, str) and b and D.source_exists(a) and D.source_exists(b)): return False
+        if D.canon(a) == D.canon(b): return False
+        if D.is_selector(a) or D.is_selector(b): return bool(D.is_selector(a) and D.is_selector(b))
+        sa, ta = _identity(a); sb, tb = _identity(b)
+        return bool(sa and sb and ta and tb and not (sa & sb))
+    except Exception: return False
+
 def validate_ref(ref, vs, call=None, same=False):
     """-> (kind, reason, version). kind: ok | absent | inconsistent | window | unrecoverable | unpositioned | unordered (`bind_versions` adds `run`: the evaluation, i.e. the verification run, is not demonstrated). call = the bound Jev call (dict with pos/result_pos on the transcript's event timeline, same transcript only).
     Window (R02 contract): the call's tool_use comes after the version's write result and the call's RESULT arrives before the next successful write/edit of the same path."""
@@ -301,18 +313,22 @@ def attach(bindings, rows):
         out.append(b)
     return out
 
-def per_version(checks, bindings, findings, declared_unresolved, declared_versions, omission_contract=False):
+def per_version(checks, bindings, findings, declared_unresolved, declared_versions, omission_contract=False, audit_ctx=None):
     """Status/binding summary per WRITE (not per hash: A -> B -> A has two distinct writes of identical bytes), over the checks explicitly attributed to it by the verified version identity
     (`version.write_tool_use_id` + sha256). -> {write_tool_use_id: dict(sha256, write_tool_use_id, audited_status, binding_summary, evaluations={evaluated_against: dict(audited_status, binding_summary)})}.
     Checks and findings are never shared between writes with the same hash; the evaluations of one write against `prefix` and `session_end` are kept apart (the write-level status covers both).
-    A declared version (handoff.versions entry) without checks of its own is not in the result: use `lookup` (UNRESOLVED stub)."""
+    A declared version (handoff.versions entry) without checks of its own is not in the result: use `lookup` (UNRESOLVED stub).
+    Every status here (the write-level summary AND each prefix / session_end evaluation) goes through the mandatory full-report audit (`audit_ctx`, an audit.Context of the report; audit.certify): a PASS needs a COMPLETE audit of
+    the evaluations of that summary, a FAIL keeps its precedence. Without an `audit_ctx` nothing can be audited, so a PASS is capped (audit.no_context)."""
     ok = [b for b in bindings if b.get("version") and b["version"]["ok"]]
     out = {}
     def summary(ids):
         cs = [c for c in checks if c.get("id") in ids]; bs = [b for b in bindings if b["id"] in ids]
         fs = [f for f in findings if isinstance(f, dict) and f.get("check_id") in ids]; un = [u for u in declared_unresolved if isinstance(u, dict) and u.get("check_id") in ids]
         ev = J.audited_status(cs, bs, fs, un, None, omission_contract)
-        return dict(audited_status=ev["status"], binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], valid_findings=ev["valid_findings"]))
+        import audit as A
+        ev = A.certify(ev, audit_ctx, list(dict.fromkeys(A.key_of(b["version"]) for b in bs if b.get("bound") and b.get("version") and b["version"].get("ok"))), fs) if audit_ctx is not None else A.no_context(ev)   # each distinct evaluation once: two checks of one evaluation are one evaluation
+        return dict(audited_status=ev["status"], binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], valid_findings=ev["valid_findings"], audit=ev["audit"]))
     ref_of = {c.get("id"): (c.get("version_ref") if isinstance(c.get("version_ref"), dict) else {}) for c in checks if isinstance(c, dict)}
     for wid in dict.fromkeys(b["version"]["write_tool_use_id"] for b in ok):
         mine = [b for b in ok if b["version"]["write_tool_use_id"] == wid]; ids = {b["id"] for b in mine}
@@ -374,7 +390,7 @@ def stale_of(doc, vs):
 def gate(calls_path, handoff_path, doc, disk_path=None, session_id=None, omission_contract="R04"):
     """The delivered-version gate (current contract R04; "R03" / False (R02) only when passed explicitly for a historical/baseline evaluation; `jevref.contract_of`). -> dict(delivery_state, current_sha256, latest_write_id, report_path?, audited_status, bound_checks_for_version, reasons). Same code for the CLI, the report
     writer and the auditor. `disk_path` = file whose bytes are compared (default: handoff_path)."""
-    res = dict(delivery_state="unresolved", current_sha256=None, latest_write_id=None, audited_status=None, bound_checks_for_version=0, reasons=[])
+    res = dict(delivery_state="unresolved", current_sha256=None, latest_write_id=None, audited_status=None, audit=None, bound_checks_for_version=0, reasons=[])
     ctx = dict(vs=[])
     def fin(state, why):
         res["delivery_state"] = state; res["reasons"].append(why)
@@ -395,7 +411,12 @@ def gate(calls_path, handoff_path, doc, disk_path=None, session_id=None, omissio
     except OSError: return fin("unresolved", "the handoff file is absent on disk: %s" % dp)
     res["current_sha256"] = hashlib.sha256(raw).hexdigest()
     if res["current_sha256"] != last["sha256"]: return fin("unresolved", "bytes on disk differ from the last recorded write of this session (external change or unrecorded edit)")
-    if not isinstance(doc, dict) or doc.get("schema_version") != "1" or not isinstance(doc.get("checks"), list) or not isinstance(doc.get("findings"), list): return fin("unresolved", "report missing or not schema v1")
+    if not isinstance(doc, dict) or doc.get("schema_version") != "1": return fin("unresolved", "report missing or not schema v1")
+    import schema_check as SC   # the structure of the WHOLE report comes before any field of it is read: a structurally invalid report certifies no delivery (an authentic, structurally valid UNRESOLVED report still can)
+    problems = SC.validate_report(doc)
+    if problems:   # nothing is recomputed from a malformed report (audited_status stays null), but the structural unfinished work is exposed
+        res["audit"] = dict(complete=False, reasons=["the report does not match report.schema.json: " + SC.summarize(problems)], reasons_total=1, unfinished=dict(structure=len(problems)), evaluations=0, scope=dict(valid=0, invalid=0))
+        return fin("unresolved", "the report is not structurally valid (report.schema.json), so it certifies no delivery: " + SC.summarize(problems))
     h = doc.get("handoff") if isinstance(doc.get("handoff"), dict) else {}
     if not isinstance(h.get("path"), str) or os.path.realpath(h["path"]) != os.path.realpath(handoff_path) or os.path.realpath(handoff_path) != canon: return fin("unresolved", "the report is about another handoff file (canonical path of the report, of the requested file and of the transcript writes must be identical)")
     src = (doc.get("session") or {}).get("jsonl")
@@ -404,7 +425,9 @@ def gate(calls_path, handoff_path, doc, disk_path=None, session_id=None, omissio
     r03 = J.contract_of(omission_contract)   # the CURRENT contract is chosen by the evaluator (default R04: strict auxiliary conditions, explicit omission pair with the R04 absence half), never by a marker in the report; R03 / R02 only by an explicit selection (historical evaluation)
     bs = J.bind(checks, calls, r03); rows = bind_versions(checks, bs, handoff_path, calls_path, calls, True, None, doc.get("work_locations"), [src]); bs2 = J.finalize(attach(bs, rows), doc["findings"], None, r03)
     ev = J.audited_status(checks, bs2, doc["findings"], doc.get("unresolved", []), None, r03)
-    res["audited_status"] = ev["status"]
+    import audit as A   # the SAME certifying function as the report writer: a PASS needs a complete audit, a validated defect keeps FAIL
+    ev = A.certify(ev, A.Context(doc, checks, bs2, calls, calls_path, handoff_path, None, True, True, r03, False, [src]))   # the report's transcript is another representation of this session (same_session above): its registry and ledgers are part of the accounting
+    res["audited_status"] = ev["status"]; res["audit"] = ev["audit"]
     if doc.get("status") != ev["status"]: return fin("unresolved", "stored report status %r differs from the recomputed %r (invalid or hand-edited report)" % (doc.get("status"), ev["status"]))
     # Identity validity comes BEFORE the verified_version branch: a valid check must not mask an absent/inconsistent/unrecoverable identity elsewhere in the same report. An unresolved check from
     # confidence/verdict (authentic UNRESOLVED, documents the verification done) is not an identity problem. A version_ref on an unbound check is validated too (it must not be wrong).
@@ -431,7 +454,7 @@ def _resolve(arg, cwd):
 def cmd_list(a):
     sp, how, amb = _resolve(a.source, a.cwd)
     if amb: print(json.dumps({"error": "source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl", "resolution": how})); return 3
-    if not sp or not D.source_exists(sp): print(json.dumps({"error": "source session not found", "arg": a.source})); return 3
+    if not sp or not D.source_exists(sp): print(json.dumps({"error": "source session not found", "arg": O.shown(a.source)})); return 3
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)
     prov = provenance(sp, path)   # preflight: no recorded supported write, no write identity or window
     if prov["state"] != "recorded_write": print(json.dumps({"error": prov["blocker"], "provenance": prov["state"], "source_session_jsonl": sp, "resolution": how}, ensure_ascii=False)); return 3
@@ -455,7 +478,7 @@ def cmd_list(a):
                 if w["ambiguous"]: r["window"] = w["ambiguous"]
         else: r["reason"] = v["reason"]
         rows.append(r)
-    if a.run and recs is not None and not picked: print(json.dumps({"error": "--run %s is not a verification run that starts after any listed version (see `runs` of each version)" % a.run, "source_session_jsonl": sp, "resolution": how}, ensure_ascii=False)); return 3
+    if a.run and recs is not None and not picked: print(json.dumps({"error": "--run %s is not a verification run that starts after any listed version (see `runs` of each version)" % (O.shown(a.run, "tool_use_id") or "(the value is not echoed)"), "source_session_jsonl": sp, "resolution": how}, ensure_ascii=False)); return 3
     if a.run and recs is None: print(json.dumps({"error": "--run only applies to --evaluated-against session_end", "source_session_jsonl": sp, "resolution": how}, ensure_ascii=False)); return 3
     blockers = [x for x in (unpositioned_reason(next((v for v in reversed(vs) if v.get("unpositioned")), {})), mixed_reason(next((v for v in reversed(vs) if v.get("mixed")), {}))) if x]
     runs_note = ("Several verification runs follow a version (`runs`): name the one the check is about with `--run ID` (it is then printed in version_ref.run); without it the run is not demonstrated and the omission pair stays UNRESOLVED. "
@@ -467,12 +490,12 @@ def cmd_status(a):
     sp, how, amb = _resolve(a.session, a.cwd)
     def out(d, code): print(json.dumps(d, indent=1, ensure_ascii=False)); return code
     if amb or not sp or not D.source_exists(sp):
-        return out(dict(delivery_state="unresolved", current_sha256=None, latest_write_id=None, report_path=a.report, audited_status=None, bound_checks_for_version=0,
+        return out(dict(delivery_state="unresolved", current_sha256=None, latest_write_id=None, report_path=O.shown(a.report), audited_status=None, bound_checks_for_version=0,
                         reasons=["current session not demonstrated (ambiguous: pass --session ID or PATH.jsonl)" if amb else "session not found"]), 3)
     path = a.file if os.path.isabs(a.file) else os.path.join(a.cwd or os.getcwd(), a.file)
     try: doc = json.load(open(a.report, encoding="utf-8"))
     except (OSError, ValueError) as e: doc = None
-    g = gate(sp, path, doc, disk_path=path); g["report_path"] = a.report
+    g = gate(sp, path, doc, disk_path=path); g["report_path"] = O.shown(a.report)
     return out(g, {"verified_version": 0, "needs_reverification": 2}.get(g["delivery_state"], 3))
 
 def build_parser():

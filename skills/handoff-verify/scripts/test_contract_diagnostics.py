@@ -7,6 +7,7 @@ usage: python3 -B test_contract_diagnostics.py [-v]"""
 import json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
+import audit_fixtures as AF
 import advice, jevref, report
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
@@ -160,9 +161,9 @@ class StatusInvariance(unittest.TestCase):
     def doc(self, results, findings=(), subject_at=0.5):
         rec, c = mkcall(results, subject_at=subject_at)
         self.t = tempfile.TemporaryDirectory(); self.addCleanup(self.t.cleanup); log = os.path.join(self.t.name, "s.jsonl")
-        with open(log, "w", encoding="utf-8") as f: f.write("".join(json.dumps(r) + "\n" for r in rec))
+        with open(log, "w", encoding="utf-8") as f: f.write("".join(json.dumps(dict(r, cwd=self.t.name)) + "\n" for r in rec))      # (a real session records its cwd: the registry of the session lives there)
         checks = [dict(id="k%d" % k, tool="jev_verify", verdict=r["verdict"], confidence=r["confidence"], jev_ref=dict(tool_use_id="c1", result_index=k, key=r["claim"])) for k, r in enumerate(results)]
-        d = dict(session=dict(session_id="s1", jsonl=log, cwd=self.t.name), status="PASS", findings=list(findings), unresolved=[], checks=checks)
+        d = AF.complete(dict(session=dict(session_id="s1", jsonl=log, cwd=self.t.name), handoff=dict(path=os.path.join(self.t.name, "HANDOFF.md"), versions=[]), status="PASS", findings=list(findings), unresolved=[], checks=checks))
         return report.bind_report(d, log, self.t.name, (), False, None, None, "R04"), c
 
     def test_the_check_stays_unresolved_and_the_status_is_what_it_was(self):

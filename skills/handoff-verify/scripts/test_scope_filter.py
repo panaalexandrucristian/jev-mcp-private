@@ -7,6 +7,8 @@ import json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import discover, jevref, report, scope
+import contract_fixtures as CF
+import audit_fixtures as AF
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 CLAIM = "The note says the gate switch is on by default."
@@ -48,7 +50,7 @@ def build(d, calls=()):
     s.tool("sk", "Skill", dict(skill="jev:handoff-verify"), "loaded")
     s.rec("user", "a late request after the verification started")
     s.tool("c1", "mcp__jev__jev_verify", dict(claims=[CLAIM], evidence=[dict(text="gate on by default")]),
-           json.dumps(dict(subject_at=0.5, results=[dict(claim=CLAIM, verdict="verified", confidence=0.99, same_subject=0.9, action="auto")])))
+           CF.verify_body([dict(claim=CLAIM, verdict="verified", confidence=0.99)], compatible_synthetic=True))
     for tid, inp, res in calls: s.tool(tid, "mcp__jev__jev_classify", inp, res)
     return s.save()
 
@@ -134,16 +136,17 @@ class Exclusions(Base):
         self.assertIn("purpose or classes", self.validate([excl(0, tid="k4")], log)["reasons"][0]["reason"])
 
 class ReportStatus(Base):
-    def doc(self, log, ex=None):
-        d = dict(session=dict(session_id="s1", jsonl=log, cwd=self.d), status="PASS", findings=[], unresolved=[],
+    def doc(self, log, ex=AF.MISSING):
+        d = dict(session=dict(session_id="s1", jsonl=log, cwd=self.d), handoff=dict(path=os.path.join(self.d, "HANDOFF.md"), versions=[]), status="PASS", findings=[], unresolved=[],
                  checks=[dict(id="k", tool="jev_verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id="c1", result_index=0, key=CLAIM))])
-        if ex is not None: d["scope_exclusions"] = ex
+        d = AF.complete(d, scope_exclusions=ex)   # `ex` None = the report declares NO scope accounting (the key is absent), a list = the declared exclusions (empty = audited zero)
         return report.bind_report(d, log, self.d, (), False, None, None, "R04")
 
     def test_a_valid_exclusion_keeps_pass_and_an_invalid_one_makes_it_unresolved(self):
         log, _ = self.session()
-        self.assertEqual(self.doc(log)["status"], "PASS")
-        self.assertNotIn("scope_audit", self.doc(log))
+        self.assertEqual(self.doc(log, [])["status"], "PASS")   # an empty list is audited zero exclusions
+        missing = self.doc(log); self.assertEqual(missing["status"], "UNRESOLVED"); self.assertNotIn("scope_audit", missing)   # no declaration at all is missing accounting, not audited zero
+        self.assertTrue([r for r in missing["binding_summary"]["audit"]["reasons"] if "scope_exclusions is missing" in r])
         ok = self.doc(log, [excl(0)])
         self.assertEqual(ok["status"], "PASS"); self.assertEqual(ok["scope_audit"]["valid"], 1); self.assertEqual(ok["scope_audit"]["threshold"], 0.99)
         bad = self.doc(log, [excl(0), excl(1)])

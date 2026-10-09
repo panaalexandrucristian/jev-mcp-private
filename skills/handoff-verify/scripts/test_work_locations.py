@@ -7,6 +7,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import omissions, versions, refs
+import audit_fixtures as AF
 from test_material_parity import QUOTE, ENV, write, session
 
 class WorkLocations(unittest.TestCase):
@@ -114,7 +115,7 @@ class WorkLocations(unittest.TestCase):
     def test_gate_uses_doc_work_locations(self):
         seen = []
         def spy(*a, **k): seen.append(a[7] if len(a) > 7 else k.get("work_locations")); return {}
-        doc = dict(schema_version="1", checks=[], findings=[], handoff=dict(path=self.note, versions=[]), session=dict(jsonl=self.log), work_locations=[self.mem])
+        doc = AF.shell(dict(schema_version="1", checks=[], findings=[], unresolved=[], handoff=dict(path=self.note, versions=[]), session=dict(session_id="s1", jsonl=self.log, cwd=self.d), work_locations=[self.mem]))      # (a structurally valid report: the gate reads nothing of an invalid one)
         with mock.patch.object(versions, "bind_versions", spy):
             try: versions.gate(self.log, self.note, doc, session_id="s1")
             except Exception: pass

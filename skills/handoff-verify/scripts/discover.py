@@ -1,5 +1,5 @@
 """Session discovery and Write/Edit inventory from Claude Code JSONL transcripts. Pure parsing; never executes anything."""
-import glob, json, os, re, sys
+import glob, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jevref as J, opencode as O
 
@@ -29,6 +29,27 @@ def fingerprint(p):
     if O.is_selector(p): return O.fingerprint(p)
     return (os.path.realpath(p), os.path.getmtime(p), os.path.getsize(p))
 
+class fingerprint_scope:
+    """`with fingerprint_scope():` -> a SNAPSHOT: inside the block each transcript file is read once (`jevref.read_snapshot`) and its digest (`content_fingerprint`), its records (`load_jsonl`) and its Jev calls (`jevref.load_calls`) all come from
+    that capture, and an OpenCode session is read once (identity and parsing from one snapshot). Every load still returns its own mutable copy; nested blocks share the capture; it ends with the outermost block, never across candidates."""
+    def __enter__(self):
+        self.files = J.file_snapshots(); self.files.__enter__(); self.snap = O.snapshot_scope(); self.snap.__enter__(); return self
+    def __exit__(self, *a):
+        try: self.snap.__exit__(*a)
+        finally: self.files.__exit__(*a)
+
+def content_fingerprint(p):
+    """Content-backed identity of a source for memoization: ("sha256", canonical path, sha256 of the bytes) of a file, ("sha256", canonical selector, sha256 of the stored session content) of an OpenCode selector (read-only).
+    mtime and size alone are never the identity of a source: a same-size edit with restored timestamps must invalidate. Inside a snapshot scope the digest is the one of the captured bytes the records are parsed from. OSError when it cannot be read."""
+    if O.is_selector(p): return O.fingerprint(p)
+    if J._SNAP is not None:
+        real, sha, _ = J.read_snapshot(p); return ("sha256", real, sha)
+    real = os.path.realpath(p)
+    h = hashlib.sha256()
+    with open(real, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""): h.update(chunk)
+    return ("sha256", real, h.hexdigest())
+
 def session_label(p):
     """Session id used to name run directories: the JSONL stem, or the OpenCode session id."""
     return O.session_id(p) if O.is_selector(p) else os.path.splitext(os.path.basename(p))[0]
@@ -36,7 +57,7 @@ def session_label(p):
 def load_jsonl(path):
     if O.is_selector(path): return O.records(path)   # explicit OpenCode selector: normalized in memory, nothing written
     out = []
-    for i, l in enumerate(open(path, encoding="utf-8", errors="replace")):
+    for i, l in enumerate(J.text_lines(J.read_snapshot(path)[2])):   # the captured bytes of a snapshot scope, else the file as it is; always parsed afresh: the caller owns the records
         l = l.strip()
         if not l: continue
         try: d = json.loads(l)
@@ -151,13 +172,24 @@ def reads(path):
 def name_matches(path):
     return bool(NAME_RX.search(os.path.basename(path)))
 
+def is_text_note(path):
+    """An established text-note format: .md / .markdown / .txt (any case) or no extension."""
+    ext = os.path.splitext(path)[1]
+    return ext == "" or ext.lower() in TEXT_EXT
+
+def auto_name(path):
+    """Automatic inclusion by NAME: the handoff name rule AND an established text-note format (a code or data file such as test_handoff_flow.py or handoff.json is not a note whatever its name)."""
+    return name_matches(path) and is_text_note(path)
+
+TARGET_EXPLANATION = "explicit target: its extension is not an established text-note format (.md, .markdown, .txt or none), so it is never discovered by name; it is handled only because it was selected with --target"
+
 def classify_candidates(items):
     """Split successful Write/Edit into: included_by_name, needs_jev_classify (text files with other names), excluded_non_text, failed."""
     out = {"included_by_name": [], "needs_jev_classify": [], "excluded_non_text": [], "failed": []}
     for it in items:
         if not it["success"]: out["failed"].append(it); continue
         p = it["path"]
-        if name_matches(p): out["included_by_name"].append(it)
+        if auto_name(p): out["included_by_name"].append(it)
         elif p.lower().endswith(TEXT_EXT): out["needs_jev_classify"].append(it)
         else: out["excluded_non_text"].append(it)
     return out

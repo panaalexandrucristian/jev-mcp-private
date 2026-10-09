@@ -11,6 +11,8 @@ import json, os, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import discover, jevref, omissions, report, scope, versions
+import contract_fixtures as CF
+import audit_fixtures as AF
 from test_scope_filter import classify_result, payload, DETAILS, ROWS, excl
 
 CLAIM = "The note says the billing migration ships on Friday."
@@ -28,7 +30,7 @@ class Tx:
     def write(self, tid, text, err=False): self.tool(tid, "Write", dict(file_path=self.note, content=text), "boom" if err else "File created successfully", err)
     def run(self, tid): self.tool(tid, "Skill", dict(skill="jev:handoff-verify"), "loaded")
     def verify(self, tid="c1"):
-        self.tool(tid, "mcp__jev__jev_verify", dict(claims=[CLAIM], evidence=[dict(text="Friday is the date.")]), json.dumps(dict(subject_at=0.5, results=[dict(claim=CLAIM, verdict="supported", confidence=0.99, same_subject=0.9)])))
+        self.tool(tid, "mcp__jev__jev_verify", dict(claims=[CLAIM], evidence=[dict(text="Friday is the date.")]), CF.verify_body([dict(claim=CLAIM, verdict="verified", confidence=0.99)], compatible_synthetic=True))
     def save(self):
         with open(self.log, "w", encoding="utf-8") as f: f.write("".join(json.dumps(r) + "\n" for r in self.recs))
         return self.log
@@ -38,9 +40,9 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.d = os.path.realpath(self.tmp.name); scope._MEMO.clear(); omissions._MEMO.clear()
     def check(self, t, wid, ea, **ref):
         v = next(x for x in versions.versions_of(t.log, t.note)[0] if x["write_tool_use_id"] == wid)
-        return dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id="c1", result_index=0, key=CLAIM), version_ref=dict(versions.version_ref(v, ea), **ref))
+        return dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id="c1", result_index=0, key=CLAIM), version_ref=dict(versions.version_ref(v, ea), **ref))
     def doc(self, t, checks, **extra):
-        return dict(dict(session=dict(session_id="s1", jsonl=t.log, cwd=self.d), handoff=dict(path=t.note, versions=[]), checks=checks, findings=[], unresolved=[], status="PASS"), **extra)
+        return AF.complete(dict(dict(session=dict(session_id="s1", jsonl=t.log, cwd=self.d), handoff=dict(path=t.note, versions=[]), checks=checks, findings=[], unresolved=[], status="PASS"), **extra))   # complete audit data derived from the fixture's real source
     def write(self, t, doc, name="run"):
         rd = os.path.join(self.d, name); os.makedirs(rd)
         md, js = report.write_report(rd, t.note, doc, "Stare: **PASS**\n", calls_jsonl=t.log); return json.load(open(os.path.join(rd, js), encoding="utf-8"))
@@ -131,7 +133,7 @@ class OtherRepresentations(Base):
         return t, cp
 
     def run_report(self, t, session, calls, ref, name):
-        doc = self.doc(t, [self.check(t, "w1", "session_end", **ref)]); doc["session"]["jsonl"] = session
+        doc = self.doc(t, [self.check(t, "w1", "session_end", **ref)]); doc["session"]["jsonl"] = session; doc = AF.complete(doc, source=calls)   # the review is derived again, from the transcript that demonstrates the version identity (the calls log of the same session)
         rd = os.path.join(self.d, name); os.makedirs(rd)
         md, js = report.write_report(rd, t.note, doc, "Stare: **PASS**\n", calls_jsonl=calls); return json.load(open(os.path.join(rd, js), encoding="utf-8"))
 

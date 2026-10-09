@@ -152,7 +152,7 @@ class PreparedInstructions(unittest.TestCase):
         self.assertEqual(self.code, 0); self.assertTrue(o["ok"])
         self.assertEqual(o["material"], omissions.material(self.text)); self.assertEqual(o["absence_claim"], o["detail"])
         self.assertEqual(o["source_claim"], omissions.SOURCE_PREFIX + o["detail"])
-        self.assertEqual(sorted(o), sorted(["ok", "contract", "work_locations", "detail", "source_claim", "absence_claim", "source_passage", "material", "material_manifest", "version_ref", "handoff_source_path", "omission_ref_template", "note"]))
+        self.assertEqual(sorted(o), sorted(["ok", "contract", "work_locations", "detail", "source_claim", "absence_claim", "source_passage", "material", "material_manifest", "version_ref", "handoff_source_path", "omission_ref_template", "note", "hints"]))   # `hints` (item 12): navigation-only occurrence hints, added last; nothing else of the object changes
 
     def test_the_printed_note_schedules_absence_first_and_source_conditionally(self):
         n = self.obj["note"]

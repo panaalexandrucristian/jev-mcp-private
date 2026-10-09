@@ -17,6 +17,12 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+      # Offline Python suite of the handoff-verify skill: stdlib only, no credentials, no session history, no network.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: handoff-verify (offline Python suite)
+        run: npm run test:py
       # Live end-to-end tests run only when a TYPESAFE_API_KEY secret is configured.
       - name: End-to-end (optional)
         env:

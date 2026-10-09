@@ -7,6 +7,7 @@ usage: python3 -B test_checks.py [-v]"""
 import hashlib, json, os, re, shlex, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
+import audit_fixtures as AF
 import checks, jevref, omissions, report, versions
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
@@ -61,7 +62,7 @@ class Base(unittest.TestCase):
         for n in needles: self.assertIn(n, text)
         return cm.exception
     def rebind(self, built):
-        doc = dict(session=dict(session_id="s1", jsonl=self.s.log, cwd=self.t.name), handoff=dict(path=self.s.handoff, versions=[]), checks=built, findings=[], unresolved=[], status="PASS")
+        doc = AF.complete(dict(session=dict(session_id="s1", jsonl=self.s.log, cwd=self.t.name), handoff=dict(path=self.s.handoff, versions=[]), checks=built, findings=[], unresolved=[], status="PASS"))   # complete audit data derived from the fixture's source
         return report.bind_report(doc, self.s.log, self.t.name, (), True, self.s.handoff, None, "R04")
 
 class Build(Base):
@@ -207,16 +208,16 @@ class Flags(unittest.TestCase):
         return [l.strip() for l in fence.group(1).splitlines() if l.strip().startswith("python3")]
 
     def test_every_documented_example_parses_under_the_real_parser(self):
-        import advice, discover, prepare
-        parsers = {"prepare.py": prepare, "versions.py": versions, "omissions.py": omissions, "jevref.py": jevref, "advice.py": advice, "checks.py": checks}
+        import advice, audit, discover, prepare
+        parsers = {"audit.py": audit, "prepare.py": prepare, "versions.py": versions, "omissions.py": omissions, "jevref.py": jevref, "advice.py": advice, "checks.py": checks}
         lines = self.documented(); seen = set()
         self.assertGreaterEqual(len(lines), 8)
         for line in lines:
             toks = [self.PLACEHOLDER.sub("X", t) for t in shlex.split(line)]
             script = next(os.path.basename(t) for t in toks if t.endswith(".py")); i = next(k for k, t in enumerate(toks) if t.endswith(".py"))
             ns = parsers[script].build_parser().parse_args(toks[i + 1:])      # parse only: nothing runs
-            seen.add((script, toks[i + 1] if script in ("versions.py", "omissions.py", "jevref.py", "checks.py") else None))
-        self.assertTrue({("prepare.py", None), ("versions.py", "list"), ("versions.py", "status"), ("omissions.py", "prepare"), ("jevref.py", "list"), ("advice.py", None), ("checks.py", "build")} <= seen, seen)
+            seen.add((script, toks[i + 1] if script in ("versions.py", "omissions.py", "jevref.py", "checks.py", "audit.py") else None))
+        self.assertTrue({("prepare.py", None), ("versions.py", "list"), ("versions.py", "status"), ("omissions.py", "prepare"), ("jevref.py", "list"), ("advice.py", None), ("checks.py", "build"), ("audit.py", "register"), ("audit.py", "template")} <= seen, seen)
 
     def test_the_real_flag_matrix(self):
         import advice, prepare

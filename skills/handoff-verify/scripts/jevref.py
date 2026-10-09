@@ -8,7 +8,7 @@ used by another check of the same report. Text overlap, uniqueness and "same con
 Binding and resolution are distinct: a bound check is RESOLVED only if the strict threshold (> 0.95) and the auxiliary Jev conditions also hold.
 
 CLI: jevref.py list [--session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID] [--cwd DIR]   -> JSON with every Jev call of the session: tool_use_id, tool, per result index/key/verdict/confidence."""
-import argparse, hashlib, json, math, os, sys
+import argparse, hashlib, io, json, math, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opencode as O
 
@@ -90,10 +90,35 @@ def calls_from_records(records):
                         raw_sha256=hashlib.sha256(raw.encode()).hexdigest() if raw else None))
     return out
 
+_SNAP = None   # while a snapshot scope is open: canonical path -> (sha256 of its bytes, the bytes) -- one capture per file, shared by its digest and by every reader
+
+class file_snapshots:
+    """`with file_snapshots():` -> every file read through `read_snapshot` is captured once inside the block (nested blocks share the outer capture); the capture lives only as long as the outermost block."""
+    def __enter__(self):
+        global _SNAP; self.prev = _SNAP
+        if _SNAP is None: _SNAP = {}
+        return self
+    def __exit__(self, *a):
+        global _SNAP; _SNAP = self.prev
+
+def read_snapshot(path):
+    """-> (canonical path, sha256 hex of the bytes, the bytes). Inside a snapshot scope the file is read once and every caller gets that capture (so a digest and the records parsed from it always describe the same bytes);
+    outside a scope each call reads the file as it is. A failed read (OSError) is never captured."""
+    real = os.path.realpath(path)
+    if _SNAP is not None and real in _SNAP: return (real,) + _SNAP[real]
+    with open(real, "rb") as f: data = f.read()
+    sha = hashlib.sha256(data).hexdigest()
+    if _SNAP is not None: _SNAP[real] = (sha, data)
+    return real, sha, data
+
+def text_lines(data):
+    """The lines of captured bytes exactly as `open(path, encoding="utf-8", errors="replace")` yields them (universal newlines)."""
+    return io.TextIOWrapper(io.BytesIO(data), encoding="utf-8", errors="replace")
+
 def load_calls(path):
     if O.is_selector(path): return calls_from_records(O.records(path))   # explicit OpenCode selector (see opencode.py)
     recs = []
-    for l in open(path, encoding="utf-8", errors="replace"):
+    for l in text_lines(read_snapshot(path)[2]):
         l = l.strip()
         if l.startswith("{"):
             try: recs.append(json.loads(l))
@@ -164,6 +189,17 @@ def _by_id(field):
             out.append(e)
         return out, None
     return f
+
+VERDICT_DOMAIN = {"verify": ("verified", "contradicted", "unsupported"), "gate": ("verified", "contradicted", "unsupported")}
+# The successful verdicts of the tools whose contract is a closed verdict domain (SKILL.md "Jev tool contracts"), applied PER TOOL: a bound result whose verdict is outside its tool's contract is recorded faithfully (bound, with
+# `contract_reason`) but never resolved. jev_verify also returns `unknown` (an invalid_response shape) and a stray label such as `supported` is not a verdict at all: neither can resolve a check, hold a gate or PASS.
+# NO global three-verdict rule: jev_compare relations (same_fact, contradicts, different_facts) and jev_classify / jev_extract labels (the caller's own class or field ids: `out_of_scope`, `handoff`, ...) keep their own contracts.
+
+def verdict_contract(tool, verdict):
+    """-> None when `verdict` is a verdict of the tool's contract (or the tool has no closed verdict domain), else the reason it is not."""
+    dom = VERDICT_DOMAIN.get(tool)
+    if dom is None or (isinstance(verdict, str) and verdict.lower() in dom): return None
+    return "verdict %r is outside the jev_%s contract (%s)" % (verdict, tool, " | ".join(dom))
 
 ADAPTERS = {"verify": _claims_like, "gate": _claims_like, "compare": _compare, "classify": _by_id("items"), "extract": _by_id("fields")}
 
@@ -273,10 +309,15 @@ def call_evidence_raw(call):
     import omissions as O
     return O.evidence_raw(call.get("input"))
 
+def check_id(c):
+    """The id of a check when it is a string, else None: an id that is not a string (a list, an object) is never hashed or used as a key, whatever the report holds there."""
+    i = c.get("id") if isinstance(c, dict) else None
+    return i if isinstance(i, str) else None
+
 def duplicate_ids(checks):
     seen, dup = set(), set()
     for c in checks:
-        i = c.get("id") if isinstance(c, dict) else None
+        i = check_id(c)
         if i in seen: dup.add(i)
         seen.add(i)
     return dup
@@ -288,10 +329,10 @@ def bind(checks, calls, strict_aux=False):
     by_id = {c["tool_use_id"]: c for c in calls}; used = set(); dup = duplicate_ids(checks); out = []; ctr = contract_of(strict_aux); strict_aux = ctr != "R02"
     for c in checks:
         c = c if isinstance(c, dict) else {}
-        row = dict(id=c.get("id"), bound=False, reason=None, tool_use_id=None, result_index=None, input_hash=None, aux_ok=False, resolved=False)
+        row = dict(id=check_id(c), bound=False, reason=None, tool_use_id=None, result_index=None, input_hash=None, aux_ok=False, resolved=False, contract_reason=None)
         def no(why): row["reason"] = why; out.append(row)
         ref = c.get("jev_ref")
-        if c.get("id") in dup: no("duplicate check id"); continue
+        if check_id(c) in dup: no("duplicate check id"); continue
         if not isinstance(ref, dict): no("no jev_ref"); continue
         tid, ri, key = ref.get("tool_use_id"), ref.get("result_index"), ref.get("key")
         if not isinstance(tid, str) or not isinstance(ri, int) or isinstance(ri, bool) or ri < 0 or not isinstance(key, str): no("malformed jev_ref"); continue
@@ -308,10 +349,10 @@ def bind(checks, calls, strict_aux=False):
         conf = c.get("confidence")
         if not _num(conf) or e["confidence"] is None or conf != e["confidence"]: no("confidence differs from the real result"); continue
         if not isinstance(c.get("verdict"), str) or e["verdict"] != c["verdict"]: no("verdict differs from the real result"); continue
-        used.add((tid, ri)); a = aux_ok(e, call, strict_aux)
+        used.add((tid, ri)); a = aux_ok(e, call, strict_aux); outside = verdict_contract(call["tool"], e["verdict"])
         # R04: an `unsupported` result is never resolved here whatever its same_subject; only `finalize` can resolve it, and only as the ABSENCE half of a fully valid pair
         r04_unsup = ctr == "R04" and str(e["verdict"]).lower() == "unsupported"
-        row.update(bound=True, reason="bound", tool_use_id=tid, result_index=ri, input_hash=call["input_hash"], aux_ok=a, resolved=bool(a and strict_pass(e["confidence"]) and not c.get("error") and not r04_unsup),
+        row.update(bound=True, reason="bound", tool_use_id=tid, result_index=ri, input_hash=call["input_hash"], aux_ok=a, resolved=bool(a and strict_pass(e["confidence"]) and not c.get("error") and not r04_unsup and outside is None), contract_reason=outside,
                    real_verdict=e["verdict"], real_confidence=e["confidence"], real_action=e.get("action"), real_same_subject=e.get("same_subject"), tool=call["tool"], check_error=bool(c.get("error")), claim_key=key, call_evidence=call_evidence(call), call_evidence_raw=call_evidence_raw(call), call_quote_evidence=quote_evidence_raw(call))
         out.append(row)
     return out
@@ -325,7 +366,7 @@ def resolve_handoff_text(handoff, extra_paths=(), texts=()):
     no candidate or no match -> (None, reason): findings that depend on a handoff passage are then unsupported."""
     import hashlib
     h = handoff if isinstance(handoff, dict) else {}
-    want = {v.get("sha256") for v in h.get("versions", []) if isinstance(v, dict) and isinstance(v.get("sha256"), str)}
+    want = {v.get("sha256") for v in (h.get("versions") if isinstance(h.get("versions"), list) else []) if isinstance(v, dict) and isinstance(v.get("sha256"), str)}
     if not want: return None, "report declares no version sha256: exact handoff version not demonstrable"
     tried = []
     for tx in texts or []:   # in-memory reconstructed versions (e.g. replayed Write/Edit): same sha256 rule
@@ -354,7 +395,7 @@ def validate_finding(f, bindings_by_id, handoff_text=None, omission_contract=Fal
     if not isinstance(f, dict): return False, "malformed finding"
     ctr = contract_of(omission_contract)
     t, cid, conf = f.get("type"), f.get("check_id"), f.get("confidence")
-    if t not in FINDING_TYPES or not isinstance(cid, str): return False, "malformed finding (type/check_id)"
+    if not isinstance(t, str) or t not in FINDING_TYPES or not isinstance(cid, str): return False, "malformed finding (type/check_id)"
     for k in ("quote_handoff", "quote_source", "uuid"):
         if k in f and f[k] is not None and not isinstance(f[k], str): return False, "malformed finding (%s)" % k
     b = bindings_by_id.get(cid)
@@ -397,6 +438,7 @@ def _validate_omission(f, a, by, contract="R03"):
     if contract == "R02": return False, "the R02 evaluator has no omission pair"
     ref = f.get("omission_ref")
     if not isinstance(ref, dict) or not isinstance(ref.get("detail"), str) or not O.wsnorm(ref["detail"]) or not isinstance(ref.get("source_check_id"), str): return False, "lost_detail without a valid omission_ref {detail, source_check_id}"
+    if O.redaction_dependent(ref["detail"]): return False, "the detail holds a secret or a redaction marker: a redaction-dependent detail cannot be certified (what is hidden is not demonstrated)"
     s = by.get(ref["source_check_id"])
     if not s or not s.get("bound"): return False, "omission_ref.source_check_id names no bound check"
     if s["id"] == a["id"]: return False, "the same check cannot be both the source support and the absence probe"
@@ -415,8 +457,10 @@ def _validate_omission(f, a, by, contract="R03"):
     if (va["write_tool_use_id"], va["sha256"], va.get("evaluated_against"), va.get("run")) != (vs_["write_tool_use_id"], vs_["sha256"], vs_.get("evaluated_against"), vs_.get("run")): return False, "the two checks do not evaluate the same write, hash, evaluated_against and verification run"
     q = f.get("quote_source")
     if not isinstance(q, str) or not q.strip(): return False, "no exact source quote"
+    if O.redaction_dependent(q): return False, "the source quote holds a secret or a redaction marker: a redaction-dependent quote cannot be certified (what is hidden is not demonstrated)"
     passage = O.passage_of(s.get("eligible_blocks"), q) if isinstance(s.get("eligible_blocks"), list) else None
     if passage is None: return False, "the source quote is not exactly (case, whitespace, newlines) inside ONE record of the eligible source of the evaluated version (before the write for `prefix`; before the verification activity for `session_end`; Jev calls are never source)"
+    if O.redaction_dependent(passage): return False, "the eligible passage that holds the quote contains redacted content: what it hides is not demonstrated"
     if not O.passage_matches(s.get("call_evidence_raw") or [], passage): return False, "the evidence of the source call is not exactly the eligible passage that holds the quote (no extra or missing content)"
     if not O.material_matches(a.get("call_evidence_raw") or [], a.get("omission_material")): return False, "the evidence of the absence call is not the complete canonical material of the version (%s)" % (a.get("omission_material_reason") or "text, order or delimiters differ")
     return True, "confirmed"
@@ -433,7 +477,8 @@ def finalize(bindings, findings, handoff_text=None, omission_contract=False):
     return [out.get(b["id"], b) if by.get(b["id"]) is b else b for b in bindings]
 
 def audited_status(checks, bindings, findings, declared_unresolved=(), handoff_text=None, omission_contract=False):
-    """The ONE status evaluator (report.py, audit_run, audit_trigger, score).
+    """The BINDING-LEVEL status evaluator, NON-CERTIFYING (`certifying` False in the result): it judges only the checks, bindings and findings it is given. A PASS from here certifies nothing about the review behind the report;
+    the report writer, the delivery gate and the per-version evaluation never use it alone: they pass its result through audit.certify (the mandatory full-report audit), which turns a PASS without a complete audit into UNRESOLVED.
     FAIL only if at least one finding passes validate_finding. Otherwise UNRESOLVED when any check is unbound/unresolved/duplicated, a declared unresolved entry exists, a finding is
     unsupported, or there are zero checks. Otherwise PASS (never with an unbound check)."""
     bindings = finalize(bindings, findings, handoff_text, omission_contract)
@@ -447,11 +492,13 @@ def audited_status(checks, bindings, findings, declared_unresolved=(), handoff_t
     else:
         if unbound: reasons.append("unbound checks: %d" % len(unbound))
         if unresolved_checks: reasons.append("bound but unresolved (<= 0.95, aux filter or error): %d" % len(unresolved_checks))
+        outside = [b["id"] for b in bindings if b.get("bound") and b.get("contract_reason")]
+        if outside: reasons.append("verdict outside the tool contract: %d" % len(outside))
         if declared_unresolved: reasons.append("declared unresolved entries: %d" % len(declared_unresolved))
         if invalid_findings: reasons.append("unsupported findings: %d" % len(invalid_findings))
         if not checks: reasons.append("zero checks")
         status = "UNRESOLVED" if reasons else "PASS"
-    return dict(status=status, reasons=reasons, valid_findings=len(valid), invalid_findings=len(invalid_findings), finding_verdicts=[dict(confirmed=ok, reason=r) for ok, r in verdicts],
+    return dict(status=status, certifying=False, reasons=reasons, valid_findings=len(valid), invalid_findings=len(invalid_findings), finding_verdicts=[dict(confirmed=ok, reason=r) for ok, r in verdicts],
                 checks=len(checks), bound=len(bindings) - len(unbound), resolved=len(resolved), unbound=len(unbound))
 
 def listing(calls):

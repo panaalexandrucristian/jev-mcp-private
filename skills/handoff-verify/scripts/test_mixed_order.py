@@ -9,6 +9,8 @@ import contextlib, hashlib, io, json, os, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import jevref, prepare, report, versions
+import contract_fixtures as CF
+import audit_fixtures as AF
 from test_stream_reconstruction import Tx
 
 CLAIM = "The note says the billing migration ships on Friday."
@@ -19,7 +21,7 @@ class Base(unittest.TestCase):
         self.t = tempfile.TemporaryDirectory(); self.d = os.path.realpath(self.t.name); self.addCleanup(self.t.cleanup)
         self.note = os.path.join(self.d, "HANDOFF.md"); self.log = os.path.join(self.d, "s.jsonl"); self.sub = os.path.join(self.d, "s", "subagents", "agent-1.jsonl")
     def jev(self, t, tid="c1"):
-        t.tool(tid, "mcp__jev__jev_verify", dict(claims=[CLAIM], evidence=[dict(text="Friday is the date.")]), json.dumps(dict(subject_at=0.5, results=[dict(claim=CLAIM, verdict="supported", confidence=0.99, same_subject=0.9)])))
+        t.tool(tid, "mcp__jev__jev_verify", dict(claims=[CLAIM], evidence=[dict(text="Friday is the date.")]), CF.verify_body([dict(claim=CLAIM, verdict="verified", confidence=0.99)], compatible_synthetic=True))
     def parent(self, *steps):
         t = Tx(self.d)
         for s in steps: s(t)
@@ -36,8 +38,8 @@ class Base(unittest.TestCase):
         return code, json.loads(out.getvalue()), json.load(open(os.path.join(work, "inventory.json")))
     def doc(self, wid="pw1", call="c1"):
         v = next(x for x in versions.versions_of(self.log, self.note)[0] if x["write_tool_use_id"] == wid)
-        chk = dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id=call, result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
-        return dict(session=dict(session_id="s1", jsonl=self.log, cwd=self.d), handoff=dict(path=self.note, versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS")
+        chk = dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id=call, result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
+        return AF.complete(dict(session=dict(session_id="s1", jsonl=self.log, cwd=self.d), handoff=dict(path=self.note, versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS"))   # complete audit data derived from the fixture's source
     def write_report(self, doc):
         rd = os.path.join(self.d, "run%d" % len(os.listdir(self.d))); os.makedirs(rd)
         md, js = report.write_report(rd, self.note, doc, "Stare: **PASS**\n", calls_jsonl=self.log); return json.load(open(os.path.join(rd, js)))
@@ -95,9 +97,9 @@ class ChildOnly(Base):
         self.assertEqual(versions.versions_of(self.log, self.note)[0], []); p = versions.provenance(self.log, self.note)
         self.assertEqual(p["state"], "no_record"); self.assertIn("subagent", p["blocker"])
         cv = versions.versions_of(self.sub, self.note)[0][0]
-        chk = dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id="c1", result_index=0, key=CLAIM), version_ref=versions.version_ref(cv, "session_end"))
+        chk = dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id="c1", result_index=0, key=CLAIM), version_ref=versions.version_ref(cv, "session_end"))
         open(self.note, "w").write("CHILD\n")
-        doc = self.write_report(dict(session=dict(session_id="s1", jsonl=self.log, cwd=self.d), handoff=dict(path=self.note, versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS"))
+        doc = self.write_report(AF.shell(dict(session=dict(session_id="s1", jsonl=self.log, cwd=self.d), handoff=dict(path=self.note, versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS")))
         self.assertEqual(doc["status"], "UNRESOLVED"); self.assertNotEqual(doc["delivery"]["delivery_state"], "verified_version")
         self.assertEqual(doc["binding_summary"]["version_identity"]["provenance"]["state"], "no_record"); self.assertIn("subagent", " ".join(doc["binding_summary"]["reasons"]))
         code, out, inv = self.prepare(); self.assertIn("subagent", " ".join(inv["handoffs"][0]["blockers"]))
@@ -128,7 +130,7 @@ class Copies(Base):
         self.assertTrue(all(v["mixed"] for v in vs))
 
     def test_an_unmixed_copy_of_an_unmixed_session_is_unchanged(self):
-        os.remove(self.sub); doc = dict(self.doc(), schema_version="1"); rd = os.path.join(self.d, "r3"); os.makedirs(rd)
+        os.remove(self.sub); doc = dict(AF.complete(self.doc(), source=self.copy), schema_version="1"); rd = os.path.join(self.d, "r3"); os.makedirs(rd)      # (the writer audits the calls log, here the copy: its review and its registry are those of the copy)
         out = report.bind_report(doc, self.copy, rd, (), True, self.note, None, "R04"); self.assertEqual(out["status"], "PASS"); self.assertEqual(out["delivery"]["delivery_state"], "verified_version")
 
 QUOTE = "ZZ-DETAIL: never deploy on friday"
@@ -160,7 +162,7 @@ class Windows(Base):
         sc, ac = omissions.claims(d, "R04")
         t = Tx(self.d); t.cwd = self.d
         t.tool("a1", "mcp__jev__jev_verify", dict(claims=[ac], evidence=[dict(text=mat)]), json.dumps(dict(subject_at=0.5, results=[dict(claim=ac, verdict="unsupported", confidence=0.99, action="auto")])))
-        t.tool("s1", "mcp__jev__jev_verify", dict(claims=[sc], evidence=[dict(text=passage)]), json.dumps(dict(subject_at=0.5, results=[dict(claim=sc, verdict="verified", confidence=0.99, action="auto", same_subject=0.9)])))
+        t.tool("s1", "mcp__jev__jev_verify", dict(claims=[sc], evidence=[dict(text=passage)]), CF.verify_body([dict(claim=sc, verdict="verified", confidence=0.99)], compatible_synthetic=True))
         for r in t.recs: r["sessionId"] = "calls-session"
         t.save(calls_log)
         checks = [dict(id="abs", tool="verify", verdict="unsupported", confidence=0.99, jev_ref=dict(tool_use_id="a1", result_index=0, key=ac), version_ref=ref),

@@ -7,6 +7,7 @@ usage: python3 -B test_gate_envelope.py [-v]"""
 import copy, json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
+import audit_fixtures as AF
 import advice, jevref, report
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
@@ -214,9 +215,9 @@ class Summary(unittest.TestCase):
     def test_a_summary_never_changes_a_report_status(self):
         with tempfile.TemporaryDirectory() as d:
             rec, c = mkcall(self.good(review=dict(action="escalate", reason_codes=["review_escalated"])), [C1, C2]); log = os.path.join(d, "s.jsonl")
-            with open(log, "w", encoding="utf-8") as f: f.write("".join(json.dumps(r) + "\n" for r in rec))
+            with open(log, "w", encoding="utf-8") as f: f.write("".join(json.dumps(dict(r, cwd=d)) + "\n" for r in rec))      # (a real session records its cwd: the registry of the session lives there)
             checks = [dict(id="k%d" % i, tool="jev_gate", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id="g1", result_index=i, key=k)) for i, k in enumerate((C1, C2))]
-            doc = report.bind_report(dict(session=dict(session_id="s1", jsonl=log, cwd=d), status="PASS", findings=[], unresolved=[], checks=checks), log, d, (), False, None, None, "R04")
+            doc = report.bind_report(AF.complete(dict(session=dict(session_id="s1", jsonl=log, cwd=d), handoff=dict(path=os.path.join(d, "HANDOFF.md"), versions=[]), status="PASS", findings=[], unresolved=[], checks=checks)), log, d, (), False, None, None, "R04")
             self.assertEqual(doc["status"], "PASS")        # the claim results are resolved on their own; the patch review is a separate observation (holds false)
             self.assertFalse(jevref.gate_summary(c)["holds"])
 

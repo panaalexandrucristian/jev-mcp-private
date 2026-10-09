@@ -13,6 +13,7 @@ CLI: scope.py prepare --source ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID 
   write it is the window of the whole session (exit 3 when several runs make it ambiguous). `evaluation` is printed to be copied into every exclusion made from these payloads (`scope_exclusions[].evaluation`); an exclusion without it, in a report about versions, is re-derived in the evaluation of the report (`report_evaluation`)."""
 import argparse, hashlib, json, math, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sanitize as S
 
 THRESHOLD = 0.99           # strictly above; 0.99 itself keeps the detail
 OUT_CLASS = "out_of_scope"
@@ -92,7 +93,7 @@ def scope_of(source, write_id=None, evaluated_against="session_end", run=None):
     """-> (context | None, requests, reason) for a source session in ONE window (omissions.source_window): the evaluated write, its mode and, for session_end, the evaluated run (the only one after the write, or the
     named one; several without a name are ambiguous: no scope). Without a write the window is the whole session. Cached by transcript identity AND window."""
     import discover as D, omissions as O
-    try: key = (D.fingerprint(source), write_id, evaluated_against, run)
+    try: key = (D.content_fingerprint(source), write_id, evaluated_against, run)
     except OSError: return None, [], "source transcript unreadable"
     if key not in _MEMO:
         recs = D.load_jsonl(source); w = O.source_window(recs, write_id, evaluated_against, run)
@@ -100,9 +101,11 @@ def scope_of(source, write_id=None, evaluated_against="session_end", run=None):
         else:
             reqs = user_requests(recs, write_id, evaluated_against, run)
             ctx = canonical_context(reqs)
-            why = "no user request found before the verification activity" if not reqs else ("scope too large (%d characters > %d): nothing is excluded" % (len(ctx), MAX_CONTEXT) if len(ctx) > MAX_CONTEXT else None)
+            dep = [i for i, r in enumerate(reqs, 1) if S.altered(r)["redaction_dependent"]]
+            why = "no user request found before the verification activity" if not reqs else ("the user requests hold secrets or redaction markers (request %s): what they hide is not demonstrated, so nothing is excluded" % ", ".join(map(str, dep)) if dep else "scope too large (%d characters > %d): nothing is excluded" % (len(ctx), MAX_CONTEXT) if len(ctx) > MAX_CONTEXT else None)
             _MEMO[key] = (None if why else ctx, reqs, why)
-    return _MEMO[key]
+    ctx, reqs, why = _MEMO[key]
+    return ctx, list(reqs), why   # a copy: a caller cannot corrupt the cached scope
 
 def payloads(context, details):
     """The canonical jev_classify inputs: batches of at most 64 items, ids d1..dN over all batches, item text = the whitespace-normalized detail."""
@@ -154,8 +157,9 @@ def validate_exclusions(exclusions, calls, source, findings=(), writes=None, def
         return scopes[key]
     lost = {wsnorm((f.get("omission_ref") or {}).get("detail")) for f in findings if isinstance(f, dict) and f.get("type") == "lost_detail" and isinstance(f.get("omission_ref"), dict)}
     for i, e in enumerate(ex):
-        def no(r): bad.append(dict(index=i, detail=e.get("detail") if isinstance(e, dict) else None, reason=r))
+        def no(r): bad.append(dict(index=i, detail=S.sanitize(e["detail"])[0] if isinstance(e, dict) and isinstance(e.get("detail"), str) else None, reason=r))   # the diagnostic never echoes a credential; the validation uses the original detail
         if not isinstance(e, dict) or not isinstance(e.get("detail"), str) or not wsnorm(e["detail"]): no("malformed exclusion (detail)"); continue
+        if S.altered(wsnorm(e["detail"]))["redaction_dependent"]: no("the detail holds a secret or a redaction marker: a redaction-dependent exclusion cannot be certified (what is hidden is not demonstrated)"); continue
         ref = e.get("jev_ref") if isinstance(e.get("jev_ref"), dict) else {}
         tid, ri, key = ref.get("tool_use_id"), ref.get("result_index"), ref.get("key")
         if not isinstance(tid, str) or not isinstance(ri, int) or isinstance(ri, bool) or ri < 0 or not isinstance(key, str): no("malformed jev_ref"); continue
@@ -191,27 +195,31 @@ def validate_exclusions(exclusions, calls, source, findings=(), writes=None, def
 
 def cmd_prepare(a):
     import discover as D
-    def fail(*r): print(json.dumps(dict(ok=False, reasons=list(r)), indent=1, ensure_ascii=False)); return 3
+    def fail(*r): print(json.dumps(dict(ok=False, reasons=[S.sanitize(str(x))[0] for x in r]), indent=1, ensure_ascii=False)); return 3   # a diagnostic never echoes a credential (an unreadable spec's file name included)
     sp, how, amb = D.resolve_session_info(a.source, a.cwd)
     if amb: return fail("source session not demonstrated: several recently modified sessions; pass --source ID or PATH.jsonl")
     if not sp or not D.source_exists(sp): return fail("source session not found")
+    import omissions as O
+    if O.identity_dependent(sp, D.canon(sp)): return fail("the source session path holds a secret or a redaction marker: an identity that needs redaction is not used, so no scope is prepared (the value is not echoed)")   # the identity is printed below: never altered, never echoed
+    if O.identity_dependent(a.write_id, a.run, role=S.ID_ROLE): return fail("the write id or the run id holds a secret or a redaction marker: an identity that needs redaction is not used, so no scope is prepared (the value is not echoed)")
     details = list(a.detail or [])
     if a.spec:
-        try: s = json.load(open(a.spec, encoding="utf-8"))
-        except (OSError, ValueError) as e: return fail("spec unreadable: %s" % e)
+        try: s = json.load(sys.stdin) if a.spec == "-" else json.load(open(a.spec, encoding="utf-8"))   # `--spec -`: the JSON comes from stdin, no temporary file
+        except (OSError, ValueError) as e: return fail("spec unreadable: %s" % ("stdin is not valid JSON" if a.spec == "-" else e))
         s = s.get("details") if isinstance(s, dict) else s
         if not isinstance(s, list) or not all(isinstance(x, str) for x in s): return fail('spec must be a list of strings (or {"details": [...]})')
         details += s
     if not details: return fail("no detail given")
     for i, x in enumerate(details):
         if not wsnorm(x): return fail("detail %d is empty" % i)
+        if S.altered(wsnorm(x))["redaction_dependent"]: return fail("detail %d holds a secret or a redaction marker: a redaction-dependent detail is not classified (nothing is excluded; the value is not echoed)" % i)
         if len(wsnorm(x)) > MAX_DETAIL: return fail("detail %d is longer than %d characters (jev_classify would judge a truncated text)" % (i, MAX_DETAIL))
-    import omissions as O
     if bool(a.write_id) != bool(a.evaluated_against): return fail("--write-id and --evaluated-against go together (the scope is the one of ONE evaluation)")
     if a.run and not a.write_id: return fail("--run needs --write-id and --evaluated-against session_end")
     ctx, reqs, why = scope_of(sp, a.write_id, a.evaluated_against or "session_end", a.run)
     if ctx is None: return fail(why)
     w = O.source_window(D.load_jsonl(sp), a.write_id, a.evaluated_against or "session_end", a.run)
+    if O.identity_dependent(w["run"], role=S.ID_ROLE): return fail("the selected verification run id holds a secret or a redaction marker: an identity that needs redaction is not used, so no scope is prepared (the value is not echoed)")
     evaluation = dict(write_tool_use_id=a.write_id, evaluated_against=a.evaluated_against, **({"run": w["run"]} if a.evaluated_against == "session_end" and w["run"] else {})) if a.write_id else None
     print(json.dumps(dict(ok=True, source=sp, scope_sha256=sha256_text(ctx), requests=len(reqs), threshold=THRESHOLD, evaluation=evaluation, payloads=payloads(ctx, details),
                           note="Call jev_classify once per payload, with purpose, classes, context and items copied verbatim (add nothing else). A detail is excluded only when its result is out_of_scope with confidence strictly above 0.99 and decision auto: record it in scope_exclusions {detail, jev_ref {tool_use_id, result_index, key = the item id}, classification, confidence, evaluation (copy the `evaluation` printed here)} and run no omission check for it. Every other detail goes through the omission checks as before."), indent=1, ensure_ascii=False))

@@ -7,6 +7,8 @@ import datetime, hashlib, json, os, re, sqlite3, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import discover as D, jevref as J, report, slice as SL, versions
+import contract_fixtures as CF
+import audit_fixtures as AF
 
 T0 = 1790000000000
 CLAIM = "The note says the billing migration ships on Friday."
@@ -38,8 +40,10 @@ def tool(tid, name, inp, created, completed=None, status="completed", out="ok", 
 def patch(pid, body, created, completed=None, **kw):
     return tool(pid, "patch", dict(patchText="*** Begin Patch\n" + body + "*** End Patch"), created, completed if completed is not None else created + 9, **kw)
 
-def jev_json(tool_name="jev_verify", confidence=0.99):
-    return json.dumps(dict(tool=tool_name, subject_at=0.5, results=[dict(claim=CLAIM, verdict="supported", confidence=confidence, same_subject=0.9)]))
+def jev_json(tool_name="jev_verify", confidence=0.99, compatible_synthetic=False):
+    """A recorded jev_verify response (contract_fixtures): REALISTIC by default (flat, no same_subject / subject_at: the inspected server emits none, so a check on it stays UNRESOLVED). `compatible_synthetic=True` adds invented
+    subject fields to exercise the strict positive rules; it is not the inspected server contract."""
+    return CF.verify_body([dict(claim=CLAIM, verdict="verified", confidence=confidence)], compatible_synthetic=compatible_synthetic, tool=tool_name)
 def jev_input(): return dict(claims=[CLAIM], evidence=[dict(text="Friday is the date.")])
 def execute_jev(tid, created, completed, inner_tool="jev.jev_verify", inner_status="completed", payload=None, where="content", truncated=False, error=None, calls=None, status="completed"):
     payload = payload if payload is not None else json.loads(jev_json())
@@ -332,7 +336,7 @@ class JevBinding(Base):
         for where in ("content", "structured", "result"):
             with self.subTest(where):
                 calls = self.calls(execute_jev("x1", T0 + 1, T0 + 2, where=where), sid="ses_" + where)
-                self.assertEqual([(c["tool_use_id"], c["tool"], c["is_error"], c["input"]) for c in calls], [("x1", "verify", False, jev_input())]); self.assertEqual(calls[0]["parsed"]["results"][0]["verdict"], "supported")
+                self.assertEqual([(c["tool_use_id"], c["tool"], c["is_error"], c["input"]) for c in calls], [("x1", "verify", False, jev_input())]); self.assertEqual(calls[0]["parsed"]["results"][0]["verdict"], "verified")
         both = execute_jev("x2", T0 + 1, T0 + 2, payload=json.loads(jev_json(confidence=0.99)), where="structured"); both["state"]["result"] = json.loads(jev_json(confidence=0.5)); both["state"]["content"] = [dict(type="text", text=jev_json(confidence=0.4))]
         self.assertEqual(self.calls(both, sid="ses_prio")[0]["parsed"]["results"][0]["confidence"], 0.99)
         res_over_content = execute_jev("x3", T0 + 1, T0 + 2, payload=json.loads(jev_json(confidence=0.97)), where="result"); res_over_content["state"]["content"] = [dict(type="text", text=jev_json(confidence=0.4))]
@@ -371,15 +375,15 @@ class JevBinding(Base):
         self.assertEqual(len(self.calls(x)), 1)
 
 class EndToEnd(Base):
-    def oc_session(self, with_jev=True, sid="ses_e2e"):
+    def oc_session(self, with_jev=True, sid="ses_e2e", compatible_synthetic=False):
         blocks = [tool("w1", "write", dict(filePath=self.path(), content="# Handoff\n- alpha\n"), T0 + 10, T0 + 12)]
-        if with_jev: blocks.append(tool("j1", "jev:jev_verify", jev_input(), T0 + 20, T0 + 25, out=jev_json()))
+        if with_jev: blocks.append(tool("j1", "jev:jev_verify", jev_input(), T0 + 20, T0 + 25, out=jev_json(compatible_synthetic=compatible_synthetic)))
         return self.sel([user("Goal: ship it.", T0), assistant(blocks, T0 + 9)], sid=sid)
 
     def doc(self, source, calls_ref="j1"):
         vs = versions.versions_of(source, self.path())[0]
-        chk = dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id=calls_ref, result_index=0, key=CLAIM), version_ref=versions.version_ref(vs[0], "session_end"))
-        return dict(session=dict(session_id="ses_e2e", jsonl=source, cwd=self.cwd), handoff=dict(path=self.path(), versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS")
+        chk = dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id=calls_ref, result_index=0, key=CLAIM), version_ref=versions.version_ref(vs[0], "session_end"))
+        return AF.shell(dict(session=dict(session_id="ses_e2e", jsonl=source, cwd=self.cwd), handoff=dict(path=self.path(), versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS"))
 
     def test_versions_and_gate_on_an_opencode_session(self):
         sel = self.oc_session(); open(self.path(), "w").write("# Handoff\n- alpha\n")
@@ -390,13 +394,28 @@ class EndToEnd(Base):
         g = versions.gate(sel, self.path(), doc, disk_path=self.path()); self.assertEqual(g["delivery_state"], "verified_version")
         self.assertTrue(versions.same_session(sel, sel)); self.assertEqual(doc["session"]["jsonl"], sel)
 
+    def test_the_mandatory_audit_applies_to_an_opencode_selector_session(self):
+        """Item 11 on the OpenCode-selector path: the expected chunks are derived from the selector's records (prepare.derive reads the adapter), the writer and the gate share the audit, and verified_version is not PASS."""
+        sel = self.oc_session(compatible_synthetic=True); open(self.path(), "w").write("# Handoff\n- alpha\n")
+        def run(doc, name):
+            rd = os.path.join(self.base, name); os.makedirs(rd); md, js = report.write_report(rd, self.path(), doc, "Stare: **PASS**\n", calls_jsonl=sel)
+            out = json.load(open(os.path.join(rd, js))); return out, versions.gate(sel, self.path(), out, disk_path=self.path())
+        bare, g = run(self.doc(sel), "bare")      # a good bound check and NO audit data
+        self.assertEqual((bare["status"], bare["binding_summary"]["audit"]["complete"]), ("UNRESOLVED", False)); self.assertEqual((g["audited_status"], g["delivery_state"]), ("UNRESOLVED", "verified_version"))
+        full = AF.complete(self.doc(sel)); self.assertTrue(full["audit"]["evaluations"][0]["chunks"])
+        ok, g = run(full, "full"); self.assertEqual((ok["status"], ok["binding_summary"]["audit"]["complete"]), ("PASS", True), ok["binding_summary"]["reasons"]); self.assertEqual((g["audited_status"], g["delivery_state"]), ("PASS", "verified_version"))
+        stale = json.loads(json.dumps(full)); stale["audit"]["evaluations"][0]["chunks"][0]["sha256"] = "0" * 64
+        bad, g = run(stale, "stale"); self.assertEqual(bad["status"], "UNRESOLVED"); self.assertEqual(bad["binding_summary"]["audit"]["unfinished"]["chunks_stale"], 1); self.assertEqual(g["audited_status"], "UNRESOLVED")
+        short = json.loads(json.dumps(full)); short["audit"]["evaluations"][0]["chunks"] = []
+        bad, g = run(short, "short"); self.assertEqual(bad["status"], "UNRESOLVED"); self.assertGreaterEqual(bad["binding_summary"]["audit"]["unfinished"]["chunks_missing"], 1)
+
     def test_opencode_source_with_a_claude_calls_session_is_a_retrospective_split(self):
         src = self.oc_session(with_jev=False); open(self.path(), "w").write("# Handoff\n- alpha\n")
         log = os.path.join(self.base, "claude.jsonl"); recs = [dict(type="assistant", uuid="u1", timestamp="2026-01-01T00:00:01Z", cwd=self.cwd, sessionId="claude1", message=dict(role="assistant", content=[dict(type="tool_use", id="j1", name="mcp__jev__jev_verify", input=jev_input())])),
-                                                               dict(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z", cwd=self.cwd, sessionId="claude1", message=dict(role="user", content=[dict(type="tool_result", tool_use_id="j1", content=jev_json())]))]
+                                                               dict(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z", cwd=self.cwd, sessionId="claude1", message=dict(role="user", content=[dict(type="tool_result", tool_use_id="j1", content=jev_json(compatible_synthetic=True))]))]   # compatible synthetic: invented subject fields, so the strict positive rule can produce a PASS
         open(log, "w").write("".join(json.dumps(r) + "\n" for r in recs))
         self.assertFalse(versions.same_session(src, log)); self.assertFalse(versions.same_session(log, src))
-        rd = os.path.join(self.base, "run"); os.makedirs(rd); md, js = report.write_report(rd, self.path(), self.doc(src), "Stare: **PASS**\n", calls_jsonl=log)
+        rd = os.path.join(self.base, "run"); os.makedirs(rd); md, js = report.write_report(rd, self.path(), AF.complete(self.doc(src)), "Stare: **PASS**\n", calls_jsonl=log)   # the review is derived from the OpenCode selector that wrote the note (retrospective: not the same session as the calls)
         doc = json.load(open(os.path.join(rd, js))); vi = doc["binding_summary"]["version_identity"]
         self.assertEqual((vi["same_session"], vi["identity_ok"], vi["identity_failed"]), (False, 1, 0)); self.assertEqual(doc["status"], "PASS")
         self.assertNotIn("delivery", doc)   # a retrospective report never certifies a current delivery
@@ -461,9 +480,10 @@ class ClaudeUnchanged(unittest.TestCase):
 REAL_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 NAMED = ("ses_ef5368f1cffeRFX881YJfngQ27", "ses_ef5368d6affe3oTBXKW3l8zxy2")
 
-@unittest.skipUnless(os.path.isfile(REAL_DB), "no default OpenCode database at ~/.local/share/opencode/opencode.db")
+REAL_OPT_IN = "HANDOFF_VERIFY_REAL_OPENCODE_DB"
+@unittest.skipUnless(os.environ.get(REAL_OPT_IN) == "1" and os.path.isfile(REAL_DB), "real-machine probe: set %s=1 (and have a default OpenCode database at ~/.local/share/opencode/opencode.db); the offline suite never reads a local database" % REAL_OPT_IN)
 class RealSessions(unittest.TestCase):
-    """Runs the adapter on real local sessions (read-only, nothing printed from session text)."""
+    """Runs the adapter on real local sessions (read-only, nothing printed from session text). OPT-IN: `HANDOFF_VERIFY_REAL_OPENCODE_DB=1 python3 -B -m unittest test_opencode_adapter.RealSessions`; the CI discovery never runs it."""
     @classmethod
     def setUpClass(cls):
         import opencode; cls.O = opencode

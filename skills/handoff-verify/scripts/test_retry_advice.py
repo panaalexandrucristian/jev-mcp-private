@@ -7,17 +7,21 @@ import json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import advice, jevref, report
+import contract_fixtures as CF
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 EVIDENCE = "$ git log --oneline -1\n54edd39 Plugin 0.7.8: handoff-verify scope filter\n$ python3 -B -m unittest\nRan 69 tests\nOK"
 
-def verify_result(rows, subject_at=0.5):
+def verify_result(rows, subject_at=0.5, tool="verify"):
+    """COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; a row may carry an explicit null to exercise the null state of the advice branches).
+    A jev_gate call gets the NESTED envelope of the inspected gate (verification.results + review + aggregate), built by contract_fixtures; the realistic bodies are in test_contract_fixtures.py."""
+    if tool == "gate": return CF.gate_body([dict(claim=c, verdict=v, confidence=p, action=a, same_subject=s) for c, v, p, a, s in rows], compatible_synthetic=True, subject_at=subject_at)
     return json.dumps(dict(tool="jev_verify", subject_at=subject_at, results=[dict(id="claim%d" % k, claim=c, verdict=v, confidence=p, action=a, same_subject=s) for k, (c, v, p, a, s) in enumerate(rows)]))
 
 def call(rows, evidence=EVIDENCE, subject_at=0.5, tid="c1", tool="verify", result_claims=None):
     sent = [r[0] for r in rows]; shown = [(c, *r[1:]) for c, r in zip(result_claims or sent, rows)]
     rec = [dict(type="assistant", uuid="u1", message=dict(role="assistant", content=[dict(type="tool_use", id=tid, name="mcp__jev__jev_" + tool, input=dict(claims=sent, evidence=evidence))])),
-           dict(type="user", uuid="u2", message=dict(role="user", content=[dict(type="tool_result", tool_use_id=tid, content=verify_result(shown, subject_at))]))]
+           dict(type="user", uuid="u2", message=dict(role="user", content=[dict(type="tool_result", tool_use_id=tid, content=verify_result(shown, subject_at, tool))]))]
     return rec, jevref.calls_from_records(rec)[0]
 
 def advise_one(row, **kw):

@@ -19,7 +19,7 @@ content index, section index) because the version/Jev window checks use stream o
 Diagnostics: a SUCCESSFUL write/edit/patch call that cannot be placed (no valid top-level time.created/completed) or attributed (no path) is not an event, a time or a version, but it is returned by `diagnostics(selector)`
 (`load(...)[1]`): {call_id, reason, path (realpath | None), seq, ci, sub, created, completed (the real top-level times when valid), kind}. versions.reconstruct_stream marks every version of an affected path (every path for
 a pathless note) as `unpositioned`, which blocks the current-delivery certificate; failed operations are not diagnostics."""
-import datetime, json, os, re, sqlite3, sys
+import datetime, hashlib, json, os, re, sqlite3, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from urllib.parse import quote
 
@@ -64,8 +64,20 @@ def _connect(db):
         con = sqlite3.connect(readonly_uri(db), uri=True); con.execute("PRAGMA query_only=ON"); return con
     except sqlite3.Error as e: raise OpenCodeError("OpenCode database cannot be opened read-only: %s (%s)" % (db, e))
 
-def _read(s):
-    db, sid = parse(s); con = _connect(db)
+_SCOPE = None   # while a snapshot scope is open, the stored rows of a session are read ONCE (identity and parsing of one candidate come from the same snapshot)
+
+class snapshot_scope:
+    """`with snapshot_scope():` -> each session is read from the database once inside the block (a memo that lives only as long as the block, never across candidates); nested scopes share the outer one."""
+    def __enter__(self):
+        global _SCOPE; self.prev = _SCOPE; _SCOPE = {} if self.prev is None else self.prev; return self
+    def __exit__(self, *a):
+        global _SCOPE; _SCOPE = self.prev
+
+def _rows(s):
+    """-> (session row, [(message id, type, seq, data) as stored]) of ONE session, read-only. The raw rows are the snapshot: the identity hashes them and `_read` parses them."""
+    db, sid = parse(s); key = canonical(s) if _SCOPE is not None else None
+    if key is not None and key in _SCOPE: return _SCOPE[key]
+    con = _connect(db)
     try:
         try:
             row = con.execute("SELECT id, directory FROM session_v2 WHERE id = ?", (sid,)).fetchone()
@@ -73,25 +85,36 @@ def _read(s):
             msgs = con.execute("SELECT id, type, seq, data FROM session_message WHERE session_id = ? ORDER BY seq, id", (sid,)).fetchall()
         except sqlite3.Error as e: raise OpenCodeError("unsupported OpenCode database (no v2 session tables?): %s (%s)" % (db, e))
     finally: con.close()
+    snap = (dict(id=row[0], directory=row[1]), msgs)
+    if key is not None: _SCOPE[key] = snap
+    return snap
+
+def _read(s):
+    sess, rows = _rows(s); sid = sess["id"]
     out = []
-    for mid, typ, seq, data in msgs:
+    for mid, typ, seq, data in rows:
         try: d = json.loads(data)
         except (TypeError, ValueError): raise OpenCodeError("malformed message data in session %s (seq %s)" % (sid, seq))
         if not isinstance(d, dict): raise OpenCodeError("malformed message data in session %s (seq %s)" % (sid, seq))
         out.append((mid, typ, seq, d))
-    return dict(id=row[0], directory=row[1]), out
+    return dict(sess), out
 
 def exists(s):
     try: _read(s); return True
     except OSError: return False
 
+def content_sha256(s):
+    """sha256 of the stored CONTENT of the session (its row and its messages, as stored), read-only. The size, the mtime and the WAL of the database are not part of it: only what the skill reads decides the identity,
+    a change of another session of the same database does not move it, and a same-size change with restored timestamps does."""
+    sess, rows = _rows(s); h = hashlib.sha256()
+    h.update(json.dumps([sess["id"], sess["directory"]], ensure_ascii=False).encode("utf-8"))
+    for mid, typ, seq, data in rows:
+        h.update(json.dumps([mid, typ, seq], ensure_ascii=False).encode("utf-8")); h.update(b"\x00"); h.update(data if isinstance(data, bytes) else str(data).encode("utf-8")); h.update(b"\x01")
+    return h.hexdigest()
+
 def fingerprint(s):
-    """Identity of the stored session for memoization: the canonical selector plus size/mtime of the database and its WAL."""
-    c = canonical(s); db = parse(s)[0]; st = []
-    for p in (db, db + "-wal"):
-        try: x = os.stat(p); st += [x.st_mtime_ns, x.st_size]
-        except OSError: st += [None, None]
-    return (c, *st)
+    """Identity of the stored session for memoization: ("sha256", canonical selector, sha256 of its stored content)."""
+    return ("sha256", canonical(s), content_sha256(s))
 
 def session_id(s): return parse(s)[1]
 

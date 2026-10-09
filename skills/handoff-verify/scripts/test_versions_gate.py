@@ -8,6 +8,8 @@ import hashlib, json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import report, versions
+import contract_fixtures as CF
+import audit_fixtures as AF
 
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 CLAIM = "The note says the billing migration ships on Friday."
@@ -35,9 +37,10 @@ class Session:
         self._rec("user", dict(role="user", content=[dict(type="tool_result", tool_use_id=tid, content=result)]))
     def write_v1(self, path=None): self.tool("w1", "Write", dict(file_path=path or self.handoff, content=V1), "File created successfully")
     def edit(self, k): self.tool("w%d" % (k + 2), "Edit", dict(file_path=self.handoff, old_string=EDITS[k][0], new_string=EDITS[k][1]), "The file has been updated successfully")
-    def jev(self, tid="c1"):
+    def jev(self, tid="c1", compatible_synthetic=False):
+        """REALISTIC verify response by default (flat, no same_subject / subject_at, as the inspected server): the check binds and evidences the delivered version (`verified_version`) but stays UNRESOLVED."""
         self.tool(tid, "mcp__jev__jev_verify", dict(claims=[CLAIM], evidence=[dict(text="Friday is the date.")]),
-                  json.dumps(dict(subject_at=0.5, results=[dict(claim=CLAIM, verdict="supported", confidence=0.99, same_subject=0.9)])))
+                  CF.verify_body([dict(claim=CLAIM, verdict="verified", confidence=0.99)], compatible_synthetic=compatible_synthetic))
     def save(self, path=None, upto=None):
         path = path or self.log
         with open(path, "w", encoding="utf-8") as f: f.write("".join(json.dumps(r) + "\n" for r in self.recs[:upto]))
@@ -45,8 +48,8 @@ class Session:
     def disk(self, text): open(self.handoff, "w", encoding="utf-8").write(text)
     def doc(self, version, call="c1"):
         v = next(x for x in versions.versions_of(self.log, self.handoff)[0] if x["version"] == version)
-        chk = dict(id="p1", tool="verify", verdict="supported", confidence=0.99, jev_ref=dict(tool_use_id=call, result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
-        return dict(session=dict(session_id="s1", jsonl=self.log, cwd=self.d), handoff=dict(path=self.handoff, versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS")
+        chk = dict(id="p1", tool="verify", verdict="verified", confidence=0.99, jev_ref=dict(tool_use_id=call, result_index=0, key=CLAIM), version_ref=versions.version_ref(v, "session_end"))
+        return AF.shell(dict(session=dict(session_id="s1", jsonl=self.log, cwd=self.d), handoff=dict(path=self.handoff, versions=[]), checks=[chk], findings=[], unresolved=[], status="PASS", scope_exclusions=[], audit=dict(version=1, evaluations=[])))   # (the required properties of the schema; a structurally invalid report certifies no delivery)
     def write_report(self, doc, calls=None, name="run"):
         rd = os.path.join(self.d, name); os.makedirs(rd)
         md, js = report.write_report(rd, self.handoff, doc, "Stare: **PASS**\n", calls_jsonl=calls or self.log)
