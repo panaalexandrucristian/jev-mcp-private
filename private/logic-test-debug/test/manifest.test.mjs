@@ -8,11 +8,11 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8");
 
 describe("logic-test-debug is wired into the plugin without touching the existing components", () => {
-  it("both manifests carry 0.10.2 and keep the MCP server entry", () => {
+  it("both manifests carry 0.10.3 and keep the MCP server entry", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.10.2");
-    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.10.2");
+    assert.equal(plugin.version, "0.10.3");
+    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.10.3");
     assert.equal(plugin.name, "jev");
     assert.ok(plugin.mcpServers?.jev, "MCP server entry preserved");
   });
@@ -47,12 +47,12 @@ describe("logic-test-debug is wired into the plugin without touching the existin
       assert.ok(!read(...file).includes("logic-test-debug"), file.join("/"));
     }
   });
-  it("documents the switch, the bounds and the unverified OpenCode delivery in PRIVATE.md", () => {
+  it("documents the switch, the bounds and what was and was not checked on OpenCode in PRIVATE.md", () => {
     const doc = read("PRIVATE.md");
     assert.match(doc, /JEV_LOGIC_TEST_DEBUG/);
     assert.match(doc, /logic-test-debug/);
     assert.match(doc, /64 KiB/);
-    assert.match(doc, /\*\*Not verified\.\*\* On OpenCode 2\.0\.12/);
+    assert.match(doc, /\*\*OpenCode, checked on 2\.0\.22 \(2026-10-10\), and not checked\.\*\*/);
     assert.match(doc, /node --test private\/logic-test-debug\/test\//);
     assert.match(doc, /`0\.10\.0` for the `logic-test-debug` skill/);
   });

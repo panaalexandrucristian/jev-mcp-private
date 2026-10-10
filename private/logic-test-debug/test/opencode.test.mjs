@@ -163,6 +163,13 @@ describe("directive delivery", () => {
     assert.equal(deliver(fake, `s${MAX_PENDING + 43}`).length, 1, "newest kept");
   });
   it("accepts the prompt text from prompt, text or text parts, with bounds", () => {
+    assert.equal(extractPromptText({ prompt: { text: "o", files: [], agents: [], skills: [] }, delivery: "steer" }), "o", "OpenCode 2.0.22 shape");
+    assert.equal(extractPromptText({ prompt: { text: 5 } }), null);
+    assert.equal(extractPromptText({ prompt: { text: JSON.stringify("Fix the bug in a.js") } }), "Fix the bug in a.js", "opencode run wraps the text as a JSON string");
+    assert.equal(extractPromptText({ prompt: { text: JSON.stringify("say \"hi\"\nnow") } }), 'say "hi"\nnow');
+    assert.equal(extractPromptText({ prompt: { text: '"not json' } }), '"not json');
+    assert.equal(extractPromptText({ prompt: { text: 'He said "write code" and "run it"' } }), 'He said "write code" and "run it"');
+    assert.equal(extractPromptText({ prompt: { text: '"a" and "b"' } }), '"a" and "b"', "two quoted words are not one JSON string");
     assert.equal(extractPromptText({ prompt: "a" }), "a");
     assert.equal(extractPromptText({ text: "b" }), "b");
     assert.equal(extractPromptText({ parts: [{ type: "text", text: "c" }, { type: "image", text: "x" }, { type: "text", text: "d" }] }), "c\nd");

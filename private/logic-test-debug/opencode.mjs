@@ -3,9 +3,10 @@
 // feature-detected and guarded on its own; a failure disables only that capability, emits one fixed diagnostic
 // (never raw errors, prompt text or file contents) and never touches the jev MCP server, the jev skill or the flow.
 //
-// NOT verified on OpenCode 2.0.12: the shape of the prompt hook payload (only input.sessionID is established by the
-// jev-flow adapter), that two plugin modules can register context hooks side by side, that a model can load a
-// plugin-registered skill, and the runtime delivery of the directive. Feature detection is not runtime proof.
+// Checked on OpenCode 2.0.22 against a stand-in provider (eval/opencode/): the prompt hook payload is {sessionID, messageID,
+// prompt: {text, files, agents, skills}, ...}, the context hook gets {sessionID, system, ...} and takes {type:"text", text} objects
+// in `system` (a plain string there ends the session), the skill is listed and loadable, the directive reaches the model in the
+// first request after a code prompt only. NOT checked: a real model, the terminal UI, other versions.
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { classifyCodePrompt, logicEnabled, LOGIC_DIRECTIVE, MAX_PROMPT_BYTES } from "./check.mjs";
@@ -43,14 +44,31 @@ export function parseSkill(source) {
   return { name: field("name"), description: field("description"), body: source.slice(match[0].length) };
 }
 
+// `opencode run "text"` hands the prompt hook the text wrapped in double quotes, as a JSON string (seen in a session against a
+// stand-in provider: the model also receives the quotes). The code check ignores quoted words, so the wrapper is removed when
+// the whole text is one JSON string. A prompt typed in a terminal UI that is entirely one quoted sentence loses its quotes too,
+// which only makes the check see the sentence itself.
+function unwrapJsonString(text) {
+  if (text.length < 2 || text.length > MAX_PROMPT_BYTES * 2 || text[0] !== '"' || text[text.length - 1] !== '"') return text;
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed === "string" ? parsed : text;
+  } catch {
+    return text;
+  }
+}
+
 /**
- * Proposed text-extraction contract (INFERENCE, not a verified OpenCode schema): a string input.prompt, else a
- * string input.text, else the text entries of input.parts. The aggregate size is bounded before concatenation;
- * non-text parts are ignored; history, tool messages and arbitrary objects are never scanned.
+ * Text-extraction contract: the string input.prompt.text (what OpenCode 2.0.22 sends: input.prompt is an object with text,
+ * files, agents and skills; the shape was read from the binary and recorded in a session against a stand-in provider), else
+ * a string input.prompt, else a string input.text, else the text entries of input.parts (the last three are guesses kept for
+ * other versions). The aggregate size is bounded before concatenation; non-text parts are ignored; history, tool messages
+ * and arbitrary objects are never scanned.
  */
 export function extractPromptText(input) {
-  if (typeof input?.prompt === "string") return input.prompt;
-  if (typeof input?.text === "string") return input.text;
+  if (typeof input?.prompt?.text === "string") return unwrapJsonString(input.prompt.text);
+  if (typeof input?.prompt === "string") return unwrapJsonString(input.prompt);
+  if (typeof input?.text === "string") return unwrapJsonString(input.text);
   if (!Array.isArray(input?.parts)) return null;
   const pieces = [];
   let size = 0;

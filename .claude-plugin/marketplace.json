@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "jev",
-      "version": "0.10.2",
+      "version": "0.10.3",
       "source": "./",
       "description": "Jev MCP tools and the Jev agent skill.",
       "category": "productivity"
