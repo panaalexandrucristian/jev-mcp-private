@@ -14,6 +14,7 @@ ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 SKILL_MD = os.path.join(os.path.dirname(HERE), "SKILL.md")
 V1 = "# Handoff\n- alpha\n- beta\n"
 CLAIM, CLAIM2 = "The note says the billing migration ships on Friday.", "The public API must not change."
+CLAIM_G, CLAIM_F = "The release notes list the Friday date.", "The rollback plan is documented."   # the two gate calls ask other claims: the same claim asked again in the same version is a re-verification (audit.unauthorized_repeats)
 LONG_A, LONG_B = "A " * 1500 + "tail-a", "B " * 1500 + "tail-b"
 
 def sha(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
@@ -36,9 +37,9 @@ class Session:
         r = lambda c, v="verified", p=0.99: dict(claim=c, verdict=v, confidence=p, action="auto", same_subject=0.9)
         self.jev("c1", "verify", dict(claims=[CLAIM, CLAIM2], evidence=[dict(text="Friday is the date.")]), dict(subject_at=0.5, results=[r(CLAIM), r(CLAIM2)]))
         self.jev("k1", "compare", dict(passage_a=LONG_A, passage_b=LONG_B, aspects=["date"]), dict(overall=dict(relation="same_fact", confidence=0.99), aspects=[dict(aspect="date", relation="same_fact", confidence=0.99)]))
-        self.jev("g1", "gate", dict(claims=[CLAIM], evidence="E", diff="D", request="R"), dict(tool="jev_gate", truncated=False, action="auto", review=dict(action="auto"), subject_at=0.5,
-                 verification=dict(action="auto", results=[r(CLAIM)])))
-        self.jev("f1", "gate", dict(claims=[CLAIM], evidence="E", diff="D", request="R"), dict(subject_at=0.5, results=[r(CLAIM)]))
+        self.jev("g1", "gate", dict(claims=[CLAIM_G], evidence="E", diff="D", request="R"), dict(tool="jev_gate", truncated=False, action="auto", review=dict(action="auto"), subject_at=0.5,
+                 verification=dict(action="auto", results=[r(CLAIM_G)])))
+        self.jev("f1", "gate", dict(claims=[CLAIM_F], evidence="E", diff="D", request="R"), dict(subject_at=0.5, results=[r(CLAIM_F)]))
         self.jev("lo", "verify", dict(claims=[CLAIM], evidence="low"), dict(subject_at=0.5, results=[r(CLAIM, "verified", 0.9)]))
         self.tool("w2", "Edit", dict(file_path=self.handoff, old_string="beta", new_string="gamma"), "The file has been updated successfully")
         self.jev("c2", "verify", dict(claims=[CLAIM], evidence="after"), dict(subject_at=0.5, results=[r(CLAIM)]))

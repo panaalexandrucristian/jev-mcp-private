@@ -139,9 +139,12 @@ def evidence_request(entry, call, adv, history=(), version_ref=None):
         remedy, sources, missing, stop = "protocol_blocker", (), (), "subject_fields_null_or_invalid"
     target = dict(jev_ref=_jev_ref(entry, call), version_ref=version_ref, stage=call["tool"])
     rid = A.evidence_request_id(target)
-    used = 0 if history is None else min(ROUNDS_LIMIT, sum(1 for h in history if isinstance(h, dict) and h.get("request_id") == rid))
+    called = target["jev_ref"]["tool_use_id"]      # a result of a call that is itself the RECORDED re-verification of another request is exhausted: asking again under the id of the re-verification would reset the allowance
+    chained = history is not None and any(isinstance(h, dict) and h.get("state") == "recorded" and isinstance(h.get("recorded_ref"), dict) and h["recorded_ref"].get("tool_use_id") == called for h in history)
+    used = 0 if history is None else (ROUNDS_LIMIT if chained else min(ROUNDS_LIMIT, sum(1 for h in history if isinstance(h, dict) and h.get("request_id") == rid)))
     if stop: state = "blocked"
     elif history is None: state, stop = "blocked", "history_unavailable"
+    elif chained: state, stop = "exhausted", "result_of_a_reverification"
     elif used >= ROUNDS_LIMIT: state, stop = "exhausted", "reverification_used"
     else: state = "collect_local"
     return dict(schema_version=1, request_id=rid, reason_codes=[code] + [x for x in causes if x != code], target=target, state=state, remedy=remedy, allowed_sources=list(sources),

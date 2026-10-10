@@ -34,7 +34,7 @@ CATEGORIES = tuple(range(1, 10))
 REGISTRY_SCHEMA, REGISTRY_VERSION = "handoff-verify-audit-registry", 2   # v2 adds `evidence_history`; v1 is still read (migrate_registry) and is written as v2 the next time the registry grows
 READABLE_VERSIONS = (1, 2)
 EVIDENCE_STAGES = ("verify", "gate", "absence", "source", "audit")   # what a re-verification request refers to
-EVIDENCE_STATES = ("authorized", "recorded")   # authorized = reserved before the call; recorded = the real call was copied in. A state never goes back.
+EVIDENCE_STATES = ("authorized", "recorded")   # authorized = reserved before the call; recorded = the real call was copied in (its `recorded_ref`, from the session log). A state never goes back.
 CHUNK_CHARS = 9000   # prepare.py's default --max-chars; a report may declare another one (`audit.max_chars`), the expected chunks are re-derived with it
 GLOBAL = (None, None, "session_end", None)   # a report without version identity: the whole transcript, no write
 OUTCOMES = ("candidates", "no_candidate", "not_applicable")
@@ -194,8 +194,11 @@ def _target_ok(t):
     return isinstance(t, dict) and set(t) == {"jev_ref", "version_ref", "stage"} and _jev_ref_ok(t["jev_ref"]) and key_from_dict(t["version_ref"]) is not None and t["stage"] in EVIDENCE_STAGES
 
 def _evidence_ok(e):
-    return (isinstance(e, dict) and set(e) == {"request_id", "target", "input_hash", "state"} and _target_ok(e["target"]) and e["request_id"] == evidence_request_id(e["target"])
-            and _hex64(e["input_hash"]) and e["state"] in EVIDENCE_STATES)
+    """An authorized entry holds the four keys; a recorded one also holds `recorded_ref`, the REAL reference of the call (copied from the session log): a recorded entry without it, or an authorized one with it, is malformed."""
+    if not (isinstance(e, dict) and e.get("state") in EVIDENCE_STATES): return False
+    keys = {"request_id", "target", "input_hash", "state"} | ({"recorded_ref"} if e["state"] == "recorded" else set())
+    return (set(e) == keys and _target_ok(e["target"]) and e["request_id"] == evidence_request_id(e["target"]) and _hex64(e["input_hash"])
+            and (e["state"] != "recorded" or (e["recorded_ref"] is not None and _jev_ref_ok(e["recorded_ref"]))))
 
 def _history_problem(h):
     """-> the reason an `evidence_history` is not acceptable, else None (a list of well-formed entries, one per request_id)."""
@@ -207,7 +210,7 @@ def _history_problem(h):
         seen.add(e["request_id"])
     return None
 
-def _same_request(a, b): return {k: v for k, v in a.items() if k != "state"} == {k: v for k, v in b.items() if k != "state"}
+def _same_request(a, b): return {k: v for k, v in a.items() if k not in ("state", "recorded_ref")} == {k: v for k, v in b.items() if k not in ("state", "recorded_ref")}
 
 def migrate_registry(doc):
     """-> (v2 document | None, reason | None). Explicit and lossless: v1 gains an empty `evidence_history` and nothing else changes; v2 passes through; any other version is refused, never guessed."""
@@ -255,6 +258,7 @@ def merge_registries(docs, source):
             old = history.get(e["request_id"])
             if old is None: history[e["request_id"]] = e
             elif not _same_request(old, e): return None, "two representations of the session hold different evidence_history entries under one request_id: the accounting of the re-verifications is not demonstrated"
+            elif old["state"] == "recorded" and e["state"] == "recorded" and old != e: return None, "two representations of the session hold different recorded calls under one request_id: the accounting of the re-verifications is not demonstrated"
             elif e["state"] == "recorded": history[e["request_id"]] = e
     merged["evidence_history"] = list(history.values())
     return merged, None
@@ -306,6 +310,30 @@ def reserve_evidence(path, source, request_id, target, input_hash):
             return ("already_authorized" if old["input_hash"] == input_hash else "input_changed"), old
         doc["evidence_history"].append(e); save_registry(path, doc)
         return "reserved", e
+
+def record_evidence(path, source, request_id, input_hash, recorded_ref):
+    """After the call: move the AUTHORIZED entry of `request_id` to `recorded`, carrying `recorded_ref`, the real reference of the call as the session log shows it (never invented). Same lock and same atomic replace as `reserve_evidence`.
+    Only the call made with exactly the authorized bytes (`input_hash`) is recorded, and only once. -> (status, entry): `recorded` (moved now), `already_recorded` (the same call again), `recorded_elsewhere` (another call
+    is already recorded: it is never replaced), `not_authorized` (no entry: an unauthorized call is not recorded), `input_mismatch` (other bytes than the authorized ones), or a refusal that writes nothing: `invalid_ref`,
+    `locking_unavailable`, `registry_missing`, `registry_unreadable`, `registry_unbound`, `foreign_registry`."""
+    if recorded_ref is None or not _jev_ref_ok(recorded_ref): return "invalid_ref", None
+    if fcntl is None: return "locking_unavailable", None
+    if not os.path.isfile(path): return "registry_missing", None
+    try: lock = open(path + ".lock", "a+")
+    except OSError: return "locking_unavailable", None
+    with lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        doc, why = load_registry(path)
+        if doc is None: return "registry_unreadable", None
+        if doc.get("source") is None: return "registry_unbound", None
+        if doc["source"] != source: return "foreign_registry", None
+        old = next((x for x in doc["evidence_history"] if x["request_id"] == request_id), None)
+        if old is None: return "not_authorized", None
+        if old["input_hash"] != input_hash: return "input_mismatch", old
+        if old["state"] == "recorded": return ("already_recorded" if old["recorded_ref"] == recorded_ref else "recorded_elsewhere"), old
+        new = dict(old, state="recorded", recorded_ref=recorded_ref)
+        doc["evidence_history"] = [new if x["request_id"] == request_id else x for x in doc["evidence_history"]]; save_registry(path, doc)
+        return "recorded", new
 
 def _open_registry(path, source):
     doc = load_registry(path)[0] if os.path.exists(path) else empty_registry(source)
@@ -458,6 +486,39 @@ class Context:
             return (None, why) if merged is None else (merged, reason)
         return self.cached(("registry", plan["source"], tuple(x for x, _ in self.representations(plan))), make)
 
+    def evidence_history(self):
+        """-> (evidence_history entries, reason | None): the authorizations of the re-verifications as the registries of ALL the demonstrated representations of the session hold them (united by request_id, as `registry_state` does).
+        A representation without a registry adds nothing; none at all, one that cannot be read, or one that belongs to another session is a reason and authorizes nothing (the readable ones still count). The writer treats any
+        reason as a lost history (a new allowance is refused)."""
+        def make():
+            reps = []
+            for f in ([self.source] if self.source else []) + list(self.also):
+                try:
+                    if not D.source_exists(f): continue
+                    c = D.canon(f)
+                    if all(c != x for x, _ in reps): reps.append((c, session_cwd(f)))
+                except Exception: continue
+            docs, why = [], None
+            for src, cwd in reps:
+                path = registry_path(dict(source=src, cwd=cwd))
+                if path is None or not os.path.exists(path): continue
+                doc, w = load_registry(path)
+                if doc is None: why = w; continue
+                if doc.get("source") not in (None, src): why = "the candidate registry belongs to another source session"; continue
+                docs.append(doc)
+            if not docs: return [], why or "no candidate registry was established for this source session: no authorization of a re-verification can be shown"
+            merged, w = merge_registries(docs, reps[0][0])
+            return ([], w) if merged is None else (merged["evidence_history"], why)
+        return self.cached("evidence_history", make)
+
+    def reverification_state(self):
+        """-> dict(unauthorized: [unauthorized_repeats...], reason). The registry is read only when a repeat exists (a report without one never touches it)."""
+        def make():
+            if not unauthorized_repeats(self.bindings, self.calls, [], self.versioned): return dict(unauthorized=[], reason=None)
+            hist, why = self.evidence_history()
+            return dict(unauthorized=unauthorized_repeats(self.bindings, self.calls, hist, self.versioned), reason=why)
+        return self.cached("reverifications", make)
+
 # ---------------------------------------------------------------- dispositions (re-derived from the existing validators)
 def _present(ctx, k, detail):
     """Is the detail demonstrably STATED by the note (or contradicted by it) in the evaluation `k`? A bound, resolved, error-free jev_verify check of this evaluation whose only claim is the canonical absence claim of the detail, with
@@ -551,9 +612,39 @@ def _category_reasons(block, plan, win, k, cands, unfinished):
         elif not grounded(r.get("basis")): unfinished["categories"] += 1; out.append("%s: category %d is declared %s without a source-grounded basis (uuid + an exact quote of that record, inside the window of the evaluation)" % (label(k), c, o))
     return out
 
+def unauthorized_repeats(bindings, calls, history, versioned=True):
+    """The re-verifications the audit cannot accept: -> [{tool_use_id, first_tool_use_id, claim, version, key}]. Among the verify / gate calls CITED by bound checks, the calls that carry the same claim (whitespace-normalized,
+    whatever the tool) for the same version of the note (the whole transcript when the report has no version identity) are one claim asked several times: the first call by position is the original and each later one is a
+    re-verification. A re-verification is accepted only when `history` (the evidence_history of the registry of the session) holds a RECORDED entry for exactly that call (the real tool_use_id and the authorized bytes) whose
+    target is the original call, this claim and this version; an entry that was only reserved, other bytes, another call, another claim or version, or a history that could not be read authorize nothing, and one record covers one call. A failed attempt never binds, so the one identical retry after a transport
+    failure is never a repeat here. NOT seen: an earlier attempt that no check cites, and a corrected claim (another text). Pure: no file is read."""
+    by_id = {c["tool_use_id"]: c for c in calls if isinstance(c, dict) and isinstance(c.get("tool_use_id"), str)}
+    recorded = [e for e in (history if isinstance(history, list) else []) if _evidence_ok(e) and e["state"] == "recorded"]
+    def authorizes(e, c, first, claim, k):
+        """Does the recorded entry `e` authorize the call `c` as the re-verification of `claim` (asked first by `first`) in the version `k`? The entry is chosen by whoever ran evidence.py (its version comes from a file), so it
+        counts only when it says what the audit saw: this call and these bytes, the original call and its claim as the target, and the version the writer demonstrated (an allowance obtained under another version would reset it)."""
+        t = e["target"]; r = t["jev_ref"]
+        return (e["recorded_ref"]["tool_use_id"] == c["tool_use_id"] and e["input_hash"] == c["input_hash"] and r is not None and r["tool_use_id"] == first["tool_use_id"]
+                and isinstance(r["key"], str) and wsnorm(r["key"]) == claim and key_from_dict(t["version_ref"]) == k)
+    groups = {}
+    for b in bindings:
+        if not (isinstance(b, dict) and b.get("bound") and b.get("tool") in ("verify", "gate") and b.get("tool_use_id") in by_id and isinstance(b.get("claim_key"), str)): continue
+        v = b.get("version")
+        if versioned:
+            if not (isinstance(v, dict) and v.get("ok")): continue
+            k = key_of(v)
+        else: k = GLOBAL
+        groups.setdefault((k, wsnorm(b["claim_key"])), {}).setdefault(b["tool_use_id"], by_id[b["tool_use_id"]])
+    out = []
+    for (k, claim), rows in groups.items():
+        ordered = sorted(rows.values(), key=lambda c: c["seq"])
+        for c in ordered[1:]:
+            if not any(authorizes(e, c, ordered[0], claim, k) for e in recorded): out.append(dict(tool_use_id=c["tool_use_id"], first_tool_use_id=ordered[0]["tool_use_id"], claim=claim, version=label(k), key=k))
+    return out
+
 def assess(ctx, evals=None, findings=None, verdicts=None):
     """The audit of a report (or of the evaluations `evals` of it) -> dict(complete, reasons, unfinished {counts}, evaluations, scope {valid, invalid}, limit). Never raises: anything that cannot be evaluated is a reason."""
-    unfinished = dict(structure=0, scope=0, evaluations=0, chunks_missing=0, chunks_duplicate=0, chunks_stale=0, chunks_unreviewed=0, chunks_ungrounded=0, chunks_partial_categories=0, categories=0, candidates_unaccounted=0, candidates_unresolved=0)
+    unfinished = dict(structure=0, scope=0, evaluations=0, chunks_missing=0, chunks_duplicate=0, chunks_stale=0, chunks_unreviewed=0, chunks_ungrounded=0, chunks_partial_categories=0, categories=0, candidates_unaccounted=0, candidates_unresolved=0, reverifications=0)
     reasons = []; n_evals = 0
     try:
         doc = ctx.doc; au = doc.get("audit")
@@ -568,6 +659,11 @@ def assess(ctx, evals=None, findings=None, verdicts=None):
         # 3. the evaluations (each distinct evaluation once: two checks of one evaluation are one evaluation)
         evs = list(dict.fromkeys(ctx.evaluations() if evals is None else evals)); n_evals = len(evs)
         if not evs: reasons.append("no evaluation with a demonstrated version identity: there is nothing the review can be tied to"); unfinished["evaluations"] += 1
+        # 3b. the re-verifications: a verify / gate call that repeats an earlier one (same claim, same version) needs the recorded authorization of exactly that call; a PASS cannot survive one without it
+        rv = ctx.reverification_state(); mine = [x for x in rv["unauthorized"] if x["key"] in evs]
+        for x in mine:
+            reasons.append("%s: call %s repeats call %s for the same claim without a recorded authorization (evidence.py authorize before the call, evidence.py record after it)" % (x["version"], O.id_text(x["tool_use_id"]), O.id_text(x["first_tool_use_id"]))); unfinished["reverifications"] += 1
+        if mine and rv["reason"]: reasons.append("the authorizations of the session could not be read completely: " + rv["reason"])
         findings = doc.get("findings", []) if findings is None else findings
         if not isinstance(findings, list): findings = []
         if verdicts is None: verdicts = [dict(confirmed=False)] * len(findings)

@@ -17,9 +17,11 @@ the chat is never evidence. AUTHORIZING (`authorize`): the exact tool input the 
 (audit.reserve_evidence: exclusive lock + atomic replace, never given back); the authorization fixes the input hash (the hash the recorded call will carry) and the version of the note. The payload must carry the claim
 (the original one, or exactly the corrected one), keep every evidence entry of the original call, add every new item, and hold nothing the sanitizing policy would change; changed bytes are refused, the same bytes
 are the same authorization, not a second allowance. `check` is the preflight right before the call. The registry is DERIVED from the session (audit.registry_path_of), never chosen. This module cannot call Jev:
-a direct call made without an authorization is exposed by the audit of a later step, not prevented here. Recording the real call (authorized -> recorded) and the report come later.
+a direct call made without an authorization is exposed by the audit (audit.py), not prevented here. RECORDING (`record`): after the call, the authorized entry moves to recorded and carries the reference of the real call,
+copied from the session log by its tool_use_id (audit.record_evidence); only a verify / gate call made with exactly the authorized bytes is recorded, once.
 
-CLI: evidence.py authorize|check --session S --version-ref-file F --request-id ID --payload FILE.json [--proposals FILE.json]   -> JSON {authorized, status, reason, ...}; exit 1 when refused.
+CLI: evidence.py record --session S --request-id ID --tool-use-id TOOL_USE_ID   -> JSON {recorded, status, reason, recorded_ref}; exit 1 when refused.
+evidence.py authorize|check --session S --version-ref-file F --request-id ID --payload FILE.json [--proposals FILE.json]   -> JSON {authorized, status, reason, ...}; exit 1 when refused.
 evidence.py collect --session ID|PATH.jsonl|... [--cwd DIR] [--registry PATH] [--proposals FILE.json] [--version-ref-file FILE.json] [--headless] [--asked]   -> JSON {requests, question, unmatched_proposals, ignored_proposals}."""
 import argparse, hashlib, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -252,6 +254,18 @@ def check_authorization(request, payload, source):
     if e["state"] != "authorized": return False, "already_used"
     return (True, None) if e["input_hash"] == J.input_hash(payload) else (False, "input_changed")
 
+def record(request_id, call, source):
+    """Record, AFTER the call, the real call that used the authorization of `request_id`: the entry moves from authorized to recorded and carries the reference of the call as the session log shows it (call level: the tool_use_id).
+    Only a verify / gate call made with exactly the authorized bytes is recorded, once; the registry is the one DERIVED from the session. -> {recorded, status, reason, request_id, recorded_ref}; recorded is true for
+    `recorded` and `already_recorded` only."""
+    def no(reason, **kw): return dict(recorded=False, status=kw.pop("status", None), reason=reason, request_id=request_id, recorded_ref=None, **kw)
+    if not isinstance(call, dict) or call.get("tool") not in ("verify", "gate"): return no("not_a_verification_call")
+    path = A.registry_path_of(source)
+    if path is None: return no("registry_unlocatable")
+    ref = dict(tool_use_id=call["tool_use_id"], result_index=None, key=None)
+    status, _ = A.record_evidence(path, D.canon(source), request_id, call["input_hash"], ref); ok = status in ("recorded", "already_recorded")
+    return dict(recorded=ok, status=status, reason=None if ok else status, request_id=request_id, recorded_ref=ref if ok else None)
+
 def _fail(msg, rc): print(json.dumps({"error": msg})); return rc
 
 def _json_file(path, what, want):
@@ -315,13 +329,25 @@ def cmd_authorize(a):
     except (OSError, ValueError) as e: return _fail("the registry could not be written (%s)" % e.__class__.__name__, 2)
     print(json.dumps(res, indent=1, ensure_ascii=False)); return 0 if res["authorized"] else 1
 
+def cmd_record(a):
+    """record: the call is looked up in the session log by id; the registry is the one DERIVED from the session (there is no --registry here)."""
+    sp, how, amb = D.resolve_session_info(a.session, a.cwd)
+    if amb: return _fail("current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", 3)
+    if not sp or not D.source_exists(sp): return _fail("session not found", 2)
+    call = next((c for c in J.load_calls(sp) if c["tool_use_id"] == a.tool_use_id), None)
+    if call is None: return _fail("no Jev call of this session has the id %s" % a.tool_use_id, 2)
+    try: res = record(a.request_id, call, sp)
+    except (OSError, ValueError) as e: return _fail("the registry could not be written (%s)" % e.__class__.__name__, 2)
+    print(json.dumps(res, indent=1, ensure_ascii=False)); return 0 if res["recorded"] else 1
+
 def main():
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect"); c.add_argument("--session"); c.add_argument("--cwd"); c.add_argument("--registry"); c.add_argument("--proposals"); c.add_argument("--version-ref-file"); c.add_argument("--headless", action="store_true"); c.add_argument("--asked", action="store_true")
     for name in ("authorize", "check"):
         z = sub.add_parser(name); z.add_argument("--session"); z.add_argument("--cwd"); z.add_argument("--version-ref-file"); z.add_argument("--request-id", required=True); z.add_argument("--payload", required=True)
         if name == "authorize": z.add_argument("--proposals")
+    r = sub.add_parser("record"); r.add_argument("--session"); r.add_argument("--cwd"); r.add_argument("--request-id", required=True); r.add_argument("--tool-use-id", required=True)
     a = ap.parse_args()
-    return cmd_collect(a) if a.cmd == "collect" else cmd_authorize(a)
+    return cmd_collect(a) if a.cmd == "collect" else cmd_record(a) if a.cmd == "record" else cmd_authorize(a)
 
 if __name__ == "__main__": sys.exit(main())

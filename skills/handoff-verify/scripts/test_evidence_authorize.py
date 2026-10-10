@@ -42,7 +42,7 @@ class Reserve(Reg):
         self.reserve(entry()); status, e = self.reserve(entry(h=HASH_B)); self.assertEqual(status, "input_changed"); self.assertEqual(self.history(), [entry()])
 
     def test_a_recorded_request_is_exhausted(self):
-        self.reserve(entry()); doc = audit.load_registry(self.path)[0]; doc["evidence_history"][0]["state"] = "recorded"; audit.save_registry(self.path, doc)
+        self.reserve(entry()); doc = audit.load_registry(self.path)[0]; doc["evidence_history"][0].update(state="recorded", recorded_ref=dict(tool_use_id="c2", result_index=None, key=None)); audit.save_registry(self.path, doc)
         for h in (HASH_A, HASH_B): self.assertEqual(self.reserve(entry(h=h))[0], "exhausted")
 
     def test_other_requests_are_independent(self):
@@ -158,7 +158,7 @@ class Authorize(Session):
         self.refused("new_evidence_missing_in_payload")
 
     def test_a_used_up_request_is_exhausted(self):
-        self.authorize(); doc = audit.load_registry(self.reg)[0]; doc["evidence_history"][0]["state"] = "recorded"; audit.save_registry(self.reg, doc)
+        self.authorize(); doc = audit.load_registry(self.reg)[0]; doc["evidence_history"][0].update(state="recorded", recorded_ref=dict(tool_use_id="c2", result_index=None, key=None)); audit.save_registry(self.reg, doc)
         r = self.authorize(); self.assertEqual((r["authorized"], r["status"]), (False, "exhausted"))
 
     def test_a_registry_that_is_missing_or_unreadable_refuses_a_new_allowance(self):
@@ -180,7 +180,7 @@ class Authorize(Session):
         self.authorize()
         self.assertEqual(evidence.check_authorization(self.req, self.payload, self.log), (True, None))
         self.assertEqual(evidence.check_authorization(self.req, dict(self.payload, claims=["x"]), self.log), (False, "input_changed"))
-        doc = audit.load_registry(self.reg)[0]; doc["evidence_history"][0]["state"] = "recorded"; audit.save_registry(self.reg, doc)
+        doc = audit.load_registry(self.reg)[0]; doc["evidence_history"][0].update(state="recorded", recorded_ref=dict(tool_use_id="c2", result_index=None, key=None)); audit.save_registry(self.reg, doc)
         self.assertEqual(evidence.check_authorization(self.req, self.payload, self.log), (False, "already_used"))
 
 class Cli(Session):

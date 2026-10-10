@@ -20,7 +20,9 @@ def target(stage="verify", jev_ref=None, version_ref=VREF):
     return dict(jev_ref=jev_ref if jev_ref is not None else dict(tool_use_id="toolu_jev_1", result_index=0, key="The invented claim."), version_ref=version_ref, stage=stage)
 
 def entry(state="authorized", input_hash="c" * 64, **kw):
-    t = target(**kw); return dict(request_id=A.evidence_request_id(t), target=t, input_hash=input_hash, state=state)
+    t = target(**kw); e = dict(request_id=A.evidence_request_id(t), target=t, input_hash=input_hash, state=state)
+    if state == "recorded": e["recorded_ref"] = dict(tool_use_id="toolu_jev_2", result_index=None, key=None)   # a recorded entry carries the real ref of the call
+    return e
 
 def v1_doc(candidates=(CAND,)):
     """A registry exactly as format v1 wrote it (no evidence_history)."""

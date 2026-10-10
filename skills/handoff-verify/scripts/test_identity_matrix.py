@@ -171,6 +171,13 @@ ROWS = [
      "ele sunt pastrate exact (ECHO) iar statusul se re-deriva din ele: uuid = uuid-ul inregistrarii-sursa (rol: uuid de inregistrare), check_id / omission_ref/source_check_id = id-ul unei verificari din acelasi document (legat de binding), quote_source / claim / detail / reason = text de continut; "
      "textul liber NU e re-sanitizat de raport (OB10: un finding cu secret e persistat ca atare); o lista goala nu acopera aceste campuri",
      [T_MX + ".Report.test_rp10_findings_and_unresolved_are_structured_and_persisted_exactly", T_MX + ".Report.test_the_rich_report_sets_every_author_settable_property_of_the_schema", T_MX + ".Observations.test_ob10_free_text_of_the_report_is_persisted_as_supplied"]),
+ Row("RP11", "report.py write_report", "report.attach_advice -> advice.evidence_request; report.bind_report (evidence_requests)", F("report.json", "/checks[]/advice/evidence_request/target/jev_ref/key", "/checks[]/advice/evidence_request/target/jev_ref/tool_use_id", "/checks[]/advice/evidence_request/target/version_ref/evaluated_against",
+     "/checks[]/advice/evidence_request/target/version_ref/run", "/checks[]/advice/evidence_request/target/version_ref/sha256", "/checks[]/advice/evidence_request/target/version_ref/write_tool_use_id", "/checks[]/advice/evidence_request/missing_artifacts[]", "/evidence_requests[]/check_id"),
+     "COPY", "raportul persistat",
+     "the writer OWNS these properties (an author's value is dropped and re-derived): the request refers to the REAL recorded call (tool_use_id, the claim as the call carried it) and to the version identity the writer demonstrated for the check (RP03), copied exactly like the same identifiers of "
+     "checks[] (RP02), not re-sanitized: a placeholder would not be the identity, and the consumers (evidence.py, the audit) compare them byte for byte; `missing_artifacts[]` holds fixed names and `detail:` + text taken from the claim itself (the claim is already echoed under jev_ref/key); "
+     "check_id is the id of the check of the same document; the enum and counter fields of the request are fixed texts (NONIDENTITY)",
+     ["test_evidence_report.Report.test_a_check_that_did_not_pass_carries_its_request_bound_to_the_version", "test_evidence_report.Report.test_nothing_the_author_wrote_is_kept_and_the_report_is_valid"]),
 ]
 
 CANON = {"b.ledger.file": "ledger.file", "ledger.file.recorded": "ledger.file", "b.ledger.resume": "ledger.resume", "b.omissions.batch": "omissions.prepare", "b.omissions.prepare": "omissions.prepare.fail", "b.scope.fail": "scope.fail",
@@ -182,8 +189,10 @@ CANON = {"b.ledger.file": "ledger.file", "ledger.file.recorded": "ledger.file", 
          "ledger.record2": "ledger.record", "j.report.json": "report.json", "k.omissions.batch": "omissions.prepare", "k.ledger.file": "ledger.file", "k.ledger.resume": "ledger.resume", "report.ext.json": "report.json", "versions.list.err3": "versions.list.err",
          "j.versions.list.copy": "versions.list", "j.omissions.prepare.copy": "omissions.prepare", "i.omissions.prepare.redaction": "omissions.prepare.fail",
          "report.rich.json": "report.json", "l.prepare.err": "prepare.err"}
-# non-identity string leaves of the invented sessions: content hashes of the ledger identity (identity/*_sha256) and the retry advice of a check (fixed texts and the names of numeric fields; advice.py)
-NONIDENTITY = F("report.json", "/checks[]/advice/causes[]", "/checks[]/advice/code", "/checks[]/advice/fields/same_subject", "/checks[]/advice/fields/subject_at", "/checks[]/advice/hint") + F("ledger.file", "/obligations[]/identity/detail_sha256", "/obligations[]/identity/quote_sha256", "/obligations[]/identity/evaluated_sha256", "/obligations[]/identity/material_sha256", "/obligations[]/identity/passage_sha256",
+# non-identity string leaves of the invented sessions: content hashes of the ledger identity (identity/*_sha256) and the retry advice of a check (fixed texts and the names of numeric fields; advice.py; the enums, codes and hash id of its evidence_request)
+NONIDENTITY = F("report.json", "/checks[]/advice/causes[]", "/checks[]/advice/code", "/checks[]/advice/fields/same_subject", "/checks[]/advice/fields/subject_at", "/checks[]/advice/hint",
+                "/checks[]/advice/evidence_request/allowed_sources[]", "/checks[]/advice/evidence_request/reason_codes[]", "/checks[]/advice/evidence_request/remedy", "/checks[]/advice/evidence_request/request_id", "/checks[]/advice/evidence_request/state",
+                "/checks[]/advice/evidence_request/stop_reason", "/checks[]/advice/evidence_request/target/stage", "/evidence_requests[]/remedy", "/evidence_requests[]/request_id", "/evidence_requests[]/state", "/evidence_requests[]/stop_reason") + F("ledger.file", "/obligations[]/identity/detail_sha256", "/obligations[]/identity/quote_sha256", "/obligations[]/identity/evaluated_sha256", "/obligations[]/identity/material_sha256", "/obligations[]/identity/passage_sha256",
                 "/obligations[]/identity/version_sha256")
 
 _W = None
@@ -226,6 +235,7 @@ UNPRODUCED = {
  "omissions.prepare:/hints/truncated{}": "keys are hint identifiers that exceeded the listing cap; non-empty only above HINT_CAP matches: navigation only (HINT_CAP is a listing bound, hints are never evidence)",
  "ledger.file:/obligations[]/stages{}": "the empty-dict marker of an obligation without recorded stages; the stage ids themselves are produced under stages/absence[] and stages/source[] (LG03)",
  "report.json:/handoff/versions[]/evaluations{}": "the empty-dict marker of a declared version without checks; the evaluations that exist are produced as evaluations/session_end/* and evaluations/prefix/*",
+ "report.json:/checks[]/advice/evidence_request/missing_artifacts[]": "the empty-list marker: the invented sessions fail a claim_correction request, which names no artifact; when non-empty it holds fixed artifact names and `detail:` + text of the claim itself (test_evidence_request, advice.evidence_request)",
  "report.md:(text)": "Markdown is not JSON: the guard cannot list its leaves; RP04 asserts the text (reasons, stale notice) with Report.test_rp04_markdown_reasons",
 }
 

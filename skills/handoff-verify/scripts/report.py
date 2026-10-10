@@ -38,19 +38,30 @@ def overall_status(checks):
 
 TRANSPORT_ERRORS = {"transport", "invalid_response"}
 
-def attach_advice(checks, bindings, calls, findings):
+def _version_ref(binding):
+    """The version of the note the writer demonstrated for a binding, as a version_ref ({write_tool_use_id, sha256, evaluated_against[, run]}); None when no identity was demonstrated."""
+    v = binding.get("version")
+    return audit.dict_of(audit.key_of(v)) if isinstance(v, dict) and v.get("ok") else None
+
+def attach_advice(checks, bindings, calls, findings, ctx=None):
     """Informative only (never read back, never changes a status): every bound verify/gate check that is not resolved gets `advice` = advice.advise of its REAL result
-    (what to try in the single re-verification that retry_decision allows). The two checks of an omission pair get none (their `unsupported` half is expected). A declared `advice` is dropped."""
+    (what to try in the single re-verification that retry_decision allows). The two checks of an omission pair get none (their `unsupported` half is expected). A declared `advice` is dropped.
+    With the audit context `ctx` (the writer), the advice also carries `evidence_request` (advice.evidence_request), bound to the version the writer demonstrated for the check and to the authorizations of the registry
+    of the session; a history that cannot be read is a lost history, which refuses a new allowance."""
     pair = {f.get("check_id") for f in findings if isinstance(f, dict) and f.get("type") == "lost_detail" and isinstance(f.get("check_id"), str)}
     pair |= {f["omission_ref"].get("source_check_id") for f in findings if isinstance(f, dict) and isinstance(f.get("omission_ref"), dict) and isinstance(f["omission_ref"].get("source_check_id"), str)}
-    by_id = {c["tool_use_id"]: c for c in calls}
+    by_id = {c["tool_use_id"]: c for c in calls}; history = False      # the registry is read once, and only when a check needs a request
     for c, b in zip(checks, bindings):
         if not isinstance(c, dict): continue
         c.pop("advice", None)
         if not b.get("bound") or b.get("resolved") or b.get("tool") not in ("verify", "gate") or jevref.check_id(c) in pair: continue
         call = by_id.get(b["tool_use_id"]); e = next((x for x in jevref.results_of(call)[0] if x["index"] == b["result_index"]), None) if call else None
         a = advice.advise(e, call) if e else None
-        if a: c["advice"] = a
+        if a:
+            if ctx is not None:
+                if history is False: hist, why = ctx.evidence_history(); history = None if why else hist
+                a["evidence_request"] = advice.evidence_request(e, call, a, history, _version_ref(b))
+            c["advice"] = a
 
 def retry_decision(error_kind, attempts_identical, low_confidence=False, new_evidence=False, reverifications=0):
     """One identical retry only for transport/invalid_response; low confidence: at most one re-verification with NEW documented evidence;
@@ -157,19 +168,22 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
         except Exception as e: prov = None
         if prov: vnote["provenance"] = prov
     for c, o, b in zip(checks, out_checks, bs): o["binding"] = dict({k: b[k] for k in ("bound", "reason", "resolved", "aux_ok")}, **({"contract_reason": b["contract_reason"]} if b.get("contract_reason") else {}))   # contract_reason: the real verdict is outside its tool's contract (bound, recorded, never resolved)
-    attach_advice(checks, bs, calls, findings)
-    for c, o in zip(checks, out_checks):
-        o.pop("advice", None)
-        if "advice" in c: o["advice"] = c["advice"]
-    ev = jevref.audited_status(checks, bs, findings, unresolved, htxt, ctr)
-    if vnote is not None and vnote.get("provenance") and vnote["provenance"]["state"] != "recorded_write":
-        ev["reasons"].append(vnote["provenance"]["blocker"])   # exposed even without checks; a PASS cannot survive it
-        if ev["status"] == "PASS": ev["status"] = "UNRESOLVED"
     src = session_o.get("jsonl")
     h = handoff_o; hp = h.get("path") if isinstance(h.get("path"), str) else handoff_path
     asrc = ((cpath if vnote["same_session"] else src) if vnote is not None else src) if isinstance(src, str) else None   # the transcript the audit derives its expected chunks from (the one the version identity is judged in)
     also = [src] if vnote is not None and vnote["same_session"] and isinstance(src, str) and src else []   # the report's transcript is another representation of the SAME session (demonstrated): its candidate registry and its ledgers are part of the accounting too
     actx = audit.Context(doc, checks, bs, calls, asrc, hp, h.get("source_path") if isinstance(h.get("source_path"), str) else None, vnote is not None, bool(vnote and vnote["same_session"]), ctr, True, also)
+    attach_advice(checks, bs, calls, findings, actx)
+    requests = []
+    for c, o in zip(checks, out_checks):
+        o.pop("advice", None)
+        if "advice" in c: o["advice"] = c["advice"]
+        r = (c.get("advice") or {}).get("evidence_request")
+        if r and jevref.check_id(c): requests.append(dict(check_id=jevref.check_id(c), request_id=r["request_id"], state=r["state"], remedy=r["remedy"], stop_reason=r["stop_reason"]))
+    ev = jevref.audited_status(checks, bs, findings, unresolved, htxt, ctr)
+    if vnote is not None and vnote.get("provenance") and vnote["provenance"]["state"] != "recorded_write":
+        ev["reasons"].append(vnote["provenance"]["blocker"])   # exposed even without checks; a PASS cannot survive it
+        if ev["status"] == "PASS": ev["status"] = "UNRESOLVED"
     if "scope_exclusions" in doc:   # R05: every declared out-of-scope exclusion is re-derived from the real jev_classify call (audit.Context.scope_state = scope.validate_exclusions with the real source, the canonical scope, the known writes and the evaluation of the report); the audit below turns an invalid one into an incomplete audit
         sa = actx.scope_state()
         doc["scope_audit"] = dict(threshold=scope.THRESHOLD, valid=sa["valid"], invalid=sa["invalid"], reasons=sa["reasons"])
@@ -179,7 +193,7 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
     doc["status_claimed"] = claimed if valid_claim else None
     if valid_claim and claimed == ev["status"]: doc.pop("status_claimed")
     if ctr != "R02": doc["omission_contract"] = ctr   # informative only (never read): the contract the writer applied (strict auxiliary conditions and the explicit omission pair; the gate and the auditors recompute under their own contract)
-    doc.update(checks=out_checks, status=ev["status"], jev_ref_version="1", binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], calls_log_note=note, jev_calls_in_log=len(calls), audit=ev["audit"]))
+    doc.update(checks=out_checks, evidence_requests=requests, status=ev["status"], jev_ref_version="1", binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], calls_log_note=note, jev_calls_in_log=len(calls), audit=ev["audit"]))
     if vnote is not None:
         doc["binding_summary"]["version_identity"] = vnote
         h = dict(handoff_o); declared = _list(h.get("versions"))
