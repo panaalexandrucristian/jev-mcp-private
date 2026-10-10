@@ -14,8 +14,9 @@ const temp = () => {
   return dir;
 };
 let sentinels;
+const allSentinels = [];
 after(() => {
-  sentinels?.cleanupTmp();
+  allSentinels.forEach((s) => s.cleanupTmp());
   dirs.forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
@@ -26,6 +27,7 @@ const logFor = (script, results) => JSON.stringify({ n: 1, body: { tools: [{ fun
 function setup() {
   const root = temp();
   sentinels = prepareSentinels(root);
+  allSentinels.push(sentinels);
   const workspace = join(root, "ws");
   mkdirSync(workspace);
   writeFileSync(join(workspace, "hello.txt"), "hello inside\n");
