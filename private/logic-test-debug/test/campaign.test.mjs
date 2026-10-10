@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { campaignOrder, remaining } from "../eval/lib/campaign.mjs";
 import { permissionFingerprint } from "../eval/lib/run.mjs";
 
 const EVAL = fileURLToPath(new URL("../eval/", import.meta.url));
+const SESSIONS_BASE = mkdtempSync(join(tmpdir(), "ltd-test-sessions-"));
+after(() => rmSync(SESSIONS_BASE, { recursive: true, force: true }));
 const real = JSON.parse(readFileSync(join(EVAL, "budget.json"), "utf8"));
 const order = campaignOrder(real.plan.planned);
 const count = (scenario, arm) => order.filter((e) => e.scenario === scenario && (!arm || e.arm === arm)).length;
@@ -93,7 +95,7 @@ if (cfg.mode === "complete" || cfg.mode === "outside") {
     writeFileSync(join(root, "budget.json"), JSON.stringify(budget));
     return { root, bin, budgetPath: join(root, "budget.json") };
   };
-  const drive = ({ root, bin, budgetPath }, ...args) => spawnSync(process.execPath, [join(EVAL, "campaign.mjs"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: process.env.TMPDIR ?? "", LTD_ROOT: root, LTD_BUDGET: budgetPath, LTD_CLAUDE_BIN: bin, LTD_LEDGER: join(root, "ledger.tsv") } });
+  const drive = ({ root, bin, budgetPath }, ...args) => spawnSync(process.execPath, [join(EVAL, "campaign.mjs"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: process.env.TMPDIR ?? "", LTD_SESSIONS_BASE: SESSIONS_BASE, LTD_ROOT: root, LTD_BUDGET: budgetPath, LTD_CLAUDE_BIN: bin, LTD_LEDGER: join(root, "ledger.tsv") } });
 
   it("--list shows what is left and starts nothing", () => {
     const t = prepare("complete");

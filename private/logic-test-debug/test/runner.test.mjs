@@ -3,13 +3,17 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { LOGIC_DIRECTIVE } from "../check.mjs";
 import { readLedger } from "../eval/lib/ledger.mjs";
 import { startBudgeted } from "../eval/lib/budget.mjs";
-import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, confinementFingerprint, ensurePluginCopy, permissionFingerprint, promptFor, runSession } from "../eval/lib/run.mjs";
+import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, confinementFingerprint, ensurePluginCopy, makeSessionDir, permissionFingerprint, promptFor, runSession } from "../eval/lib/run.mjs";
 
+// Session folders of the stand-in runs go to a base of their own, removed at the end, so tests never touch the real /tmp
+// (where the folders of a real campaign may be) and leave nothing behind.
+process.env.LTD_SESSIONS_BASE = mkdtempSync(join(tmpdir(), "ltd-test-sessions-"));
+after(() => rmSync(process.env.LTD_SESSIONS_BASE, { recursive: true, force: true }));
 const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../eval/budget.json", import.meta.url)), "utf8"));
 const tmp = (name) => mkdtempSync(join(tmpdir(), `ltd-${name}-`));
 
@@ -172,7 +176,7 @@ describe("runSession with a stand-in binary (no model is started)", () => {
     assert.ok(!Object.keys(call.env).some((k) => /^(CLAUDE(?!_CODE_TMPDIR)|JEV_LOGIC)/.test(k)), "ON arm: no switch, no inherited variable");
     assert.ok(call.cwd.startsWith(verdict.sessionParent), "the workspace lies inside the session's private folder");
     assert.equal(call.env.CLAUDE_CODE_TMPDIR, join(verdict.sessionParent, "t"));
-    assert.ok(Buffer.byteLength(call.env.CLAUDE_CODE_TMPDIR) <= 30, "the CLI wants a short temporary folder");
+    assert.ok(call.env.CLAUDE_CODE_TMPDIR.startsWith(realpathSync(process.env.LTD_SESSIONS_BASE)), "the test base, not /tmp");
     const rows = readLedger(budget.ledger);
     assert.deepEqual(rows.map((r) => r.status), ["started", "complete"]);
     assert.equal(rows[1].usd, 0.04);
@@ -288,6 +292,22 @@ describe("confinement: the start gate and the probe", () => {
     const quiet = await runSession({ budget, scenario: "confine", arm: "OFF", run: 2, kind: "reserve", claudeBin: bin, pluginDir, root });
     assert.equal(quiet.evaluation.probe.inconclusive, true, "no outside attempt was made");
     assert.equal(quiet.evaluation.success, false);
+  });
+});
+
+describe("the private session folder", () => {
+  it("is short enough for the CLI's temporary-folder limit under the default base, and holds a scratch folder", () => {
+    const saved = process.env.LTD_SESSIONS_BASE;
+    delete process.env.LTD_SESSIONS_BASE;
+    try {
+      const session = makeSessionDir("s123");
+      assert.ok(Buffer.byteLength(session.scratch) <= 30, `${session.scratch} is ${Buffer.byteLength(session.scratch)} bytes`);
+      assert.ok(session.parent.startsWith(realpathSync("/tmp")));
+      assert.ok(existsSync(session.scratch));
+      rmSync(session.parent, { recursive: true, force: true });
+    } finally {
+      process.env.LTD_SESSIONS_BASE = saved;
+    }
   });
 });
 

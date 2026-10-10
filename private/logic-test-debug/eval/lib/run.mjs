@@ -41,8 +41,8 @@ export const defaultNodeHome = () => dirname(dirname(real(process.execPath)));
 // cannot find what an earlier one (of either arm) left behind. The name is short on purpose: CLAUDE_CODE_TMPDIR must
 // stay under about 30 bytes.
 export const SESSION_PLACEHOLDER = "<session>";
-export function makeSessionDir(id) {
-  const parent = realpathSync(mkdtempSync(join("/tmp", `l-${id}-`)));
+export function makeSessionDir(id, base = process.env.LTD_SESSIONS_BASE ?? "/tmp") {
+  const parent = realpathSync(mkdtempSync(join(base, `l-${id}-`)));
   const scratch = join(parent, "t");
   mkdirSync(scratch);
   return { parent, scratch };
