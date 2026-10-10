@@ -29,7 +29,10 @@ import discover as D, jevref as J, omissions as O, schema_check as SC, scope, ve
 
 AUDIT_VERSION = 1
 CATEGORIES = tuple(range(1, 10))
-REGISTRY_SCHEMA, REGISTRY_VERSION = "handoff-verify-audit-registry", 1
+REGISTRY_SCHEMA, REGISTRY_VERSION = "handoff-verify-audit-registry", 2   # v2 adds `evidence_history`; v1 is still read (migrate_registry) and is written as v2 the next time the registry grows
+READABLE_VERSIONS = (1, 2)
+EVIDENCE_STAGES = ("verify", "gate", "absence", "source", "audit")   # what a re-verification request refers to
+EVIDENCE_STATES = ("authorized", "recorded")   # authorized = reserved before the call; recorded = the real call was copied in. A state never goes back.
 CHUNK_CHARS = 9000   # prepare.py's default --max-chars; a report may declare another one (`audit.max_chars`), the expected chunks are re-derived with it
 GLOBAL = (None, None, "session_end", None)   # a report without version identity: the whole transcript, no write
 OUTCOMES = ("candidates", "no_candidate", "not_applicable")
@@ -170,7 +173,46 @@ def associate_session_ledger(source, ledger_path):
     if path is None: raise ValueError("the session records no usable cwd, so its candidate registry cannot be located and the ledger cannot be associated with it")
     associate_ledger(path, D.canon(source), ledger_path); return path
 
-def empty_registry(source=None): return dict(schema=REGISTRY_SCHEMA, version=REGISTRY_VERSION, source=source, limit=LIMIT, established=[], ledgers=[], candidates=[])
+def empty_registry(source=None): return dict(schema=REGISTRY_SCHEMA, version=REGISTRY_VERSION, source=source, limit=LIMIT, established=[], ledgers=[], candidates=[], evidence_history=[])
+
+def evidence_request_id(target):
+    """The id of a re-verification request: derived from WHAT is re-verified (the call result, the evaluation, the stage), never from the check id or from the bytes of the input."""
+    return sha256_text(json.dumps(target, sort_keys=True, ensure_ascii=False))[:16]
+
+def _hex64(s): return isinstance(s, str) and len(s) == 64 and set(s) <= set("0123456789abcdef")
+
+def _jev_ref_ok(r):
+    return r is None or (isinstance(r, dict) and set(r) == {"tool_use_id", "result_index", "key"} and isinstance(r["tool_use_id"], str) and bool(r["tool_use_id"])
+                         and type(r["result_index"]) is int and r["result_index"] >= 0 and isinstance(r["key"], str))
+
+def _target_ok(t):
+    return isinstance(t, dict) and set(t) == {"jev_ref", "version_ref", "stage"} and _jev_ref_ok(t["jev_ref"]) and key_from_dict(t["version_ref"]) is not None and t["stage"] in EVIDENCE_STAGES
+
+def _evidence_ok(e):
+    return (isinstance(e, dict) and set(e) == {"request_id", "target", "input_hash", "state"} and _target_ok(e["target"]) and e["request_id"] == evidence_request_id(e["target"])
+            and _hex64(e["input_hash"]) and e["state"] in EVIDENCE_STATES)
+
+def _history_problem(h):
+    """-> the reason an `evidence_history` is not acceptable, else None (a list of well-formed entries, one per request_id)."""
+    if not isinstance(h, list): return "the candidate registry's evidence_history is not a list"
+    seen = set()
+    for e in h:
+        if not _evidence_ok(e): return "the candidate registry's evidence_history holds a malformed entry"
+        if e["request_id"] in seen: return "the candidate registry's evidence_history holds a duplicate request_id"
+        seen.add(e["request_id"])
+    return None
+
+def _same_request(a, b): return {k: v for k, v in a.items() if k != "state"} == {k: v for k, v in b.items() if k != "state"}
+
+def migrate_registry(doc):
+    """-> (v2 document | None, reason | None). Explicit and lossless: v1 gains an empty `evidence_history` and nothing else changes; v2 passes through; any other version is refused, never guessed."""
+    if not isinstance(doc, dict) or doc.get("schema") != REGISTRY_SCHEMA: return None, "the candidate registry is not a %s document" % REGISTRY_SCHEMA
+    v = doc.get("version")
+    if type(v) is not int or v not in READABLE_VERSIONS: return None, "the candidate registry is not a %s v1 or v2 document" % REGISTRY_SCHEMA
+    if v == 1:
+        if "evidence_history" in doc: return None, "a v1 candidate registry cannot hold an evidence_history"
+        return dict(doc, version=REGISTRY_VERSION, evidence_history=[]), None
+    return dict(doc), None
 
 def _candidate_ok(c):
     return (isinstance(c, dict) and isinstance(c.get("id"), str) and key_from_dict(c.get("evaluation")) is not None and isinstance(c.get("detail_sha256"), str) and len(c["detail_sha256"]) == 64
@@ -180,7 +222,10 @@ def load_registry(path):
     """-> (document | None, reason | None): a malformed registry is refused (fail closed), never repaired."""
     try: doc = json.load(open(path, encoding="utf-8"))
     except (OSError, ValueError) as e: return None, "the candidate registry is unreadable (%s)" % e.__class__.__name__
-    if not isinstance(doc, dict) or doc.get("schema") != REGISTRY_SCHEMA or doc.get("version") != REGISTRY_VERSION or not isinstance(doc.get("candidates"), list): return None, "the candidate registry is not a %s v%d document" % (REGISTRY_SCHEMA, REGISTRY_VERSION)
+    doc, why = migrate_registry(doc)      # a v1 file is read as v2 with an empty history; the file itself is not rewritten
+    if doc is None: return None, why
+    if not isinstance(doc.get("candidates"), list): return None, "the candidate registry is not a %s v1 or v2 document" % REGISTRY_SCHEMA
+    if (why := _history_problem(doc.get("evidence_history"))): return None, why
     est, led = doc.get("established", []), doc.get("ledgers", [])
     if not (isinstance(est, list) and all(key_from_dict(x) is not None for x in est) and isinstance(led, list) and all(isinstance(x, str) and x for x in led)): return None, "the candidate registry holds a malformed list of established evaluations or ledgers"
     seen = set()
@@ -190,14 +235,40 @@ def load_registry(path):
         seen.add(c["id"])
     return dict(doc, established=list(est), ledgers=list(led)), None
 
+def merge_registries(docs, source):
+    """-> (merged document | None, reason | None): the registries of the demonstrated representations of one session, united. Every candidate, established evaluation and ledger association of any of them counts; the evidence_history entries are united by request_id (the same request keeps its most advanced
+    state; two different requests under one id refuse the merge)."""
+    merged = empty_registry(source); ids = set(); history = {}
+    for d in docs:
+        for c in d["candidates"]:
+            if c["id"] not in ids: ids.add(c["id"]); merged["candidates"].append(c)
+        for x in d["established"]:
+            if not any(key_from_dict(y) == key_from_dict(x) for y in merged["established"]): merged["established"].append(x)
+        for l in d["ledgers"]:
+            if l not in merged["ledgers"]: merged["ledgers"].append(l)
+        for e in d.get("evidence_history", []):
+            old = history.get(e["request_id"])
+            if old is None: history[e["request_id"]] = e
+            elif not _same_request(old, e): return None, "two representations of the session hold different evidence_history entries under one request_id: the accounting of the re-verifications is not demonstrated"
+            elif e["state"] == "recorded": history[e["request_id"]] = e
+    merged["evidence_history"] = list(history.values())
+    return merged, None
+
 def save_registry(path, doc):
-    """Atomic write that never drops a registered candidate, an established evaluation or a ledger association (the registry only grows)."""
+    """Atomic write that never drops a registered candidate, an established evaluation, a ledger association or an evidence_history entry (the registry only grows; an entry may only move from authorized to recorded). Always writes v2."""
+    if (why := _history_problem(doc.get("evidence_history", []))): raise ValueError("refused: " + why)
+    doc = dict(doc, version=REGISTRY_VERSION, evidence_history=list(doc.get("evidence_history", [])))
     if os.path.exists(path):
         old, why = load_registry(path)
         if old is None: raise ValueError(why)
         if {c["id"] for c in old["candidates"]} - {c["id"] for c in doc["candidates"]}: raise ValueError("refused: the new registry would drop registered candidates")
         if {json.dumps(x, sort_keys=True) for x in old["established"]} - {json.dumps(x, sort_keys=True) for x in doc.get("established", [])}: raise ValueError("refused: the new registry would drop established evaluations")
         if set(old["ledgers"]) - set(doc.get("ledgers", [])): raise ValueError("refused: the new registry would drop ledger associations")
+        new = {e["request_id"]: e for e in doc["evidence_history"]}
+        for e in old["evidence_history"]:
+            n = new.get(e["request_id"])
+            if n is None: raise ValueError("refused: the new registry would drop evidence_history entries")
+            if n != e and not (e["state"] == "authorized" and n["state"] == "recorded" and _same_request(n, e)): raise ValueError("refused: an evidence_history entry may only move from authorized to recorded")
     d = os.path.dirname(os.path.abspath(path)); os.makedirs(d, exist_ok=True); fd, tmp = tempfile.mkstemp(prefix=".audit-registry-", dir=d)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f: json.dump(doc, f, indent=1, ensure_ascii=False); f.write("\n")
@@ -354,15 +425,8 @@ class Context:
                 docs.append(doc)
             reason = None if not lost else (lost[0] if not docs else "a demonstrated representation of the session has no established candidate registry (audit.py template --source <it>): the accounting of the work registered against it is missing; an established registry of another representation does not stand in for it")
             if not docs: return None, reason
-            merged = empty_registry(plan["source"]); ids = set()
-            for d in docs:
-                for c in d["candidates"]:
-                    if c["id"] not in ids: ids.add(c["id"]); merged["candidates"].append(c)
-                for x in d["established"]:
-                    if not any(key_from_dict(y) == key_from_dict(x) for y in merged["established"]): merged["established"].append(x)
-                for l in d["ledgers"]:
-                    if l not in merged["ledgers"]: merged["ledgers"].append(l)
-            return merged, reason
+            merged, why = merge_registries(docs, plan["source"])
+            return (None, why) if merged is None else (merged, reason)
         return self.cached(("registry", plan["source"], tuple(x for x, _ in self.representations(plan))), make)
 
 # ---------------------------------------------------------------- dispositions (re-derived from the existing validators)
