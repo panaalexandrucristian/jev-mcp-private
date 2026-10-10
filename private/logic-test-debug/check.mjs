@@ -6,8 +6,17 @@
 
 export const LOGIC_DIRECTIVE =
   "For this code task, load the logic-test-debug skill and apply its relevant rules. " +
-  "Use the compact Scope:/Method:/Result: record; state combination-test strength and reason without waiting. " +
-  "Preserve behaviour and report checks actually performed.";
+  "Finish your final answer with the three-line record Scope:, Method:, Result:. " +
+  "When you test combined conditions, state the strength t and why, without waiting. " +
+  "Preserve behaviour and report only checks you actually performed.";
+
+// The directive of plugin 0.10.0. The live sessions of both campaigns ran with it; the scorer must still recognise it
+// when it reads their transcripts again.
+export const EARLIER_DIRECTIVES = [
+  "For this code task, load the logic-test-debug skill and apply its relevant rules. " +
+    "Use the compact Scope:/Method:/Result: record; state combination-test strength and reason without waiting. " +
+    "Preserve behaviour and report checks actually performed.",
+];
 
 export const MAX_PROMPT_BYTES = 65536;
 export const BUDGET_MS = 25;

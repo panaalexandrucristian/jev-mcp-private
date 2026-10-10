@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BUDGET_MS, LOGIC_DIRECTIVE, MAX_PROMPT_BYTES, classifyCodePrompt } from "../check.mjs";
+import { BUDGET_MS, EARLIER_DIRECTIVES, LOGIC_DIRECTIVE, MAX_PROMPT_BYTES, classifyCodePrompt } from "../check.mjs";
 
 // The 16 positive and 16 negative example prompts of the activation design, with the expected outcome of each.
 const POSITIVE = [
@@ -133,6 +133,16 @@ describe("classifyCodePrompt: normalisation and boundaries", () => {
   it("keeps the directive under 400 characters", () => {
     assert.equal(typeof LOGIC_DIRECTIVE, "string");
     assert.ok(LOGIC_DIRECTIVE.length <= 400);
+  });
+  it("asks for the record at the end of the answer, names the skill and keeps the earlier text apart", () => {
+    for (const part of ["load the logic-test-debug skill", "Scope:, Method:, Result:", "without waiting", "report only checks you actually performed"]) {
+      assert.ok(LOGIC_DIRECTIVE.includes(part), part);
+    }
+    assert.ok(EARLIER_DIRECTIVES.length >= 1);
+    for (const earlier of EARLIER_DIRECTIVES) {
+      assert.notEqual(earlier, LOGIC_DIRECTIVE);
+      assert.ok(earlier.length <= 400);
+    }
   });
 });
 

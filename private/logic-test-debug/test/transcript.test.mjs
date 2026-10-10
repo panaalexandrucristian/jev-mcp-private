@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { LOGIC_DIRECTIVE } from "../check.mjs";
+import { EARLIER_DIRECTIVES, LOGIC_DIRECTIVE } from "../check.mjs";
 import { parseTranscript, scoreTranscript } from "../eval/lib/transcript.mjs";
 
 let n = 0;
@@ -87,5 +87,14 @@ describe("transcript scoring: application is separate from loading", () => {
   it("sees the directive text in a transcript, for the non-code gate", () => {
     assert.equal(score([line({ type: "system", note: LOGIC_DIRECTIVE }), end()]).directiveSeen, true);
     assert.equal(score([said("plain answer"), end()]).directiveSeen, false);
+  });
+  it("still recognises the directive of plugin 0.10.0, so the first two campaigns can be scored again", () => {
+    for (const earlier of EARLIER_DIRECTIVES) {
+      const events = [line({ type: "system", subtype: "hook_response", output: earlier }), end()];
+      const result = score(events);
+      assert.equal(result.directiveSeen, true);
+      assert.equal(result.directiveDelivered, true);
+    }
+    assert.equal(score([line({ type: "system", subtype: "hook_response", output: "something else" }), end()]).directiveDelivered, false);
   });
 });

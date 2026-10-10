@@ -5,8 +5,10 @@
 // its subtypes are NOT yet confirmed on this CLI version (INFERENCE) until the first smoke run shows them.
 // Loading, application and correctness are separate observations. The Scope/Method/Result record proves
 // application only, never loading: the directive text itself tells the agent to write that record.
-import { LOGIC_DIRECTIVE } from "../../check.mjs";
+import { EARLIER_DIRECTIVES, LOGIC_DIRECTIVE } from "../../check.mjs";
 
+// The current directive and the earlier ones: runs made under an older plugin version are scored with the text they were given.
+const DIRECTIVES = [LOGIC_DIRECTIVE, ...EARLIER_DIRECTIVES];
 const SKILL_NAMES = new Set(["logic-test-debug", "jev:logic-test-debug"]);
 const SKILL_FILE = /(^|\/)skills\/logic-test-debug\/SKILL\.md$/;
 
@@ -72,9 +74,9 @@ export function scoreTranscript(input, { limitExit = false } = {}) {
     complete,
     limitExit: limit,
     record: { ...record, present: Boolean(record.scope && record.method && record.result) },
-    directiveSeen: raw.includes(LOGIC_DIRECTIVE) || raw.includes(JSON.stringify(LOGIC_DIRECTIVE).slice(1, -1)),
+    directiveSeen: DIRECTIVES.some((text) => raw.includes(text) || raw.includes(JSON.stringify(text).slice(1, -1))),
     // Delivered by a hook: the directive text inside a `system` event (hook lifecycle events need --include-hook-events).
-    directiveDelivered: events.some((event) => event?.type === "system" && JSON.stringify(event).includes(JSON.stringify(LOGIC_DIRECTIVE).slice(1, -1))),
+    directiveDelivered: events.some((event) => event?.type === "system" && DIRECTIVES.some((text) => JSON.stringify(event).includes(JSON.stringify(text).slice(1, -1)))),
     commandsRun: bashRuns,
     unsupportedCheckClaim: claimsChecks && bashRuns === 0,
     finalText,
