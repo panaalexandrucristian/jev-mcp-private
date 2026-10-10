@@ -182,8 +182,11 @@ def evidence_request_id(target):
 def _hex64(s): return isinstance(s, str) and len(s) == 64 and set(s) <= set("0123456789abcdef")
 
 def _jev_ref_ok(r):
-    return r is None or (isinstance(r, dict) and set(r) == {"tool_use_id", "result_index", "key"} and isinstance(r["tool_use_id"], str) and bool(r["tool_use_id"])
-                         and type(r["result_index"]) is int and r["result_index"] >= 0 and isinstance(r["key"], str))
+    """None (no call at all), a result of a call (tool_use_id, index >= 0, key) or a whole call that has no usable result (tool_use_id with BOTH index and key null)."""
+    if r is None: return True
+    if not (isinstance(r, dict) and set(r) == {"tool_use_id", "result_index", "key"} and isinstance(r["tool_use_id"], str) and bool(r["tool_use_id"])): return False
+    if r["result_index"] is None and r["key"] is None: return True
+    return type(r["result_index"]) is int and r["result_index"] >= 0 and isinstance(r["key"], str)
 
 def _target_ok(t):
     return isinstance(t, dict) and set(t) == {"jev_ref", "version_ref", "stage"} and _jev_ref_ok(t["jev_ref"]) and key_from_dict(t["version_ref"]) is not None and t["stage"] in EVIDENCE_STAGES

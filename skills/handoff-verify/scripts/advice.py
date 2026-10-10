@@ -9,10 +9,14 @@ evidence 29 times and changed 28 times, so for low confidence the history does n
 
 The advice never changes a status and never relaxes report.retry_decision: at most one re-verification, only with NEW evidence or a corrected claim, never an identical call.
 
-CLI: advice.py --session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID [--cwd DIR]   -> JSON with every verify/gate result that did not pass and its advice."""
+Each advice of the CLI also carries `evidence_request`: what is missing before that single re-verification (remedy, state, sources, rounds used). It only DESCRIBES the request; collecting, asking, authorizing and
+recording are other steps, and `advise` (the report path) does not carry it. The identity of a request is the call result it refers to plus the stage and the version, never the check id or the bytes of an input.
+
+CLI: advice.py --session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID [--cwd DIR] [--registry PATH]   -> JSON with every verify/gate result that did not pass and its advice.
+--registry reads the evidence_history of a candidate registry (read-only); an unreadable or malformed one refuses a new allowance (state blocked, stop_reason history_unavailable)."""
 import argparse, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import jevref as J
+import audit as A, jevref as J
 
 CODES = ("protocol_fields_absent", "evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "aux_condition_failed", "result_mismatch", "no_result")
 HINTS = {
@@ -102,20 +106,63 @@ def _evidence_advice(entry, call):
     else: code = "add_direct_evidence"
     return dict(code=code, hint=HINTS[code])
 
-def session_advice(calls):
+ROUNDS_LIMIT = 1                      # one re-verification per request (the user's rule per_check_only), never a wave
+SOURCES = ("session_transcript", "admitted_local_file")   # where new evidence may come from: never an answer typed in the chat
+# primary advice code -> (remedy, allowed sources, missing artifacts). Only codes that advice.py itself produces; the identity, material and audit families belong to the later steps.
+REMEDY = {
+    "add_direct_evidence": ("semantic_evidence", SOURCES, ("direct_output_or_lines",)),
+    "add_source_passage": ("semantic_evidence", SOURCES, ("source_passage",)),
+    "evidence_off_subject": ("semantic_evidence", SOURCES, ("passage_about_claim_subject",)),
+    "aux_condition_failed": ("semantic_evidence", SOURCES, ("passage_about_exact_claim",)),
+    "remove_unsupported_detail": ("claim_correction", (), ()),
+    "recheck_fact": ("claim_correction", (), ()),
+    "fix_fact": ("claim_correction", (), ()),
+    "result_mismatch": ("claim_correction", (), ("corrected_call_with_claim",)),
+    "protocol_fields_absent": ("protocol_blocker", (), ()),
+    "no_result": ("transport_retry", (), ()),
+}
+
+def _jev_ref(entry, call):
+    """The result a request refers to; a call without a usable result (or a result without a text key) is the whole call, with index and key null."""
+    if entry is not None and type(entry.get("index")) is int and isinstance(entry.get("key"), str): return dict(tool_use_id=call["tool_use_id"], result_index=entry["index"], key=entry["key"])
+    return dict(tool_use_id=call["tool_use_id"], result_index=None, key=None)
+
+def evidence_request(entry, call, adv, history=(), version_ref=None):
+    """-> the evidence_request of one result that did not pass (`adv` = advise(entry, call), or the call-level no_result advice with entry None). Pure: reads nothing, calls nothing.
+    state: collect_local (the first thing to do is look for the missing material locally), blocked (no evidence can help, or the history is lost) or exhausted (the single re-verification of this request is already
+    authorized or recorded in `history`). `history` = the evidence_history of the registry; None = lost or unreadable, which refuses a new allowance. The request id comes from the target only."""
+    if A.key_from_dict(version_ref) is None: raise ValueError("version_ref is not a version identity")
+    code, causes = adv["code"], adv.get("causes", [])
+    remedy, sources, missing = REMEDY[code]
+    stop = {"protocol_fields_absent": "protocol_fields_absent", "no_result": "no_usable_result"}.get(code)
+    if stop is None and remedy == "semantic_evidence" and "subject_fields_null_or_invalid" in causes:      # more text cannot repair a response whose subject fields are null or invalid
+        remedy, sources, missing, stop = "protocol_blocker", (), (), "subject_fields_null_or_invalid"
+    target = dict(jev_ref=_jev_ref(entry, call), version_ref=version_ref, stage=call["tool"])
+    rid = A.evidence_request_id(target)
+    used = 0 if history is None else min(ROUNDS_LIMIT, sum(1 for h in history if isinstance(h, dict) and h.get("request_id") == rid))
+    if stop: state = "blocked"
+    elif history is None: state, stop = "blocked", "history_unavailable"
+    elif used >= ROUNDS_LIMIT: state, stop = "exhausted", "reverification_used"
+    else: state = "collect_local"
+    return dict(schema_version=1, request_id=rid, reason_codes=[code] + [x for x in causes if x != code], target=target, state=state, remedy=remedy, allowed_sources=list(sources),
+                missing_artifacts=list(missing) + ["detail:" + d for d in adv.get("details", [])], question_ro=None, rounds_used=used, rounds_limit=ROUNDS_LIMIT,
+                retry_remaining=0 if state != "collect_local" else ROUNDS_LIMIT - used, stop_reason=stop)
+
+def session_advice(calls, history=(), version_ref=None):
     out = []
     for c in calls:
         if c["tool"] not in ("verify", "gate"): continue
         ents, why = J.results_of(c)
         if why:
-            out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=None, claim=None, verdict=None, confidence=None, advice=dict(code="no_result", hint=HINTS["no_result"]))); continue
+            a = dict(code="no_result", hint=HINTS["no_result"])
+            out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=None, claim=None, verdict=None, confidence=None, advice=dict(a, evidence_request=evidence_request(None, c, a, history, version_ref)))); continue
         for e in ents:
             a = advise(e, c)
-            if a: out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=e["index"], claim=e["key"], verdict=e["verdict"], confidence=e["confidence"], advice=a))
+            if a: out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=e["index"], claim=e["key"], verdict=e["verdict"], confidence=e["confidence"], advice=dict(a, evidence_request=evidence_request(e, c, a, history, version_ref))))
     return out
 
 def build_parser():
-    ap = argparse.ArgumentParser(); ap.add_argument("--session"); ap.add_argument("--cwd")
+    ap = argparse.ArgumentParser(); ap.add_argument("--session"); ap.add_argument("--cwd"); ap.add_argument("--registry")
     return ap
 
 def main():
@@ -125,7 +172,12 @@ def main():
     if amb: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", "resolution": how})); return 3
     if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
     calls = J.load_calls(sp)
-    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", results=session_advice(calls), capabilities=J.capabilities(calls), capability_note=CAPABILITY_NOTE,
-                                                                                                         gate_summaries=[dict(tool_use_id=c["tool_use_id"], **J.gate_summary(c)) for c in calls if c["tool"] == "gate"]), indent=1, ensure_ascii=False)); return 0
+    history, consulted, why = (), False, None
+    if a.registry:
+        doc, why = A.load_registry(a.registry)
+        history, consulted = (None, False) if doc is None else (doc["evidence_history"], True)
+    extra = dict(history_error=why) if why else {}
+    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", history_consulted=consulted, **extra, results=session_advice(calls, history),
+                          capabilities=J.capabilities(calls), capability_note=CAPABILITY_NOTE, gate_summaries=[dict(tool_use_id=c["tool_use_id"], **J.gate_summary(c)) for c in calls if c["tool"] == "gate"]), indent=1, ensure_ascii=False)); return 0
 
 if __name__ == "__main__": sys.exit(main())

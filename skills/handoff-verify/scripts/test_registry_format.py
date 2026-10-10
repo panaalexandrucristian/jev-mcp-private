@@ -108,6 +108,13 @@ class FailClosed(Registry):
         for name, e in cases.items():
             with self.subTest(name): self.refused(v2_doc([e]))
 
+    def test_a_call_without_a_usable_result_is_a_valid_target_only_with_both_index_and_key_null(self):
+        ok = target(jev_ref=dict(tool_use_id="toolu_jev_1", result_index=None, key=None)); e = dict(request_id=A.evidence_request_id(ok), target=ok, input_hash="c" * 64, state="authorized")
+        self.put(v2_doc([e])); d, why = A.load_registry(self.path); self.assertIsNone(why); self.assertEqual(d["evidence_history"], [e])
+        for name, r in {"index only": dict(tool_use_id="t", result_index=0, key=None), "key only": dict(tool_use_id="t", result_index=None, key="k"), "no call id": dict(tool_use_id="", result_index=None, key=None)}.items():
+            with self.subTest(name):
+                t = target(jev_ref=r); self.refused(v2_doc([dict(request_id=A.evidence_request_id(t), target=t, input_hash="c" * 64, state="authorized")]))
+
     def test_malformed_targets_are_refused(self):
         for name, t in {"unknown stage": target(stage="improvised"), "bool index": target(jev_ref=dict(tool_use_id="t", result_index=True, key="k")), "negative index": target(jev_ref=dict(tool_use_id="t", result_index=-1, key="k")),
                 "empty tool_use_id": target(jev_ref=dict(tool_use_id="", result_index=0, key="k")), "extra jev_ref key": target(jev_ref=dict(tool_use_id="t", result_index=0, key="k", x=1)),
