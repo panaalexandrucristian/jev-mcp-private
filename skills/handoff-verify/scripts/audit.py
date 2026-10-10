@@ -24,6 +24,8 @@ discovered every semantic candidate, and nothing here excuses dropping a registe
 CLI: audit.py register --source S --file NOTE --write-id ID --evaluated-against prefix|session_end [--run ID] --detail TEXT [--category 1-9] [--quote TEXT] [--cwd DIR]   (exit 0, 3 refused; the registry is the one of the session: `--registry` is accepted only when it names it)
      audit.py template --source S --file NOTE --write-id ID --evaluated-against prefix|session_end [--run ID] [--ledger FILE] [--cwd DIR]   (establishes the evaluation in the registry and prints the unreviewed evaluation block of the report's `audit` object)"""
 import argparse, hashlib, json, os, sys, tempfile
+try: import fcntl
+except ImportError: fcntl = None      # no exclusive lock on this platform: a new evidence allowance is refused (fail closed)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import discover as D, jevref as J, omissions as O, schema_check as SC, scope, versions as V
 
@@ -280,6 +282,30 @@ def save_registry(path, doc):
         try: os.unlink(tmp)
         except OSError: pass
         raise
+
+def reserve_evidence(path, source, request_id, target, input_hash):
+    """Reserve, ATOMICALLY and BEFORE the call, the single re-verification of one request: an exclusive lock on `<registry>.lock` around read-check-write, and the atomic replace of save_registry. The allowance is never given back
+    (nothing here removes or rewrites an entry; a crash after the reservation keeps it). -> (status, entry): `reserved` (new authorized entry), `already_authorized` (the SAME input again: not a second allowance), `input_changed`
+    (other bytes for an authorized request: refused), `exhausted` (already recorded), or a refusal that writes nothing: `invalid_entry`, `locking_unavailable`, `registry_missing`, `registry_unreadable`, `registry_unbound`,
+    `foreign_registry`. A missing, unreadable, unbound or foreign registry proves no history, so it never grants a new allowance; an empty new registry would not prove that a lost history was empty."""
+    e = dict(request_id=request_id, target=target, input_hash=input_hash, state="authorized")
+    if not _evidence_ok(e): return "invalid_entry", None
+    if fcntl is None: return "locking_unavailable", None
+    if not os.path.isfile(path): return "registry_missing", None
+    try: lock = open(path + ".lock", "a+")
+    except OSError: return "locking_unavailable", None
+    with lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        doc, why = load_registry(path)
+        if doc is None: return "registry_unreadable", None
+        if doc.get("source") is None: return "registry_unbound", None
+        if doc["source"] != source: return "foreign_registry", None
+        old = next((x for x in doc["evidence_history"] if x["request_id"] == request_id), None)
+        if old is not None:
+            if old["state"] != "authorized": return "exhausted", old
+            return ("already_authorized" if old["input_hash"] == input_hash else "input_changed"), old
+        doc["evidence_history"].append(e); save_registry(path, doc)
+        return "reserved", e
 
 def _open_registry(path, source):
     doc = load_registry(path)[0] if os.path.exists(path) else empty_registry(source)

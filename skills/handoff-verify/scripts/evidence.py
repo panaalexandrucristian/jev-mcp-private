@@ -13,12 +13,17 @@ no binary or oversized file, no path that holds a secret); the shared sanitizing
 A transcript_record is an EXACT quote (case-sensitive, inside one block) of the session itself; it is eligible only in the shared source window of the evaluated write (omissions.window_for / eligible_blocks_indexed: before the write,
 never the note's own Write or Edit, never a Jev call, never verification material) and only when the request is bound to a version_ref. That the note's path was not written in several streams is re-derived when the
 re-verification is authorized, not here. Material is NEW only when its normalized text is not already inside one evidence entry the original call received (case, spacing and identifiers do not make it new), and one passage counts once. An answer typed in
-the chat is never evidence. Authorizing the re-verification, binding its input hash and recording it come later.
+the chat is never evidence. AUTHORIZING (`authorize`): the exact tool input the agent will send (a payload {claims, evidence, ...}) is checked and the single re-verification is reserved in the candidate registry of the session BEFORE the call
+(audit.reserve_evidence: exclusive lock + atomic replace, never given back); the authorization fixes the input hash (the hash the recorded call will carry) and the version of the note. The payload must carry the claim
+(the original one, or exactly the corrected one), keep every evidence entry of the original call, add every new item, and hold nothing the sanitizing policy would change; changed bytes are refused, the same bytes
+are the same authorization, not a second allowance. `check` is the preflight right before the call. The registry is DERIVED from the session (audit.registry_path_of), never chosen. This module cannot call Jev:
+a direct call made without an authorization is exposed by the audit of a later step, not prevented here. Recording the real call (authorized -> recorded) and the report come later.
 
-CLI: evidence.py collect --session ID|PATH.jsonl|... [--cwd DIR] [--registry PATH] [--proposals FILE.json] [--version-ref-file FILE.json] [--headless] [--asked]   -> JSON {requests, question, unmatched_proposals, ignored_proposals}."""
+CLI: evidence.py authorize|check --session S --version-ref-file F --request-id ID --payload FILE.json [--proposals FILE.json]   -> JSON {authorized, status, reason, ...}; exit 1 when refused.
+evidence.py collect --session ID|PATH.jsonl|... [--cwd DIR] [--registry PATH] [--proposals FILE.json] [--version-ref-file FILE.json] [--headless] [--asked]   -> JSON {requests, question, unmatched_proposals, ignored_proposals}."""
 import argparse, hashlib, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import advice as AD, jevref as J, refs, sanitize as S
+import advice as AD, audit as A, discover as D, jevref as J, refs, sanitize as S
 
 MAX_FILE_BYTES = 1_000_000      # a larger file is not read
 MAX_DIR_FILES = 100             # a directory proposal is expanded one level, in name order, up to this many files
@@ -100,7 +105,7 @@ def _transcript(source, version_ref):
     """-> ((eligible blocks [(text, provenance)], sha256 of the transcript, window), None) or (None, reason): the blocks of the shared source window of the evaluated write, nothing else."""
     if version_ref is None: return None, "version_unbound"
     if not source: return None, "transcript_unavailable"
-    import discover as D, omissions as O
+    import omissions as O
     try:
         w, recs = O.window_for(source, version_ref["write_tool_use_id"], version_ref["evaluated_against"], version_ref.get("run"))
         if w is None: return None, "transcript_unreadable"
@@ -192,27 +197,88 @@ def grouped_question(requests, searched=()):
     text = QUESTION_RO + "\n\nVerificări care așteaptă o cale:\n" + "\n".join(lines) + ("\n\nLocuri deja căutate: " + ", ".join(where) if where else "")
     return dict(text=text, requests=[dict(request_id=r["request_id"], missing_artifacts=list(r["missing_artifacts"])) for r in asks])
 
+def _strings(x):
+    if isinstance(x, str): yield x
+    elif isinstance(x, dict):
+        for v in x.values(): yield from _strings(v)
+    elif isinstance(x, (list, tuple)):
+        for v in x: yield from _strings(v)
+
+def _claim_texts(payload):
+    cs = payload.get("claims")
+    if not isinstance(cs, list) or not cs: return None
+    out = [c if isinstance(c, str) else (c.get("claim") if isinstance(c.get("claim"), str) else c.get("text")) if isinstance(c, dict) else None for c in cs]
+    return out if all(isinstance(c, str) and c for c in out) else None
+
+def check_payload(request, call, collected, payload):
+    """-> None or the reason why the exact tool input is not a re-verification of this request: it carries the claim (the original, or exactly the corrected one), keeps every evidence entry of the ORIGINAL call (dropping
+    contrary proof is not new evidence), adds every collected new item, and holds nothing the sanitizing policy would change."""
+    if not isinstance(payload, dict): return "payload_not_object"
+    claims = _claim_texts(payload)
+    if claims is None: return "claims_malformed"
+    want = (collected.get("corrected_claim") or {}).get("text") if request["remedy"] == "claim_correction" else request["target"]["jev_ref"]["key"]
+    if want not in claims: return "claim_missing_in_payload"
+    sent = [J._norm(t) for t in J.call_evidence(dict(input=payload))]
+    if any(not any(o in t for t in sent) for o in J.call_evidence(call)): return "original_evidence_dropped"
+    if any(not any(J._norm(i["quote"]) in t for t in sent) for i in collected.get("items", [])): return "new_evidence_missing_in_payload"
+    if any(_unsafe(t) for t in _strings(payload)): return "payload_redaction_dependent"
+    return None
+
+def authorize(request, call, proposals, payload, source):
+    """Authorize the single re-verification of `request` with the exact tool input `payload` (see the module doc). The proposals are COLLECTED AGAIN here, so changed bytes since the plan are seen. -> {authorized, status,
+    reason, request_id[, input_hash, registry, state, stop_reason]}; authorized is true for `reserved` and `already_authorized` only."""
+    def no(reason, **kw): return dict(authorized=False, status=kw.pop("status", None), reason=reason, request_id=request.get("request_id"), **kw)
+    if request["target"]["version_ref"] is None: return no("version_unbound")
+    path = A.registry_path_of(source)
+    if path is None: return no("registry_unlocatable")
+    got = collect(request, call, proposals, source); req = advance(request, got)
+    if req["state"] != "ready": return no("not_ready", state=req["state"], stop_reason=req["stop_reason"])
+    why = check_payload(req, call, got, payload)
+    if why: return no(why)
+    h = J.input_hash(payload); status, _ = A.reserve_evidence(path, D.canon(source), req["request_id"], req["target"], h)
+    ok = status in ("reserved", "already_authorized")
+    return dict(authorized=ok, status=status, reason=None if ok else status, request_id=req["request_id"], input_hash=h, registry=path)
+
+def check_authorization(request, payload, source):
+    """The preflight right before the call: -> (True, None) when the registry holds an AUTHORIZED, not yet recorded entry of this request for exactly these bytes; else (False, reason)."""
+    path = A.registry_path_of(source)
+    if path is None: return False, "registry_unlocatable"
+    if not os.path.isfile(path): return False, "registry_missing"
+    doc, _ = A.load_registry(path)
+    if doc is None: return False, "registry_unreadable"
+    if doc.get("source") != D.canon(source): return False, "foreign_registry"
+    e = next((x for x in doc["evidence_history"] if x["request_id"] == request["request_id"]), None)
+    if e is None: return False, "not_authorized"
+    if e["state"] != "authorized": return False, "already_used"
+    return (True, None) if e["input_hash"] == J.input_hash(payload) else (False, "input_changed")
+
 def _fail(msg, rc): print(json.dumps({"error": msg})); return rc
 
-def main():
-    ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("collect"); c.add_argument("--session"); c.add_argument("--cwd"); c.add_argument("--registry"); c.add_argument("--proposals"); c.add_argument("--version-ref-file"); c.add_argument("--headless", action="store_true"); c.add_argument("--asked", action="store_true")
-    a = ap.parse_args()
-    import discover as D
+def _json_file(path, what, want):
+    """-> (value, error): a JSON file whose top level has the type `want`."""
+    try: doc = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError) as e: return None, "%s file unreadable (%s)" % (what, e.__class__.__name__)
+    return (doc, None) if isinstance(doc, want) else (None, "%s file must hold a JSON %s" % (what, "object" if want is dict else "list"))
+
+def _requests(a):
+    """-> (sp, how, calls, rows, vref, None) or (None, ..., (message, exit code)): the failed verify/gate results of the session with their requests."""
     sp, how, amb = D.resolve_session_info(a.session, a.cwd)
-    if amb: return _fail("current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", 3)
-    if not sp or not D.source_exists(sp): return _fail("session not found", 2)
+    if amb: return None, None, None, None, None, ("current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", 3)
+    if not sp or not D.source_exists(sp): return None, None, None, None, None, ("session not found", 2)
+    vref, bad = AD.load_version_ref(a.version_ref_file)
+    if bad: return None, None, None, None, None, (bad, 2)
+    calls = J.load_calls(sp)
+    return sp, how, calls, AD.session_advice(calls, *(AD.load_history(getattr(a, "registry", None))[:1]), vref), vref, None
+
+def cmd_collect(a):
     props = []
     if a.proposals:
-        try: doc = json.load(open(a.proposals, encoding="utf-8"))
-        except (OSError, ValueError) as e: return _fail("proposals file unreadable (%s)" % e.__class__.__name__, 2)
-        if not (isinstance(doc, dict) and isinstance(doc.get("proposals"), list)): return _fail("proposals file must be an object with a list `proposals`", 2)
+        doc, bad = _json_file(a.proposals, "proposals", dict)
+        if bad or not isinstance(doc.get("proposals"), list): return _fail(bad or "proposals file must be an object with a list `proposals`", 2)
         props = doc["proposals"]
-    vref, bad = AD.load_version_ref(a.version_ref_file)
-    if bad: return _fail(bad, 2)
-    history, consulted, why = AD.load_history(a.registry)
-    calls = J.load_calls(sp); by_id = {x["tool_use_id"]: x for x in calls}
-    rows = AD.session_advice(calls, history, vref)
+    sp, how, calls, rows, vref, err = _requests(a)
+    if err: return _fail(*err)
+    _, consulted, why = AD.load_history(a.registry); by_id = {x["tool_use_id"]: x for x in calls}
     ids = {r["advice"]["evidence_request"]["request_id"] for r in rows}
     own = lambda p: p.get("request_id") if isinstance(p, dict) else None
     out, searched, ignored = [], [], []
@@ -227,5 +293,35 @@ def main():
     res = dict(session=sp, resolution=how, history_consulted=consulted, requests=out, question=grouped_question([o["request"] for o in out], searched), unmatched_proposals=unmatched, ignored_proposals=ignored)
     if why: res["history_error"] = why
     print(json.dumps(res, indent=1, ensure_ascii=False)); return 0
+
+def cmd_authorize(a):
+    """authorize | check: the registry is the one DERIVED from the session (there is no --registry here), the version comes from --version-ref-file."""
+    payload, bad = _json_file(a.payload, "payload", dict)
+    props = []
+    if not bad and a.cmd == "authorize" and a.proposals:
+        doc, bad = _json_file(a.proposals, "proposals", dict)
+        if not bad and not isinstance(doc.get("proposals"), list): bad = "proposals file must be an object with a list `proposals`"
+        props = [] if bad else doc["proposals"]
+    if bad: return _fail(bad, 2)
+    if not a.version_ref_file: return _fail("--version-ref-file is required: an allowance is never reserved for an unbound version", 2)
+    sp, how, calls, rows, vref, err = _requests(a)
+    if err: return _fail(*err)
+    row = next((r for r in rows if r["advice"]["evidence_request"]["request_id"] == a.request_id), None)
+    if row is None: return _fail("no verify/gate result of this session has the request id %s (is the version file the one the request was made with?)" % a.request_id, 2)
+    req = row["advice"]["evidence_request"]
+    try:
+        if a.cmd == "check": ok, why = check_authorization(req, payload, sp); res = dict(authorized=ok, reason=why, request_id=req["request_id"])
+        else: res = authorize(req, next(c for c in calls if c["tool_use_id"] == row["tool_use_id"]), props, payload, sp)
+    except (OSError, ValueError) as e: return _fail("the registry could not be written (%s)" % e.__class__.__name__, 2)
+    print(json.dumps(res, indent=1, ensure_ascii=False)); return 0 if res["authorized"] else 1
+
+def main():
+    ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("collect"); c.add_argument("--session"); c.add_argument("--cwd"); c.add_argument("--registry"); c.add_argument("--proposals"); c.add_argument("--version-ref-file"); c.add_argument("--headless", action="store_true"); c.add_argument("--asked", action="store_true")
+    for name in ("authorize", "check"):
+        z = sub.add_parser(name); z.add_argument("--session"); z.add_argument("--cwd"); z.add_argument("--version-ref-file"); z.add_argument("--request-id", required=True); z.add_argument("--payload", required=True)
+        if name == "authorize": z.add_argument("--proposals")
+    a = ap.parse_args()
+    return cmd_collect(a) if a.cmd == "collect" else cmd_authorize(a)
 
 if __name__ == "__main__": sys.exit(main())
