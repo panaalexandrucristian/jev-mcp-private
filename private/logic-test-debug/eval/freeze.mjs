@@ -8,7 +8,7 @@ import { FIXTURES_DIR, LOCK_PATH, SCENARIOS, hashTree, sha256 } from "./lib/work
 
 const prompts = JSON.parse(readFileSync(new URL("./prompts.json", import.meta.url), "utf8"));
 const hardPrompts = JSON.parse(readFileSync(new URL("./prompts-hard.json", import.meta.url), "utf8"));
-const allowed = { activation: [], conditions: ["src/access.js", "test/access.test.mjs"], bug: ["src/shipping.js", "test/shipping.test.mjs"], combos: ["test/pricing.test.mjs"], trace: ["src/route.js", "src/zones.js", "src/fees.js", "test/route.test.mjs"] };
+const allowed = { activation: [], conditions: ["src/access.js", "test/access.test.mjs"], bug: ["src/shipping.js", "test/shipping.test.mjs"], combos: ["test/pricing.test.mjs"], trace: ["src/route.js", "src/rules.js", "src/zones.js", "src/fees.js", "test/route.test.mjs"] };
 // promptsHash covers the prompts of the first campaign and never changes; the harder tasks have their own hash.
 const lock = { version: 1, promptsHash: sha256(JSON.stringify(prompts)), hardPromptsHash: sha256(JSON.stringify(hardPrompts)), scenarios: {} };
 for (const scenario of SCENARIOS) lock.scenarios[scenario] = { files: hashTree(join(FIXTURES_DIR, scenario)), allowedEdits: allowed[scenario] };

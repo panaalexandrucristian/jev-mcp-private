@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { campaignOrder, remaining } from "../eval/lib/campaign.mjs";
-import { buildArgs, confinementFingerprint } from "../eval/lib/run.mjs";
+import { permissionFingerprint } from "../eval/lib/run.mjs";
 
 const EVAL = fileURLToPath(new URL("../eval/", import.meta.url));
 const real = JSON.parse(readFileSync(join(EVAL, "budget.json"), "utf8"));
@@ -71,7 +71,7 @@ describe("the campaign driver (stand-in binary, nothing real is started)", () =>
     mkdirSync(join(root, "plugin"));
     writeFileSync(join(root, "plugin", ".plugin-commit"), `${real.pluginRef}\n`);
     // the start gate wants proof that these permissions held in a probe
-    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: confinementFingerprint(buildArgs({ prompt: "x", pluginDir: join(root, "plugin"), sessionId: "fingerprint", model: "haiku" })) }));
+    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: permissionFingerprint({ pluginDir: join(root, "plugin") }) }));
     const bin = join(root, "claude-fake.mjs");
     writeFileSync(bin, `#!/usr/bin/env node
 import { appendFileSync, readFileSync } from "node:fs";
@@ -93,7 +93,7 @@ if (cfg.mode === "complete" || cfg.mode === "outside") {
     writeFileSync(join(root, "budget.json"), JSON.stringify(budget));
     return { root, bin, budgetPath: join(root, "budget.json") };
   };
-  const drive = ({ root, bin, budgetPath }, ...args) => spawnSync(process.execPath, [join(EVAL, "campaign.mjs"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", LTD_ROOT: root, LTD_BUDGET: budgetPath, LTD_CLAUDE_BIN: bin, LTD_LEDGER: join(root, "ledger.tsv") } });
+  const drive = ({ root, bin, budgetPath }, ...args) => spawnSync(process.execPath, [join(EVAL, "campaign.mjs"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: process.env.TMPDIR ?? "", LTD_ROOT: root, LTD_BUDGET: budgetPath, LTD_CLAUDE_BIN: bin, LTD_LEDGER: join(root, "ledger.tsv") } });
 
   it("--list shows what is left and starts nothing", () => {
     const t = prepare("complete");

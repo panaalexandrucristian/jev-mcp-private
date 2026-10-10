@@ -51,14 +51,16 @@
     "trace": {
       "files": {
         "package.json": "72de21f10893afb72592949694e21ca0b5aef6588da0b5dc5adc6942a3a31b1c",
-        "SPEC.md": "8003b31d8e156f3901d6e240ccc9b60e4f997894b261349b50a4e5095dc49362",
-        "src/fees.js": "f641322b3a7a1f08423244767ee02d9e01570230e124d1b4cb9020fde0d7d3fc",
-        "src/route.js": "4e2db81d4c1f3c9f8e390a5a89829b1be43fef390efb8ee0e7dfcf8e1069d054",
+        "SPEC.md": "3619e30dba96a5f5c45064b38882257207134c89df6b84e7f6ffaefde4918f4a",
+        "src/fees.js": "510048fb3039725cf5fe2921bf0fda31ce08d6cafc6722d7886b4c7b3ae79e59",
+        "src/route.js": "c73623406246a1a48b33d73fdd5a353418264ae8629f68ada3d257a6df96d76e",
+        "src/rules.js": "2550eb89ca76682e5a220e36ee98ae8cbd09461fab4fbccb44725ae3588b220f",
         "src/zones.js": "ff5011bc3151eb3fe234e90178cdddf2adc1addf71b91040eaa9d5bd3a36c615",
-        "test/route.test.mjs": "4c8b202d009343364e72969d598af96ff0e6e0874eefeb82e771b4d1823d2b9e"
+        "test/route.test.mjs": "82535c4fea40224b242df899542a4a51b9ff8fef007dc8adfe4c13d3d2a1851f"
       },
       "allowedEdits": [
         "src/route.js",
+        "src/rules.js",
         "src/zones.js",
         "src/fees.js",
         "test/route.test.mjs"

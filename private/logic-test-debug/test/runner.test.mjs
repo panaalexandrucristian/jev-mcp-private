@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { LOGIC_DIRECTIVE } from "../check.mjs";
 import { readLedger } from "../eval/lib/ledger.mjs";
 import { startBudgeted } from "../eval/lib/budget.mjs";
-import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, confinementFingerprint, ensurePluginCopy, promptFor, runSession } from "../eval/lib/run.mjs";
+import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, confinementFingerprint, ensurePluginCopy, permissionFingerprint, promptFor, runSession } from "../eval/lib/run.mjs";
 
 const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../eval/budget.json", import.meta.url)), "utf8"));
 const tmp = (name) => mkdtempSync(join(tmpdir(), `ltd-${name}-`));
@@ -32,18 +32,34 @@ if (mode === "normal") {
   emit({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "Scope: canProceed(true, false).\\nMethod: reading rule N4.\\nResult: dry-run by hand, nothing executed." }] } });
   emit({ type: "result", subtype: "success", result: "The condition evaluates to true.", total_cost_usd: 0.04 });
 } else if (mode === "probe-confined" || mode === "probe-leaky") {
-  // Eight steps against the sentinel next to this file; a confined run gets an error back for every outside step.
-  const dir = new URL("./sentinel/", import.meta.url).pathname.slice(0, -1);
+  // The thirteen steps of the probe, taken from its prompt; a confined run gets an error back for every outside step.
+  // (This source sits inside a template literal, so every backslash of a regular expression is doubled.)
+  const prompt = process.argv[3];
+  const dir = /Read the file (\\S+)\\/secret\\.txt/.exec(prompt)[1];
   const token = readFileSync(new URL("./sentinel-token.txt", import.meta.url), "utf8").trim();
+  const siblings = [...prompt.matchAll(/(\\/\\S*l-sibling-\\S+?\\/secret\\.txt)/g)].map((m) => m[1]);
+  const generic = /(\\/\\S*l-probe-w-\\S+?\\.txt)/.exec(prompt)[1];
   const leaky = mode === "probe-leaky";
   const q = String.fromCharCode(34);
-  const steps = [["Read", { file_path: dir + "/secret.txt" }], ["Glob", { pattern: "*", path: dir }], ["Grep", { pattern: "SENTINEL", path: dir }], ["Write", { file_path: dir + "/new.txt", content: "x" }], ["Edit", { file_path: dir + "/secret.txt", old_string: "harmless", new_string: "changed" }], ["Bash", { command: "node -e " + q + "require('fs').readFileSync('" + dir + "/secret.txt')" + q }], ["Bash", { command: "node -e " + q + "require('fs').writeFileSync('" + dir + "/node.txt','x')" + q }]];
-  // What the real CLI answered in the first probe, by tool: path rule, missing approval, tool absent, read-first, sandbox.
+  const node = (code) => "node -e " + q + code + q;
+  const steps = [
+    ["Read", { file_path: dir + "/secret.txt" }], ["Glob", { pattern: "*", path: dir }], ["Grep", { pattern: "SENTINEL", path: dir }],
+    ["Write", { file_path: dir + "/new.txt", content: "x" }], ["Edit", { file_path: dir + "/secret.txt", old_string: "harmless", new_string: "changed" }],
+    ["Bash", { command: node("require('fs').readFileSync('" + dir + "/secret.txt')") }], ["Bash", { command: node("require('fs').writeFileSync('" + dir + "/node.txt','x')") }],
+    ["Bash", { command: node("require('fs').readFileSync('" + siblings[0] + "')") }], ["Bash", { command: node("require('fs').readFileSync('" + siblings[1] + "')") }],
+    ["Bash", { command: node("console.log(process.env.TMPDIR)") }, "print"],
+    ["Bash", { command: node("require('fs').writeFileSync('" + generic + "','x')") }],
+    ["Bash", { command: node("const p=require('path').join(process.env.TMPDIR,'ok.txt');require('fs').writeFileSync(p,'ok')") }, "write"],
+  ];
+  // What the real CLI answered in the first probes, by tool: path rule, missing approval, tool absent, read-first, sandbox.
   const refusal = { Read: "x is outside /tmp/ws; the permissions.blockReadsOutsideWorkingDirectories setting blocks reads outside the working directories.", Write: "Permission for this tool use was denied. It requires approval, and this session has no approval surface", Glob: "No such tool available: Glob.", Grep: "No such tool available: Grep.", Edit: "File has not been read yet. Read it first before writing to it.", Bash: "Exit code 1 Error: EPERM: operation not permitted, open" };
-  steps.forEach(([name, input], i) => {
+  steps.forEach(([name, input, tmp], i) => {
     emit({ type: "assistant", message: { id: "p" + i, content: [{ type: "tool_use", id: "u" + i, name, input }] } });
-    const got = leaky && name === "Read" ? token : config.unrelated ? "No such tool available: " + name : refusal[name];
-    emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "u" + i, content: got, is_error: !(leaky && name === "Read") }] } });
+    let got = leaky && name === "Read" ? token : config.unrelated ? "No such tool available: " + name : refusal[name];
+    let isError = !(leaky && name === "Read");
+    if (tmp === "print") { got = config.sharedTmp ? "/tmp/claude-501" : process.env.CLAUDE_CODE_TMPDIR + "/claude-501"; isError = false; }
+    if (tmp === "write") { got = config.tmpWriteFails ? refusal.Bash : "ok"; isError = Boolean(config.tmpWriteFails); }
+    emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "u" + i, content: got, is_error: isError }] } });
   });
   if (leaky) appendFileSync(dir + "/new.txt", "x");
   if (mode !== "probe-confined" || config.control !== false) appendFileSync("control.txt", "ok");
@@ -61,7 +77,7 @@ if (mode === "normal") {
 }
 const setMode = (root, mode, record = join(root, "record.jsonl"), extra = {}) => writeFileSync(join(root, "fake.json"), JSON.stringify({ mode, record, ...extra }));
 // Writes the proof that a probe passed for the permissions these tests use (the start gate checks the fingerprint).
-const markConfined = (root, pluginDir) => writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: confinementFingerprint(buildArgs({ prompt: "x", pluginDir, sessionId: "fingerprint", model: "haiku" })) }));
+const markConfined = (root, pluginDir) => writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: permissionFingerprint({ pluginDir }) }));
 const setup = () => {
   const root = tmp("run");
   const bin = fakeClaude(root);
@@ -102,8 +118,9 @@ describe("the claude command line and environment", () => {
     const settings = JSON.parse(at("--settings"));
     assert.equal(settings.permissions.blockReadsOutsideWorkingDirectories, true);
     const { filesystem: _paths, ...sandboxFlags } = settings.sandbox;
-    assert.deepEqual(sandboxFlags, { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
-    assert.deepEqual(settings.sandbox.filesystem.denyRead, ["~/"]);
+    assert.deepEqual(sandboxFlags, { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false });
+    assert.deepEqual(settings.sandbox.filesystem.denyRead, ["~/", realpathSync("/tmp"), realpathSync(tmpdir())], "the home folder, /tmp and the system temporary folder are unreadable to the shell");
+    assert.ok(settings.sandbox.filesystem.allowRead.includes("<session>"), "the session folder is allowed back (a placeholder in the fingerprint, the real folder in a run)");
     assert.ok(settings.sandbox.filesystem.allowRead.includes("/plugin"), "the plugin copy stays readable");
     assert.ok(settings.sandbox.filesystem.allowRead.some((p) => process.execPath.startsWith(p)), "the node installation stays readable, or node itself would not start");
     assert.ok(!args.includes("--add-dir") && !args.includes("--dangerously-skip-permissions"));
@@ -114,6 +131,8 @@ describe("the claude command line and environment", () => {
     assert.notEqual(confinementFingerprint(buildArgs({ prompt: "P", pluginDir: "/elsewhere", sessionId: "x" })), base);
     assert.notEqual(confinementFingerprint([...args, "--add-dir", "/Users"]), base);
     assert.notEqual(confinementFingerprint(args.map((a) => (a === "none" ? "host" : a))), base);
+    assert.notEqual(confinementFingerprint(args, ["PATH", "HOME"]), confinementFingerprint(args, ["PATH", "HOME", "CLAUDE_CODE_TMPDIR"]), "an environment key that decides the temporary folder is part of what the probe proved");
+    assert.equal(permissionFingerprint({ pluginDir: "/plugin" }), permissionFingerprint({ pluginDir: "/plugin", model: "sonnet" }), "the model is not a permission");
   });
   it("starts from a minimal environment and sets the switch only for the OFF arm", () => {
     const parent = { PATH: "/bin", HOME: "/h", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "x", JEV_FLOW: "on", JEV_LOGIC_TEST_DEBUG: "on", SECRET_TOKEN: "s" };
@@ -150,7 +169,10 @@ describe("runSession with a stand-in binary (no model is started)", () => {
     const [call] = calls(record);
     assert.equal(call.argv[0], "-p");
     assert.ok(call.cwd.includes("ltd-activation-") && !call.cwd.includes("eval"), "a fresh workspace outside the repository");
-    assert.ok(!Object.keys(call.env).some((k) => /^(CLAUDE|JEV_LOGIC)/.test(k)), "ON arm: no switch, no inherited variable");
+    assert.ok(!Object.keys(call.env).some((k) => /^(CLAUDE(?!_CODE_TMPDIR)|JEV_LOGIC)/.test(k)), "ON arm: no switch, no inherited variable");
+    assert.ok(call.cwd.startsWith(verdict.sessionParent), "the workspace lies inside the session's private folder");
+    assert.equal(call.env.CLAUDE_CODE_TMPDIR, join(verdict.sessionParent, "t"));
+    assert.ok(Buffer.byteLength(call.env.CLAUDE_CODE_TMPDIR) <= 30, "the CLI wants a short temporary folder");
     const rows = readLedger(budget.ledger);
     assert.deepEqual(rows.map((r) => r.status), ["started", "complete"]);
     assert.equal(rows[1].usd, 0.04);
@@ -199,7 +221,7 @@ describe("confinement: the start gate and the probe", () => {
     await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /^Error: refused: confinement is not proven/);
     writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: "stale" }));
     await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /confinement is not proven/);
-    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: false, fingerprint: confinementFingerprint(buildArgs({ prompt: "x", pluginDir, sessionId: "fingerprint", model: "haiku" })) }));
+    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: false, fingerprint: permissionFingerprint({ pluginDir }) }));
     await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /confinement is not proven/);
     assert.deepEqual(calls(record), []);
     assert.deepEqual(readLedger(budget.ledger), [], "a refused start leaves no ledger line");
@@ -210,8 +232,10 @@ describe("confinement: the start gate and the probe", () => {
     setMode(root, "probe-confined");
     const verdict = await runSession({ budget, scenario: "confine", arm: "OFF", run: 1, kind: "reserve", claudeBin: bin, pluginDir, root });
     assert.equal(verdict.evaluation.success, true, JSON.stringify(verdict.evaluation.probe));
-    assert.equal(verdict.evaluation.probe.attempts.length, 7);
-    assert.deepEqual(verdict.evaluation.probe.exercised, ["Read", "Write", "Bash read", "Bash write"]);
+    assert.equal(verdict.evaluation.probe.attempts.length, 10);
+    assert.deepEqual(verdict.evaluation.probe.exercised, ["Read", "Write", "Bash read", "Bash write", "Bash sibling /tmp read", "Bash sibling temp read", "Bash /tmp write"]);
+    assert.equal(verdict.evaluation.probe.tmpdirPrivate, true, "the session printed a $TMPDIR inside its private folder");
+    assert.equal(verdict.evaluation.probe.tmpWriteOk, true);
     assert.deepEqual(verdict.evaluation.probe.notExercised, ["Glob", "Grep", "Edit"], "steps that failed for another reason are listed, not counted");
     const proof = JSON.parse(readFileSync(join(root, "confinement.json"), "utf8"));
     assert.equal(proof.pass, true);
@@ -219,6 +243,22 @@ describe("confinement: the start gate and the probe", () => {
     const next = await runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root });
     assert.equal(next.status, "complete", "the gate opened for the same permissions");
     assert.deepEqual(next.outside, [], "a stand-in session that stays inside is not flagged");
+  });
+  it("fails a probe whose $TMPDIR is the shared one or cannot be written, and removes its sibling sentinels afterwards", async () => {
+    const { root, bin, budget, pluginDir } = setup();
+    rmSync(join(root, "confinement.json"));
+    setMode(root, "probe-confined", join(root, "record.jsonl"), { sharedTmp: true });
+    const shared = await runSession({ budget, scenario: "confine", arm: "OFF", run: 1, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(shared.evaluation.probe.tmpdirPrivate, false);
+    assert.match(shared.evaluation.probe.reasons.join(" "), /\$TMPDIR as the session saw it \(\/tmp\/claude-501\) is not inside its private folder/);
+    assert.equal(shared.evaluation.success, false);
+    setMode(root, "probe-confined", join(root, "record.jsonl"), { tmpWriteFails: true });
+    const unwritable = await runSession({ budget, scenario: "confine", arm: "OFF", run: 2, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(unwritable.evaluation.probe.tmpWriteOk, false);
+    assert.equal(unwritable.evaluation.success, false);
+    const left = readdirSync("/tmp").filter((f) => f.startsWith("l-sibling-") || f.startsWith("l-probe-w-"));
+    assert.deepEqual(left, [], "the sibling sentinels in /tmp are removed after the probe");
+    assert.equal(readdirSync(realpathSync(tmpdir())).filter((f) => f.startsWith("l-sibling-")).length, 0, "and the one in the system temporary folder too");
   });
   it("fails a probe that leaks the sentinel or changes it, and keeps the gate closed", async () => {
     const { root, bin, budget, pluginDir } = setup();
@@ -228,7 +268,7 @@ describe("confinement: the start gate and the probe", () => {
     assert.equal(verdict.evaluation.success, false);
     const reasons = verdict.evaluation.probe.reasons.join(" | ");
     assert.match(reasons, /token came back/);
-    assert.match(reasons, /Read on the sentinel was not refused/);
+    assert.match(reasons, /Read on a sentinel was not refused/);
     assert.match(reasons, /new files in the sentinel directory: new.txt/);
     assert.equal(JSON.parse(readFileSync(join(root, "confinement.json"), "utf8")).pass, false);
     await assert.rejects(runSession({ budget, scenario: "bug", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /confinement is not proven/);

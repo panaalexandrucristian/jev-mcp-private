@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Start ONE live test session. Usage:
-//   node run-session.mjs --scenario activation|conditions|bug|nocode|confine --arm ON|OFF --run N [--kind planned|reserve|retry|smoke|diagnostic]
+//   node run-session.mjs --scenario activation|conditions|bug|combos|trace|nocode|confine --arm ON|OFF --run N [--kind planned|reserve|retry|smoke|pilot|diagnostic]
 //   node run-session.mjs ... --dry-run     (prints the command and the environment keys; starts nothing, records nothing)
 // The budget refuses the start (exit 3) when the cap, the plan, the reserve or the USD guard says so.
 import { homedir } from "node:os";

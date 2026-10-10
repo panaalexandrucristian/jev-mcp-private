@@ -84,6 +84,7 @@ describe("session ledger", () => {
   it("rejects an unknown kind and a missing model", () => {
     const path = fresh();
     assert.throws(() => startSession({ path, cap: 4, prior: 0, ...base, kind: "free" }));
+    startSession({ path, cap: 4, prior: 0, ...base, kind: "pilot" }); // a pilot is a declared kind: it counts against the cap and the reserve
     assert.throws(() => startSession({ path, cap: 4, prior: 0, ...base, model: "" }));
   });
 });

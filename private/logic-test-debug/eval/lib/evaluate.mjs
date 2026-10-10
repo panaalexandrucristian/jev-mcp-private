@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { changedFiles, readLock } from "./workspace.mjs";
 
 const ORACLE = (scenario) => fileURLToPath(new URL(`../oracles/${scenario}.oracle.mjs`, import.meta.url));
-const TOTAL = { activation: 2, conditions: 136, bug: 17, combos: 13, trace: 31 };
+const TOTAL = { activation: 2, conditions: 136, bug: 17, combos: 13, trace: 47 };
 
 /** Run the hidden oracle of a scenario on a workspace. Activation also needs the path of the final-answer text file. */
 // The combos oracle starts up to 26 test runs (13 versions, twice) of at most 15 s each; the others are one short script.

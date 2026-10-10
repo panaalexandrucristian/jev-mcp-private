@@ -31,8 +31,8 @@ const plugin = ensurePluginCopy({ dest: join(root, "plugin"), ref: budget.plugin
 for (const entry of batch) {
   const verdict = await runSession({ budget, scenario: entry.scenario, arm: entry.arm, run: entry.run, kind: "planned", claudeBin: process.env.LTD_CLAUDE_BIN ?? "claude", pluginDir: plugin.dir, pluginCommit: plugin.commit, root });
   console.log(JSON.stringify({ id: verdict.id, scenario: entry.scenario, arm: entry.arm, run: entry.run, status: verdict.status, turns: verdict.turns, usd: verdict.usd, loaded: verdict.score.loaded, directive: verdict.score.directiveDelivered, record: verdict.score.record.present, success: verdict.evaluation?.success ?? null, denials: verdict.permissionDenials }));
-  if (verdict.outside?.length > 0) {
-    console.log(`STOP: ${verdict.id} used a path outside its workspace (${verdict.outside.map((o) => `${o.tool} ${o.path}`).join("; ")}); nothing further was started`);
+  if (verdict.outside?.some((o) => !o.denied)) {
+    console.log(`STOP: ${verdict.id} used a path outside its workspace (${verdict.outside.filter((o) => !o.denied).map((o) => `${o.tool} ${o.path}`).join("; ")}); nothing further was started`);
     process.exit(5);
   }
   if (verdict.status !== "complete") {

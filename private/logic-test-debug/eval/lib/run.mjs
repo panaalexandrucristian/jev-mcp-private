@@ -8,7 +8,7 @@ import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { judgeProbe, prepareSentinel, probePrompt } from "./confine.mjs";
+import { judgeProbe, prepareSentinel, prepareSiblings, probePrompt } from "./confine.mjs";
 import { finishSession } from "./ledger.mjs";
 import { startBudgeted } from "./budget.mjs";
 import { evaluateRun } from "./evaluate.mjs";
@@ -36,32 +36,55 @@ const real = (path) => {
 /** The node installation (…/v22.x) that the sandboxed shell must be able to read. */
 export const defaultNodeHome = () => dirname(dirname(real(process.execPath)));
 
-/** The settings that confine a session: file tools by permission rules, Bash by the sandbox, failing closed. */
-export function confinementSettings({ pluginDir, nodeHome = defaultNodeHome() }) {
+// Each session gets a private folder /tmp/l-<id>-xxxxxx holding its workspace and its scratch space (the sandbox's
+// $TMPDIR). The rest of /tmp and the system temporary folder are unreadable to the sandboxed shell, so one session
+// cannot find what an earlier one (of either arm) left behind. The name is short on purpose: CLAUDE_CODE_TMPDIR must
+// stay under about 30 bytes.
+export const SESSION_PLACEHOLDER = "<session>";
+export function makeSessionDir(id) {
+  const parent = realpathSync(mkdtempSync(join("/tmp", `l-${id}-`)));
+  const scratch = join(parent, "t");
+  mkdirSync(scratch);
+  return { parent, scratch };
+}
+
+/**
+ * The settings that confine a session: file tools by permission rules, Bash by the sandbox, failing closed. Bash is
+ * limited to `node` by the allow list, which only holds when the sandbox does not auto-allow every command (its
+ * default), so autoAllowBashIfSandboxed is off.
+ */
+export function confinementSettings({ pluginDir, nodeHome = defaultNodeHome(), sessionParent = SESSION_PLACEHOLDER }) {
   return {
     enabledPlugins: { "jev@jev-private": false },
     permissions: { blockReadsOutsideWorkingDirectories: true },
-    sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: { denyRead: ["~/"], allowRead: [real(pluginDir), nodeHome] } },
+    sandbox: {
+      enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false,
+      filesystem: { denyRead: ["~/", real("/tmp"), real(tmpdir())], allowRead: [real(pluginDir), nodeHome, sessionParent] },
+    },
   };
 }
 
-/** A fingerprint of every argument that decides what a session may touch (not the prompt, id, model or budget). */
-export function confinementFingerprint(args) {
+/** A fingerprint of every argument and environment key that decides what a session may touch (not the prompt, id, model or budget). */
+export function confinementFingerprint(args, envKeys = []) {
   const pick = ["--permission-mode", "--permission-prompts", "--allowedTools", "--settings", "--setting-sources", "--add-dir", "--dangerously-skip-permissions"];
-  return createHash("sha256").update(JSON.stringify(pick.map((flag) => [flag, args.includes(flag) ? args[args.indexOf(flag) + 1] ?? true : null]))).digest("hex");
+  return createHash("sha256").update(JSON.stringify([pick.map((flag) => [flag, args.includes(flag) ? args[args.indexOf(flag) + 1] ?? true : null]), [...envKeys].sort()])).digest("hex");
+}
+/** The fingerprint for a plugin copy: built with the session folder as a placeholder and a full synthetic parent environment, so it depends on the policy and not on who runs it. */
+export function permissionFingerprint({ pluginDir, model = "haiku" }) {
+  return confinementFingerprint(buildArgs({ prompt: "x", pluginDir, sessionId: "fingerprint", model }), Object.keys(buildEnv({ arm: "ON", parentEnv: Object.fromEntries(KEEP_ENV.map((key) => [key, "x"])), cacheDir: "x", scratch: "x" })));
 }
 const CONFINEMENT_FILE = "confinement.json";
-const confinementProven = (root, args) => {
+const confinementProven = (root, pluginDir, model) => {
   try {
     const record = JSON.parse(readFileSync(join(root, CONFINEMENT_FILE), "utf8"));
-    return record.pass === true && record.fingerprint === confinementFingerprint(args);
+    return record.pass === true && record.fingerprint === permissionFingerprint({ pluginDir, model });
   } catch {
     return false;
   }
 };
 
 /** The exact claude arguments. Flags were checked against `claude --help` on 2.1.296: none is invented. */
-export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBudgetUsd = LIMITS.maxBudgetUsd, nodeHome }) {
+export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBudgetUsd = LIMITS.maxBudgetUsd, nodeHome, sessionParent }) {
   return [
     "-p", prompt,
     "--model", model,
@@ -69,7 +92,7 @@ export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBu
     "--session-id", sessionId,
     "--plugin-dir", pluginDir,
     "--setting-sources", "project,local",
-    "--settings", JSON.stringify(confinementSettings({ pluginDir, nodeHome })),
+    "--settings", JSON.stringify(confinementSettings({ pluginDir, nodeHome, sessionParent })),
     "--strict-mcp-config",
     "--permission-mode", "acceptEdits",
     "--permission-prompts", "none",
@@ -79,9 +102,13 @@ export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBu
 }
 
 /** A minimal environment: no inherited CLAUDE_* or JEV_* variable; only the OFF arm sets the switch. */
-export function buildEnv({ arm, parentEnv = process.env, cacheDir }) {
+export function buildEnv({ arm, parentEnv = process.env, cacheDir, scratch }) {
   const env = {};
   for (const key of KEEP_ENV) if (parentEnv[key] !== undefined) env[key] = parentEnv[key];
+  if (scratch) {
+    env.TMPDIR = scratch; // the CLI's own temporary files
+    env.CLAUDE_CODE_TMPDIR = scratch; // the sandboxed shell's $TMPDIR
+  }
   env.JEV_FLOW_CACHE_DIR = join(cacheDir, "flow");
   env.JEV_CONTROL_CACHE_DIR = join(cacheDir, "control");
   if (arm === "OFF") env.JEV_LOGIC_TEST_DEBUG = "off";
@@ -130,18 +157,20 @@ function stopGroup(child) {
 export async function runSession({ budget, scenario, arm, run, kind = "planned", claudeBin = "claude", pluginDir, pluginCommit = null, root, limits = LIMITS, model = "haiku" }) {
   const probe = scenario === "confine";
   const sentinel = probe ? prepareSentinel(root) : null;
-  const prompt = probe ? probePrompt(sentinel.dir) : promptFor(scenario, run);
+  const prompt = probe ? probePrompt(sentinel, null) : promptFor(scenario, run);
   if (!prompt) throw new Error(`no prompt for ${scenario} run ${run}`);
   // A campaign session starts only after a probe has shown that these exact permission arguments hold.
-  if (!probe && !confinementProven(root, buildArgs({ prompt, pluginDir, sessionId: "fingerprint", model }))) throw new Error("refused: confinement is not proven for these permissions; run the probe first (node eval/run-session.mjs --scenario confine --arm OFF --run 1 --kind reserve)");
+  if (!probe && !confinementProven(root, pluginDir, model)) throw new Error("refused: confinement is not proven for these permissions; run the probe first (node eval/run-session.mjs --scenario confine --arm OFF --run 1 --kind reserve)");
   const row = startBudgeted(budget, { kind, scenario, arm, run: String(run), model }); // throws "refused: ..." when not allowed
   const dir = join(root, "runs", `${row.id}-${scenario}-${arm}-${run}`);
   mkdirSync(dir, { recursive: true });
   const empty = scenario === "nocode" || probe;
-  const workspace = empty ? mkdtempSync(join(tmpdir(), `ltd-${scenario}-${row.id}-`)) : createWorkspace(scenario); // always new and empty: no file from an earlier run
+  const session = makeSessionDir(row.id);
+  const workspace = empty ? mkdtempSync(join(session.parent, `ltd-${scenario}-`)) : createWorkspace(scenario, session.parent); // always new: no file from an earlier run
+  const siblings = probe ? prepareSiblings(sentinel.token) : null;
   const sessionId = randomUUID();
-  const args = buildArgs({ prompt, pluginDir, sessionId, model, maxBudgetUsd: limits.maxBudgetUsd });
-  const env = buildEnv({ arm, cacheDir: join(dir, "cache") });
+  const args = buildArgs({ prompt: probe ? probePrompt(sentinel, siblings) : prompt, pluginDir, sessionId, model, maxBudgetUsd: limits.maxBudgetUsd, sessionParent: session.parent });
+  const env = buildEnv({ arm, cacheDir: join(dir, "cache"), scratch: session.scratch });
   writeFileSync(join(dir, "command.json"), JSON.stringify({ bin: claudeBin, args, cwd: workspace, envKeys: Object.keys(env), arm, scenario, run, kind, limits }, null, 2));
 
   const started = Date.now();
@@ -199,17 +228,18 @@ export async function runSession({ budget, scenario, arm, run, kind = "planned",
   const score = scoreTranscript(transcript, { limitExit: Boolean(limit) });
   const finalFile = join(dir, "final.txt");
   writeFileSync(finalFile, score.finalText);
-  const judged = probe ? judgeProbe({ transcript, workspace, sentinel }) : null;
+  const judged = probe ? judgeProbe({ transcript, workspace, sentinel, siblings, scratch: session.scratch }) : null;
+  if (siblings) siblings.cleanup();
   const evaluation = probe ? { success: judged.pass, probe: judged } : scenario === "nocode" ? null : evaluateRun(scenario, workspace, { finalTextFile: finalFile });
-  const outside = outsideAccess(transcript, workspace, [pluginDir]);
-  if (probe) writeFileSync(join(root, CONFINEMENT_FILE), `${JSON.stringify({ pass: judged.pass, inconclusive: judged.inconclusive, fingerprint: confinementFingerprint(args), id: row.id, at: new Date().toISOString(), reasons: judged.reasons }, null, 2)}\n`);
+  const outside = outsideAccess(transcript, workspace, [pluginDir, defaultNodeHome(), session.parent]);
+  if (probe) writeFileSync(join(root, CONFINEMENT_FILE), `${JSON.stringify({ pass: judged.pass, inconclusive: judged.inconclusive, fingerprint: permissionFingerprint({ pluginDir, model }), id: row.id, at: new Date().toISOString(), reasons: judged.reasons }, null, 2)}\n`);
   const resultEvent = transcript.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((e) => e?.type === "result") ?? null;
   const usd = typeof resultEvent?.total_cost_usd === "number" ? resultEvent.total_cost_usd : undefined;
   const status = limit ? `limit-${limit}` : exit.spawnError ? "spawn-error" : score.complete ? "complete" : "incomplete";
   const verdict = {
     id: row.id, scenario, arm, run, kind, status, limit, turns, cliNumTurns: resultEvent?.num_turns ?? null, permissionDenials: resultEvent?.permission_denials?.length ?? null, pluginCommit, durationMs: Date.now() - started,
     exit, model: { requested: model, resolved: init?.model ?? null }, sessionId, usd: usd ?? null,
-    score: { ...score, finalText: undefined }, evaluation, workspace, pluginDir, outside, dir,
+    score: { ...score, finalText: undefined }, evaluation, workspace, pluginDir, nodeHome: defaultNodeHome(), sessionParent: session.parent, outside, dir,
     init: init ? { model: init.model, tools: init.tools, mcp_servers: init.mcp_servers, plugins: init.plugins, skills: init.skills, slash_commands: init.slash_commands } : null,
   };
   writeFileSync(join(dir, "verdict.json"), `${JSON.stringify(verdict, null, 2)}\n`);

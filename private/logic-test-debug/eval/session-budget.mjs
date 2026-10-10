@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The only way a live test session may be started or closed. Usage:
 //   node session-budget.mjs status
-//   node session-budget.mjs start --kind planned|reserve|retry|smoke|diagnostic --scenario S [--arm ON|OFF] [--run N] --model M
+//   node session-budget.mjs start --kind planned|reserve|retry|smoke|pilot|diagnostic --scenario S [--arm ON|OFF] [--run N] --model M
 //   node session-budget.mjs finish --id sN --status STATUS [--usd 0.04]
 // `start` prints the session id and exits 0, or prints the reason and exits 3 when the budget refuses. Nothing here
 // starts a model session; the caller starts one only after `start` succeeded.

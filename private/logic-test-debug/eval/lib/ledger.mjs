@@ -5,7 +5,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { dirname } from "node:path";
 
 const HEADER = "time\tid\tkind\tscenario\tarm\trun\tmodel\tstatus\tusd\n";
-const KINDS = new Set(["planned", "reserve", "retry", "smoke", "diagnostic"]);
+const KINDS = new Set(["planned", "reserve", "retry", "smoke", "pilot", "diagnostic"]);
 
 /** Run fn while holding an exclusive lock file next to the ledger (concurrent starts must not share an id). */
 function withLock(path, fn) {
