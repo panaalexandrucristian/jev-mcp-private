@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { LOGIC_DIRECTIVE } from "../check.mjs";
 import { readLedger } from "../eval/lib/ledger.mjs";
 import { startBudgeted } from "../eval/lib/budget.mjs";
-import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, ensurePluginCopy, promptFor, runSession } from "../eval/lib/run.mjs";
+import { ALLOWED_TOOLS, LIMITS, buildArgs, buildEnv, confinementFingerprint, ensurePluginCopy, promptFor, runSession } from "../eval/lib/run.mjs";
 
 const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../eval/budget.json", import.meta.url)), "utf8"));
 const tmp = (name) => mkdtempSync(join(tmpdir(), `ltd-${name}-`));
@@ -31,6 +31,24 @@ if (mode === "normal") {
   emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
   emit({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "Scope: canProceed(true, false).\\nMethod: reading rule N4.\\nResult: dry-run by hand, nothing executed." }] } });
   emit({ type: "result", subtype: "success", result: "The condition evaluates to true.", total_cost_usd: 0.04 });
+} else if (mode === "probe-confined" || mode === "probe-leaky") {
+  // Eight steps against the sentinel next to this file; a confined run gets an error back for every outside step.
+  const dir = new URL("./sentinel/", import.meta.url).pathname.slice(0, -1);
+  const token = readFileSync(new URL("./sentinel-token.txt", import.meta.url), "utf8").trim();
+  const leaky = mode === "probe-leaky";
+  const q = String.fromCharCode(34);
+  const steps = [["Read", { file_path: dir + "/secret.txt" }], ["Glob", { pattern: "*", path: dir }], ["Grep", { pattern: "SENTINEL", path: dir }], ["Write", { file_path: dir + "/new.txt", content: "x" }], ["Edit", { file_path: dir + "/secret.txt", old_string: "harmless", new_string: "changed" }], ["Bash", { command: "node -e " + q + "require('fs').readFileSync('" + dir + "/secret.txt')" + q }], ["Bash", { command: "node -e " + q + "require('fs').writeFileSync('" + dir + "/node.txt','x')" + q }]];
+  // What the real CLI answered in the first probe, by tool: path rule, missing approval, tool absent, read-first, sandbox.
+  const refusal = { Read: "x is outside /tmp/ws; the permissions.blockReadsOutsideWorkingDirectories setting blocks reads outside the working directories.", Write: "Permission for this tool use was denied. It requires approval, and this session has no approval surface", Glob: "No such tool available: Glob.", Grep: "No such tool available: Grep.", Edit: "File has not been read yet. Read it first before writing to it.", Bash: "Exit code 1 Error: EPERM: operation not permitted, open" };
+  steps.forEach(([name, input], i) => {
+    emit({ type: "assistant", message: { id: "p" + i, content: [{ type: "tool_use", id: "u" + i, name, input }] } });
+    const got = leaky && name === "Read" ? token : config.unrelated ? "No such tool available: " + name : refusal[name];
+    emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "u" + i, content: got, is_error: !(leaky && name === "Read") }] } });
+  });
+  if (leaky) appendFileSync(dir + "/new.txt", "x");
+  if (mode !== "probe-confined" || config.control !== false) appendFileSync("control.txt", "ok");
+  emit({ type: "assistant", message: { id: "pz", content: [{ type: "text", text: "1 DENIED 2 DENIED 3 DENIED 4 DENIED 5 DENIED 6 DENIED 7 DENIED 8 ALLOWED" }] } });
+  emit({ type: "result", subtype: "success", result: "done", total_cost_usd: 0.01 });
 } else if (mode === "turns") {
   for (let i = 0; i < 200; i += 1) emit({ type: "assistant", message: { id: "m" + i, content: [{ type: "text", text: "x" }] } });
   setInterval(() => {}, 1000);
@@ -41,7 +59,9 @@ if (mode === "normal") {
   chmodSync(path, 0o755);
   return path;
 }
-const setMode = (root, mode, record = join(root, "record.jsonl")) => writeFileSync(join(root, "fake.json"), JSON.stringify({ mode, record }));
+const setMode = (root, mode, record = join(root, "record.jsonl"), extra = {}) => writeFileSync(join(root, "fake.json"), JSON.stringify({ mode, record, ...extra }));
+// Writes the proof that a probe passed for the permissions these tests use (the start gate checks the fingerprint).
+const markConfined = (root, pluginDir) => writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: confinementFingerprint(buildArgs({ prompt: "x", pluginDir, sessionId: "fingerprint", model: "haiku" })) }));
 const setup = () => {
   const root = tmp("run");
   const bin = fakeClaude(root);
@@ -50,6 +70,7 @@ const setup = () => {
   const budget = { ...REAL, ledger: join(root, "ledger", "ledger.tsv") };
   const pluginDir = join(root, "plugin");
   mkdirSync(pluginDir);
+  markConfined(root, pluginDir);
   return { root, bin, record, budget, pluginDir };
 };
 const calls = (record) => (existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -58,7 +79,7 @@ describe("the claude command line and environment", () => {
   const args = buildArgs({ prompt: "P", pluginDir: "/plugin", sessionId: "11111111-1111-1111-1111-111111111111" });
   const at = (flag) => args[args.indexOf(flag) + 1];
   it("uses only flags that exist in claude 2.1.296, and no turn flag", () => {
-    for (const flag of ["-p", "--model", "--output-format", "--verbose", "--include-hook-events", "--session-id", "--plugin-dir", "--setting-sources", "--settings", "--strict-mcp-config", "--permission-mode", "--allowedTools", "--max-budget-usd"]) assert.ok(args.includes(flag), flag);
+    for (const flag of ["-p", "--model", "--output-format", "--verbose", "--include-hook-events", "--session-id", "--plugin-dir", "--setting-sources", "--settings", "--strict-mcp-config", "--permission-mode", "--permission-prompts", "--allowedTools", "--max-budget-usd"]) assert.ok(args.includes(flag), flag);
     assert.ok(!args.includes("--max-turns"), "the CLI has no such flag; the runner counts turns itself");
     assert.ok(!args.includes("--no-session-persistence"));
   });
@@ -67,10 +88,32 @@ describe("the claude command line and environment", () => {
     assert.equal(at("--output-format"), "stream-json");
     assert.equal(at("--plugin-dir"), "/plugin");
     assert.equal(at("--setting-sources"), "project,local");
-    assert.deepEqual(JSON.parse(at("--settings")), { enabledPlugins: { "jev@jev-private": false } });
+    assert.deepEqual(JSON.parse(at("--settings")).enabledPlugins, { "jev@jev-private": false });
     assert.equal(at("--max-budget-usd"), String(LIMITS.maxBudgetUsd));
-    assert.equal(at("--allowedTools"), ALLOWED_TOOLS);
     assert.equal(args[1], "P");
+  });
+  it("confines file tools to the workspace and the plugin copy, and Bash to a sandbox that fails closed", () => {
+    const tools = at("--allowedTools").split(",");
+    assert.ok(tools.includes("Skill") && tools.includes("Bash(node:*)"));
+    for (const open of ["Read", "Edit", "Write", "Glob", "Grep"]) assert.ok(!tools.includes(open), `${open} must not be allowed without a path`);
+    assert.deepEqual(tools.filter((tool) => tool.startsWith("Read(")), ["Read(//plugin/**)"], "only the plugin copy may be read from outside the workspace");
+    assert.equal(at("--permission-prompts"), "none", "anything that would ask is refused");
+    assert.ok(ALLOWED_TOOLS.split(",").every((tool) => tools.includes(tool)));
+    const settings = JSON.parse(at("--settings"));
+    assert.equal(settings.permissions.blockReadsOutsideWorkingDirectories, true);
+    const { filesystem: _paths, ...sandboxFlags } = settings.sandbox;
+    assert.deepEqual(sandboxFlags, { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    assert.deepEqual(settings.sandbox.filesystem.denyRead, ["~/"]);
+    assert.ok(settings.sandbox.filesystem.allowRead.includes("/plugin"), "the plugin copy stays readable");
+    assert.ok(settings.sandbox.filesystem.allowRead.some((p) => process.execPath.startsWith(p)), "the node installation stays readable, or node itself would not start");
+    assert.ok(!args.includes("--add-dir") && !args.includes("--dangerously-skip-permissions"));
+  });
+  it("changes the fingerprint when any permission argument changes, and only then", () => {
+    const base = confinementFingerprint(args);
+    assert.equal(confinementFingerprint(buildArgs({ prompt: "other", pluginDir: "/plugin", sessionId: "22222222-2222-2222-2222-222222222222", model: "sonnet" })), base, "prompt, id and model are not permissions");
+    assert.notEqual(confinementFingerprint(buildArgs({ prompt: "P", pluginDir: "/elsewhere", sessionId: "x" })), base);
+    assert.notEqual(confinementFingerprint([...args, "--add-dir", "/Users"]), base);
+    assert.notEqual(confinementFingerprint(args.map((a) => (a === "none" ? "host" : a))), base);
   });
   it("starts from a minimal environment and sets the switch only for the OFF arm", () => {
     const parent = { PATH: "/bin", HOME: "/h", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "x", JEV_FLOW: "on", JEV_LOGIC_TEST_DEBUG: "on", SECRET_TOKEN: "s" };
@@ -146,6 +189,65 @@ describe("runSession with a stand-in binary (no model is started)", () => {
     const verdict = await runSession({ budget, scenario: "nocode", arm: "ON", run: 3, claudeBin: bin, pluginDir, root });
     assert.equal(verdict.evaluation, null);
     assert.equal(calls(record)[0].argv[1], "Fix my CV.");
+  });
+});
+
+describe("confinement: the start gate and the probe", () => {
+  it("refuses a campaign session until a probe has passed for these exact permissions, and never calls the binary", async () => {
+    const { root, bin, record, budget, pluginDir } = setup();
+    rmSync(join(root, "confinement.json"));
+    await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /^Error: refused: confinement is not proven/);
+    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: "stale" }));
+    await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /confinement is not proven/);
+    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: false, fingerprint: confinementFingerprint(buildArgs({ prompt: "x", pluginDir, sessionId: "fingerprint", model: "haiku" })) }));
+    await assert.rejects(runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /confinement is not proven/);
+    assert.deepEqual(calls(record), []);
+    assert.deepEqual(readLedger(budget.ledger), [], "a refused start leaves no ledger line");
+  });
+  it("passes a probe in which every outside step is refused and the inside step works, and then opens the gate", async () => {
+    const { root, bin, budget, pluginDir } = setup();
+    rmSync(join(root, "confinement.json"));
+    setMode(root, "probe-confined");
+    const verdict = await runSession({ budget, scenario: "confine", arm: "OFF", run: 1, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(verdict.evaluation.success, true, JSON.stringify(verdict.evaluation.probe));
+    assert.equal(verdict.evaluation.probe.attempts.length, 7);
+    assert.deepEqual(verdict.evaluation.probe.exercised, ["Read", "Write", "Bash read", "Bash write"]);
+    assert.deepEqual(verdict.evaluation.probe.notExercised, ["Glob", "Grep", "Edit"], "steps that failed for another reason are listed, not counted");
+    const proof = JSON.parse(readFileSync(join(root, "confinement.json"), "utf8"));
+    assert.equal(proof.pass, true);
+    setMode(root, "normal");
+    const next = await runSession({ budget, scenario: "activation", arm: "ON", run: 1, claudeBin: bin, pluginDir, root });
+    assert.equal(next.status, "complete", "the gate opened for the same permissions");
+    assert.deepEqual(next.outside, [], "a stand-in session that stays inside is not flagged");
+  });
+  it("fails a probe that leaks the sentinel or changes it, and keeps the gate closed", async () => {
+    const { root, bin, budget, pluginDir } = setup();
+    rmSync(join(root, "confinement.json"));
+    setMode(root, "probe-leaky");
+    const verdict = await runSession({ budget, scenario: "confine", arm: "OFF", run: 1, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(verdict.evaluation.success, false);
+    const reasons = verdict.evaluation.probe.reasons.join(" | ");
+    assert.match(reasons, /token came back/);
+    assert.match(reasons, /Read on the sentinel was not refused/);
+    assert.match(reasons, /new files in the sentinel directory: new.txt/);
+    assert.equal(JSON.parse(readFileSync(join(root, "confinement.json"), "utf8")).pass, false);
+    await assert.rejects(runSession({ budget, scenario: "bug", arm: "ON", run: 1, claudeBin: bin, pluginDir, root }), /confinement is not proven/);
+  });
+  it("does not count a probe as passed when the inside step failed or too few outside steps were tried", async () => {
+    const { root, bin, budget, pluginDir } = setup();
+    rmSync(join(root, "confinement.json"));
+    setMode(root, "probe-confined", join(root, "record.jsonl"), { control: false });
+    const verdict = await runSession({ budget, scenario: "confine", arm: "OFF", run: 1, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(verdict.evaluation.probe.controlOk, false);
+    assert.equal(verdict.evaluation.success, false, "a sandbox that blocks the workspace too proves nothing useful");
+    setMode(root, "probe-confined", join(root, "record.jsonl"), { unrelated: true });
+    const hollow = await runSession({ budget, scenario: "confine", arm: "OFF", run: 3, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(hollow.evaluation.probe.inconclusive, true, "refusals that name no path rule prove nothing");
+    assert.equal(hollow.evaluation.success, false);
+    setMode(root, "normal");
+    const quiet = await runSession({ budget, scenario: "confine", arm: "OFF", run: 2, kind: "reserve", claudeBin: bin, pluginDir, root });
+    assert.equal(quiet.evaluation.probe.inconclusive, true, "no outside attempt was made");
+    assert.equal(quiet.evaluation.success, false);
   });
 });
 

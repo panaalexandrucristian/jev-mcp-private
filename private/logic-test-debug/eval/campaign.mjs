@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Runs the planned sessions in their pre-registered order, one at a time, skipping the ones already started, and stops
 // at the first session that is not complete (a limit, an error, a refusal): a retry is a new session that has to be
-// declared as reserve on purpose, never an automatic loop. Usage:
+// declared as reserve on purpose, never an automatic loop. It also stops at once when a session touched a path outside
+// its workspace. A session starts only after the confinement probe has passed (see lib/run.mjs). Usage:
 //   node campaign.mjs --list                          (the order and what is left; starts nothing)
 //   node campaign.mjs [--only SCENARIO[,SCENARIO]] [--limit N]
 import { homedir } from "node:os";
@@ -30,6 +31,10 @@ const plugin = ensurePluginCopy({ dest: join(root, "plugin"), ref: budget.plugin
 for (const entry of batch) {
   const verdict = await runSession({ budget, scenario: entry.scenario, arm: entry.arm, run: entry.run, kind: "planned", claudeBin: process.env.LTD_CLAUDE_BIN ?? "claude", pluginDir: plugin.dir, pluginCommit: plugin.commit, root });
   console.log(JSON.stringify({ id: verdict.id, scenario: entry.scenario, arm: entry.arm, run: entry.run, status: verdict.status, turns: verdict.turns, usd: verdict.usd, loaded: verdict.score.loaded, directive: verdict.score.directiveDelivered, record: verdict.score.record.present, success: verdict.evaluation?.success ?? null, denials: verdict.permissionDenials }));
+  if (verdict.outside?.length > 0) {
+    console.log(`STOP: ${verdict.id} used a path outside its workspace (${verdict.outside.map((o) => `${o.tool} ${o.path}`).join("; ")}); nothing further was started`);
+    process.exit(5);
+  }
   if (verdict.status !== "complete") {
     console.log(`STOP: ${verdict.id} ended with status ${verdict.status}; nothing further was started`);
     process.exit(4);

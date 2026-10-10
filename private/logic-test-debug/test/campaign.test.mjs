@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { campaignOrder, remaining } from "../eval/lib/campaign.mjs";
+import { buildArgs, confinementFingerprint } from "../eval/lib/run.mjs";
 
 const EVAL = fileURLToPath(new URL("../eval/", import.meta.url));
 const real = JSON.parse(readFileSync(join(EVAL, "budget.json"), "utf8"));
@@ -46,6 +47,8 @@ describe("the campaign driver (stand-in binary, nothing real is started)", () =>
     const root = mkdtempSync(join(tmpdir(), "ltd-camp-"));
     mkdirSync(join(root, "plugin"));
     writeFileSync(join(root, "plugin", ".plugin-commit"), `${real.pluginRef}\n`);
+    // the start gate wants proof that these permissions held in a probe
+    writeFileSync(join(root, "confinement.json"), JSON.stringify({ pass: true, fingerprint: confinementFingerprint(buildArgs({ prompt: "x", pluginDir: join(root, "plugin"), sessionId: "fingerprint", model: "haiku" })) }));
     const bin = join(root, "claude-fake.mjs");
     writeFileSync(bin, `#!/usr/bin/env node
 import { appendFileSync, readFileSync } from "node:fs";
@@ -53,7 +56,10 @@ const cfg = JSON.parse(readFileSync(new URL("./fake.json", import.meta.url), "ut
 appendFileSync(cfg.record, "call\\n");
 const emit = (o) => console.log(JSON.stringify(o));
 emit({ type: "system", subtype: "init", model: "claude-haiku-fake" });
-if (cfg.mode === "complete") {
+if (cfg.mode === "outside") {
+  emit({ type: "assistant", message: { id: "m0", content: [{ type: "tool_use", id: "t0", name: "Read", input: { file_path: "/Users/someone/Downloads/cv.md" } }] } });
+}
+if (cfg.mode === "complete" || cfg.mode === "outside") {
   emit({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Scope: a\\nMethod: b\\nResult: no tests run." }] } });
   emit({ type: "result", subtype: "success", result: "done", total_cost_usd: 0.01 });
 }
@@ -90,6 +96,21 @@ if (cfg.mode === "complete") {
     assert.equal(r.status, 4);
     assert.match(r.stdout, /STOP: s1 ended with status incomplete; nothing further was started/);
     assert.equal(readFileSync(join(t.root, "record.txt"), "utf8").trim().split("\n").length, 1);
+  });
+  it("stops at once when a session used a path outside its workspace", () => {
+    const t = prepare("outside");
+    const r = drive(t, "--only", "nocode");
+    assert.equal(r.status, 5, r.stdout + r.stderr);
+    assert.match(r.stdout, /STOP: s1 used a path outside its workspace \(Read \/Users\/someone\/Downloads\/cv.md\)/);
+    assert.equal(readFileSync(join(t.root, "record.txt"), "utf8").trim().split("\n").length, 1, "nothing was started after it");
+  });
+  it("refuses to start anything without proof of confinement", () => {
+    const t = prepare("complete");
+    rmSync(join(t.root, "confinement.json"));
+    const r = drive(t, "--only", "nocode", "--limit", "1");
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /refused: confinement is not proven/);
+    assert.equal(existsSync(join(t.root, "record.txt")), false, "the binary was not called");
   });
   it("resumes without repeating a session already started", () => {
     const t = prepare("complete");

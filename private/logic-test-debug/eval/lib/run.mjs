@@ -3,27 +3,65 @@
 // 80-turn limits itself (the CLI has no --max-turns flag; checked on 2.1.296), keeps every artifact, and scores the
 // transcript and the working copy with the hidden oracle. It never edits the repository.
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { judgeProbe, prepareSentinel, probePrompt } from "./confine.mjs";
 import { finishSession } from "./ledger.mjs";
 import { startBudgeted } from "./budget.mjs";
 import { evaluateRun } from "./evaluate.mjs";
+import { outsideAccess } from "./report.mjs";
 import { scoreTranscript } from "./transcript.mjs";
 import { createWorkspace } from "./workspace.mjs";
 
 export const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 export const LIMITS = { timeoutMs: 10 * 60 * 1000, maxTurns: 80, maxBudgetUsd: 0.5 };
-export const ALLOWED_TOOLS = "Read,Edit,Write,Glob,Grep,Skill,Bash(node:*)";
+// File tools are NOT listed: inside the workspace they need no rule (acceptEdits), outside it nothing can approve them
+// (--permission-prompts none). Only the plugin copy may be read. Bash is limited to node and runs in a sandbox.
+export const ALLOWED_TOOLS = "Skill,Bash(node:*)";
 const PROMPTS = JSON.parse(readFileSync(new URL("../prompts.json", import.meta.url), "utf8"));
 const KEEP_ENV = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM"];
 
 export const promptFor = (scenario, run) => (scenario === "nocode" ? PROMPTS.nocode[Number(run) - 1] : PROMPTS[scenario]);
 
+const real = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+/** The node installation (…/v22.x) that the sandboxed shell must be able to read. */
+export const defaultNodeHome = () => dirname(dirname(real(process.execPath)));
+
+/** The settings that confine a session: file tools by permission rules, Bash by the sandbox, failing closed. */
+export function confinementSettings({ pluginDir, nodeHome = defaultNodeHome() }) {
+  return {
+    enabledPlugins: { "jev@jev-private": false },
+    permissions: { blockReadsOutsideWorkingDirectories: true },
+    sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: { denyRead: ["~/"], allowRead: [real(pluginDir), nodeHome] } },
+  };
+}
+
+/** A fingerprint of every argument that decides what a session may touch (not the prompt, id, model or budget). */
+export function confinementFingerprint(args) {
+  const pick = ["--permission-mode", "--permission-prompts", "--allowedTools", "--settings", "--setting-sources", "--add-dir", "--dangerously-skip-permissions"];
+  return createHash("sha256").update(JSON.stringify(pick.map((flag) => [flag, args.includes(flag) ? args[args.indexOf(flag) + 1] ?? true : null]))).digest("hex");
+}
+const CONFINEMENT_FILE = "confinement.json";
+const confinementProven = (root, args) => {
+  try {
+    const record = JSON.parse(readFileSync(join(root, CONFINEMENT_FILE), "utf8"));
+    return record.pass === true && record.fingerprint === confinementFingerprint(args);
+  } catch {
+    return false;
+  }
+};
+
 /** The exact claude arguments. Flags were checked against `claude --help` on 2.1.296: none is invented. */
-export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBudgetUsd = LIMITS.maxBudgetUsd }) {
+export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBudgetUsd = LIMITS.maxBudgetUsd, nodeHome }) {
   return [
     "-p", prompt,
     "--model", model,
@@ -31,10 +69,11 @@ export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBu
     "--session-id", sessionId,
     "--plugin-dir", pluginDir,
     "--setting-sources", "project,local",
-    "--settings", JSON.stringify({ enabledPlugins: { "jev@jev-private": false } }),
+    "--settings", JSON.stringify(confinementSettings({ pluginDir, nodeHome })),
     "--strict-mcp-config",
     "--permission-mode", "acceptEdits",
-    "--allowedTools", ALLOWED_TOOLS,
+    "--permission-prompts", "none",
+    "--allowedTools", `${ALLOWED_TOOLS},Read(/${real(pluginDir)}/**)`,
     "--max-budget-usd", String(maxBudgetUsd),
   ];
 }
@@ -89,13 +128,17 @@ function stopGroup(child) {
  * Options: budget (loaded budget), scenario, arm, run, kind, claudeBin, pluginDir (prepared copy), root (results), limits.
  */
 export async function runSession({ budget, scenario, arm, run, kind = "planned", claudeBin = "claude", pluginDir, pluginCommit = null, root, limits = LIMITS, model = "haiku" }) {
-  const prompt = promptFor(scenario, run);
+  const probe = scenario === "confine";
+  const sentinel = probe ? prepareSentinel(root) : null;
+  const prompt = probe ? probePrompt(sentinel.dir) : promptFor(scenario, run);
   if (!prompt) throw new Error(`no prompt for ${scenario} run ${run}`);
+  // A campaign session starts only after a probe has shown that these exact permission arguments hold.
+  if (!probe && !confinementProven(root, buildArgs({ prompt, pluginDir, sessionId: "fingerprint", model }))) throw new Error("refused: confinement is not proven for these permissions; run the probe first (node eval/run-session.mjs --scenario confine --arm OFF --run 1 --kind reserve)");
   const row = startBudgeted(budget, { kind, scenario, arm, run: String(run), model }); // throws "refused: ..." when not allowed
   const dir = join(root, "runs", `${row.id}-${scenario}-${arm}-${run}`);
   mkdirSync(dir, { recursive: true });
-  const workspace = scenario === "nocode" ? join(tmpdir(), `ltd-nocode-${row.id}`) : createWorkspace(scenario);
-  if (scenario === "nocode") mkdirSync(workspace, { recursive: true });
+  const empty = scenario === "nocode" || probe;
+  const workspace = empty ? mkdtempSync(join(tmpdir(), `ltd-${scenario}-${row.id}-`)) : createWorkspace(scenario); // always new and empty: no file from an earlier run
   const sessionId = randomUUID();
   const args = buildArgs({ prompt, pluginDir, sessionId, model, maxBudgetUsd: limits.maxBudgetUsd });
   const env = buildEnv({ arm, cacheDir: join(dir, "cache") });
@@ -156,14 +199,17 @@ export async function runSession({ budget, scenario, arm, run, kind = "planned",
   const score = scoreTranscript(transcript, { limitExit: Boolean(limit) });
   const finalFile = join(dir, "final.txt");
   writeFileSync(finalFile, score.finalText);
-  const evaluation = scenario === "nocode" ? null : evaluateRun(scenario, workspace, { finalTextFile: finalFile });
+  const judged = probe ? judgeProbe({ transcript, workspace, sentinel }) : null;
+  const evaluation = probe ? { success: judged.pass, probe: judged } : scenario === "nocode" ? null : evaluateRun(scenario, workspace, { finalTextFile: finalFile });
+  const outside = outsideAccess(transcript, workspace, [pluginDir]);
+  if (probe) writeFileSync(join(root, CONFINEMENT_FILE), `${JSON.stringify({ pass: judged.pass, inconclusive: judged.inconclusive, fingerprint: confinementFingerprint(args), id: row.id, at: new Date().toISOString(), reasons: judged.reasons }, null, 2)}\n`);
   const resultEvent = transcript.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((e) => e?.type === "result") ?? null;
   const usd = typeof resultEvent?.total_cost_usd === "number" ? resultEvent.total_cost_usd : undefined;
   const status = limit ? `limit-${limit}` : exit.spawnError ? "spawn-error" : score.complete ? "complete" : "incomplete";
   const verdict = {
     id: row.id, scenario, arm, run, kind, status, limit, turns, cliNumTurns: resultEvent?.num_turns ?? null, permissionDenials: resultEvent?.permission_denials?.length ?? null, pluginCommit, durationMs: Date.now() - started,
     exit, model: { requested: model, resolved: init?.model ?? null }, sessionId, usd: usd ?? null,
-    score: { ...score, finalText: undefined }, evaluation, workspace, dir,
+    score: { ...score, finalText: undefined }, evaluation, workspace, pluginDir, outside, dir,
     init: init ? { model: init.model, tools: init.tools, mcp_servers: init.mcp_servers, plugins: init.plugins, skills: init.skills, slash_commands: init.slash_commands } : null,
   };
   writeFileSync(join(dir, "verdict.json"), `${JSON.stringify(verdict, null, 2)}\n`);
