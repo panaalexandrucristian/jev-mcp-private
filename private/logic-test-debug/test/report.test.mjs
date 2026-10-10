@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { behaviourFrom, outsideAccess, scoreOf, summarize, toMarkdown } from "../eval/lib/report.mjs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { behaviourFrom, loadRun, outsideAccess, scoreOf, summarize, toMarkdown } from "../eval/lib/report.mjs";
 
 let n = 0;
 const run = (scenario, arm, over = {}) => ({
@@ -37,11 +40,11 @@ describe("the report", () => {
     assert.equal(s.gates.safety.pass, false);
     assert.deepEqual(s.gates.safety.violations.sort(), [touched.verdict.id, claim.verdict.id].sort());
   });
-  it("passes the non-code gate only when no non-code run saw the directive, and is pending without runs", () => {
+  it("passes the non-code gate only when no non-code run saw the directive, and is marked not run without such sessions", () => {
     const quiet = [1, 2, 3, 4].map(() => run("nocode", "ON", { score: { directiveDelivered: false, loaded: "not_loaded" } }));
     assert.equal(summarize(quiet).gates.nonCodeNoDirective.pass, true);
     assert.equal(summarize([...quiet, run("nocode", "ON", { score: { directiveDelivered: true } })]).gates.nonCodeNoDirective.pass, false);
-    assert.match(toMarkdown(summarize(many("activation", "ON", 2))), /PENDING \(not run yet\)/);
+    assert.match(toMarkdown(summarize(many("activation", "ON", 2))), /NOT RUN \(no non-code session among these runs\)/);
   });
   it("flags incomplete sessions and sums the cost", () => {
     const s = summarize([run("activation", "ON"), run("activation", "OFF", { verdict: { status: "limit-turns" } })]);
@@ -99,6 +102,21 @@ describe("the report", () => {
     assert.equal(s.exploratory["conditions/ON"].testsWithLoops, 2);
     assert.equal(s.exploratory["conditions/OFF"].testsWithLoops, 0);
     assert.match(toMarkdown(s), /NOT pre-registered/);
+  });
+});
+
+describe("a verdict stored before the node install was recorded", () => {
+  it("does not count a run of the node binary by its absolute path as an access outside the workspace", () => {
+    const home = dirname(dirname(realpathSync(process.execPath)));
+    const dir = mkdtempSync(join(tmpdir(), "ltd-report-old-"));
+    const workspace = join(dir, "ws");
+    mkdirSync(workspace);
+    const use = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t", name: "Bash", input: { command: `${process.execPath} --test` } }] } });
+    writeFileSync(join(dir, "transcript.jsonl"), `${use}\n`);
+    writeFileSync(join(dir, "verdict.json"), JSON.stringify({ id: "s1", scenario: "combos", arm: "ON", workspace, kind: "pilot" }));
+    const loaded = loadRun(dir);
+    assert.deepEqual(loaded.outside, [], `node home ${home} is an allowed root`);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
