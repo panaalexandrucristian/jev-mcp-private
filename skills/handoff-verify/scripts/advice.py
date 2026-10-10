@@ -12,7 +12,7 @@ The advice never changes a status and never relaxes report.retry_decision: at mo
 Each advice of the CLI also carries `evidence_request`: what is missing before that single re-verification (remedy, state, sources, rounds used). It only DESCRIBES the request; collecting, asking, authorizing and
 recording are other steps, and `advise` (the report path) does not carry it. The identity of a request is the call result it refers to plus the stage and the version, never the check id or the bytes of an input.
 
-CLI: advice.py --session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID [--cwd DIR] [--registry PATH]   -> JSON with every verify/gate result that did not pass and its advice.
+CLI: advice.py --session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID [--cwd DIR] [--registry PATH] [--version-ref-file FILE.json]   -> JSON with every verify/gate result that did not pass and its advice.
 --registry reads the evidence_history of a candidate registry (read-only); an unreadable or malformed one refuses a new allowance (state blocked, stop_reason history_unavailable)."""
 import argparse, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -161,8 +161,22 @@ def session_advice(calls, history=(), version_ref=None):
             if a: out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=e["index"], claim=e["key"], verdict=e["verdict"], confidence=e["confidence"], advice=dict(a, evidence_request=evidence_request(e, c, a, history, version_ref))))
     return out
 
+def load_history(registry_path):
+    """-> (history, consulted, error). No path: no history is consulted ((), False, None). A readable registry: its evidence_history. An unreadable or malformed one: history None, which refuses a new allowance."""
+    if not registry_path: return (), False, None
+    doc, why = A.load_registry(registry_path)
+    return (None, False, why) if doc is None else (doc["evidence_history"], True, None)
+
+def load_version_ref(path):
+    """-> (version_ref | None, error | None) from a JSON file {write_tool_use_id, sha256, evaluated_against[, run]}; no path = no version (None, None): the requests are then not bound to a version."""
+    if not path: return None, None
+    try: d = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError) as e: return None, "version_ref file unreadable (%s)" % e.__class__.__name__
+    if not isinstance(d, dict) or A.key_from_dict(d) is None: return None, "version_ref file is not a version identity (write_tool_use_id, sha256, evaluated_against[, run])"
+    return d, None
+
 def build_parser():
-    ap = argparse.ArgumentParser(); ap.add_argument("--session"); ap.add_argument("--cwd"); ap.add_argument("--registry")
+    ap = argparse.ArgumentParser(); ap.add_argument("--session"); ap.add_argument("--cwd"); ap.add_argument("--registry"); ap.add_argument("--version-ref-file")
     return ap
 
 def main():
@@ -172,12 +186,11 @@ def main():
     if amb: print(json.dumps({"error": "current session not demonstrated: several recently modified sessions; pass --session ID or PATH.jsonl", "resolution": how})); return 3
     if not sp or not D.source_exists(sp): print(json.dumps({"error": "session not found", "arg": a.session})); return 2
     calls = J.load_calls(sp)
-    history, consulted, why = (), False, None
-    if a.registry:
-        doc, why = A.load_registry(a.registry)
-        history, consulted = (None, False) if doc is None else (doc["evidence_history"], True)
+    vref, bad = load_version_ref(a.version_ref_file)
+    if bad: print(json.dumps({"error": bad})); return 2
+    history, consulted, why = load_history(a.registry)
     extra = dict(history_error=why) if why else {}
-    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", history_consulted=consulted, **extra, results=session_advice(calls, history),
+    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", history_consulted=consulted, **extra, results=session_advice(calls, history, vref),
                           capabilities=J.capabilities(calls), capability_note=CAPABILITY_NOTE, gate_summaries=[dict(tool_use_id=c["tool_use_id"], **J.gate_summary(c)) for c in calls if c["tool"] == "gate"]), indent=1, ensure_ascii=False)); return 0
 
 if __name__ == "__main__": sys.exit(main())

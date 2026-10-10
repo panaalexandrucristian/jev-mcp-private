@@ -208,6 +208,18 @@ class SessionAndCli(unittest.TestCase):
             self.assertEqual((req["state"], req["retry_remaining"], req["stop_reason"]), ("blocked", 0, "history_unavailable"), path)
             self.assertIn("history_error", out); self.assertFalse(out["history_consulted"])
 
+    def test_the_cli_binds_the_requests_to_a_version_ref_file_and_refuses_a_bad_one(self):
+        rec, _ = T.call([SHORT]); log = self.session(rec); vr = dict(write_tool_use_id="w1", sha256=HASH, evaluated_against="session_end")
+        good = os.path.join(self.d, "vr.json")
+        with open(good, "w", encoding="utf-8") as f: json.dump(vr, f)
+        req = self.run_cli(log, "--version-ref-file", good)["results"][0]["advice"]["evidence_request"]
+        self.assertEqual(req["target"]["version_ref"], vr); self.assertTrue(audit._target_ok(req["target"]))
+        for body in ("{not json", json.dumps(dict(write_tool_use_id="w")), json.dumps([1])):
+            bad = os.path.join(self.d, "bad_vr.json")
+            with open(bad, "w", encoding="utf-8") as f: f.write(body)
+            p = subprocess.run([sys.executable, "-B", os.path.join(HERE, "advice.py"), "--session", log, "--version-ref-file", bad], capture_output=True, text=True, env=ENV)
+            self.assertEqual(p.returncode, 2, body); self.assertIn("error", json.loads(p.stdout))
+
     def test_the_existing_cli_fields_are_kept(self):
         rec, _ = T.call([("HEAD is 0000000.", "contradicted", 0.99, "auto", 0.9)]); out = self.run_cli(self.session(rec))
         self.assertIn("never an identical call", out["rule"]); self.assertEqual(out["results"][0]["advice"]["code"], "fix_fact")
