@@ -14,7 +14,7 @@ import { startStub } from "./stub-provider.mjs";
 
 const OPENCODE = process.env.LTD_OPENCODE ?? "opencode";
 
-export function sessionConfig({ pluginDir, port, withPlugin = true }) {
+export function sessionConfig({ pluginDir, port, withPlugin = true, permission = null, model = null }) {
   return {
     ...(withPlugin ? { plugin: [].concat(pluginDir), mcp: { servers: { jev: { type: "local", command: ["node", "-e", "setTimeout(()=>{},1000)"] } } } } : {}),
     provider: {
@@ -29,6 +29,7 @@ export function sessionConfig({ pluginDir, port, withPlugin = true }) {
     small_model: "stub/m",
     autoupdate: false,
     share: "disabled",
+    ...(permission ? { permission } : {}),
   };
 }
 
@@ -57,13 +58,13 @@ export function summarizeRequests(logText, { directive = LOGIC_DIRECTIVE, skillI
  * Runs one session. `env` adds variables for the OpenCode process (for example JEV_LOGIC_TEST_DEBUG=off).
  * Returns {exit, timedOut, summary, dir}.
  */
-export async function runSession({ dir, pluginDir, prompt, mode = "text", withPlugin = true, env = {}, timeoutMs = 90000, cwd }) {
-  rmSync(dir, { recursive: true, force: true });
+export async function runSession({ dir, pluginDir, prompt, mode = "text", script = [], permission = null, withPlugin = true, env = {}, timeoutMs = 90000, cwd, keepWorkspace = false }) {
+  if (!keepWorkspace) rmSync(dir, { recursive: true, force: true });
   const sub = (name) => join(dir, name);
   for (const name of ["config/opencode", "data", "cache", "state", "tmp", "ws"]) mkdirSync(sub(name), { recursive: true });
   const logFile = sub("requests.jsonl");
-  const stub = await startStub({ logFile, mode });
-  writeFileSync(sub("config/opencode/opencode.jsonc"), JSON.stringify(sessionConfig({ pluginDir, port: stub.port, withPlugin }), null, 2));
+  const stub = await startStub({ logFile, mode, script });
+  writeFileSync(sub("config/opencode/opencode.jsonc"), JSON.stringify(sessionConfig({ pluginDir, port: stub.port, withPlugin, permission }), null, 2));
   const childEnv = {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
