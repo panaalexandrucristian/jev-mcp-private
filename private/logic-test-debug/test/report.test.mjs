@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { behaviourFrom, outsideAccess, summarize, toMarkdown } from "../eval/lib/report.mjs";
+import { behaviourFrom, outsideAccess, scoreOf, summarize, toMarkdown } from "../eval/lib/report.mjs";
 
 let n = 0;
 const run = (scenario, arm, over = {}) => ({
@@ -85,5 +85,66 @@ describe("the report", () => {
     assert.equal(s.exploratory["conditions/ON"].testsWithLoops, 2);
     assert.equal(s.exploratory["conditions/OFF"].testsWithLoops, 0);
     assert.match(toMarkdown(s), /NOT pre-registered/);
+  });
+});
+
+describe("planned sessions and declared ones", () => {
+  it("keeps probe, smoke and pilot sessions out of the counts and the comparisons and lists them apart", () => {
+    const planned = [...many("bug", "ON", 8), ...many("bug", "OFF", 8)];
+    const smoke = run("bug", "ON", { verdict: { kind: "smoke" } });
+    const probe = run("confine", "OFF", { verdict: { kind: "reserve", evaluation: { success: true, probe: {} } } });
+    const s = summarize([...planned, smoke, probe]);
+    assert.equal(s.rows.find((r) => r.group === "bug/ON").n, 8, "the smoke session is not a bug/ON run");
+    assert.equal(s.rows.find((r) => r.group === "confine/OFF"), undefined);
+    assert.equal(s.gates.safety.pass, true, "the probe has no safe flag and must not count as a violation");
+    assert.deepEqual(s.others.map((o) => `${o.id}:${o.kind}`), [`${smoke.verdict.id}:smoke`, `${probe.verdict.id}:reserve`]);
+    assert.equal(s.sessions, 18);
+    assert.equal(s.plannedSessions, 16);
+    assert.match(toMarkdown(s), /Sessions outside the comparisons/);
+  });
+  it("watches every session for paths outside the workspace except the probe, whose job is to try", () => {
+    const smoke = run("bug", "ON", { verdict: { kind: "smoke" } });
+    smoke.outside = [{ tool: "Read", path: "/Users/x/y" }];
+    const probe = run("confine", "OFF", { verdict: { kind: "reserve" } });
+    probe.outside = [{ tool: "Read", path: "/Users/x/sentinel" }];
+    const s = summarize([run("bug", "ON"), smoke, probe]);
+    assert.equal(s.gates.confinement.pass, false);
+    assert.deepEqual(s.gates.confinement.runs.map((r) => r.id), [smoke.verdict.id]);
+    probe.outside = [{ tool: "Read", path: "/x" }];
+    smoke.outside = [];
+    assert.equal(summarize([run("bug", "ON"), smoke, probe]).gates.confinement.pass, true);
+  });
+});
+
+describe("the harder tasks", () => {
+  const combos = (arm, killed, clean = { correct: true, equivalent: true }) => run("combos", arm, { verdict: { evaluation: { success: killed === 11 && clean.correct && clean.equivalent, safe: true, oracle: { clean, killed: Array.from({ length: killed }, (_, i) => `m${i}`) } } } });
+  const trace = (arm, fixed) => run("trace", arm, { verdict: { evaluation: { success: fixed === 4, safe: true, oracle: { defectsFixed: fixed } } } });
+  it("scores a combos run by the faults caught, and by zero when the tests fail a clean version", () => {
+    assert.equal(scoreOf(combos("ON", 7).verdict), 7);
+    assert.equal(scoreOf(combos("ON", 11, { correct: false, equivalent: true }).verdict), 0, "catching faults with tests that fail the correct code means nothing");
+    assert.equal(scoreOf(combos("ON", 11, { correct: true, equivalent: false }).verdict), 0);
+    assert.equal(scoreOf(trace("ON", 3).verdict), 3);
+    assert.equal(scoreOf(run("bug", "ON").verdict), null);
+  });
+  it("compares the scores of the two arms with the permutation test at the adjusted level and the full successes with Fisher", () => {
+    const on = [11, 10, 9, 11, 8, 10, 9, 11, 10, 9].map((k) => combos("ON", k));
+    const off = [5, 6, 4, 7, 3, 5, 6, 4, 8, 5].map((k) => combos("OFF", k));
+    const s = summarize([...on, ...off]);
+    assert.equal(s.tests.combosScore.effectClaimed, true);
+    assert.equal(s.tests.combosScore.alpha, 0.025);
+    assert.deepEqual(s.scores.combos.ON, [8, 9, 9, 9, 10, 10, 10, 11, 11, 11]);
+    assert.equal(s.tests.combosFullSuccess.on, "3/10");
+    assert.equal(s.tests.combosFullSuccess.off, "0/10");
+    assert.equal(s.tests.combosFullSuccess.effectClaimed, false, "3 of 10 against 0 of 10 is not enough for Fisher");
+    const md = toMarkdown(s);
+    assert.match(md, /combosScore: ON mean 9\.80 \(n 10\) vs OFF mean 5\.30/);
+    assert.match(md, /combos scores, sorted: ON \[8, 9, 9, 9, 10, 10, 10, 11, 11, 11\]/);
+  });
+  it("includes the harder tasks in the load gate and shows no empty rows", () => {
+    const miss = run("trace", "ON", { score: { loaded: "not_loaded" } });
+    const s = summarize([miss, trace("OFF", 2)]);
+    assert.equal(s.gates.codeOnLoaded.pass, false);
+    assert.deepEqual(s.gates.codeOnLoaded.notLoaded, [miss.verdict.id]);
+    assert.ok(!toMarkdown(s).includes("| conditions/"), "no row for a scenario that was not run");
   });
 });

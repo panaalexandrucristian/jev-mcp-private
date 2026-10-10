@@ -21,7 +21,7 @@ export const LIMITS = { timeoutMs: 10 * 60 * 1000, maxTurns: 80, maxBudgetUsd: 0
 // File tools are NOT listed: inside the workspace they need no rule (acceptEdits), outside it nothing can approve them
 // (--permission-prompts none). Only the plugin copy may be read. Bash is limited to node and runs in a sandbox.
 export const ALLOWED_TOOLS = "Skill,Bash(node:*)";
-const PROMPTS = JSON.parse(readFileSync(new URL("../prompts.json", import.meta.url), "utf8"));
+const PROMPTS = { ...JSON.parse(readFileSync(new URL("../prompts.json", import.meta.url), "utf8")), ...JSON.parse(readFileSync(new URL("../prompts-hard.json", import.meta.url), "utf8")) };
 const KEEP_ENV = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM"];
 
 export const promptFor = (scenario, run) => (scenario === "nocode" ? PROMPTS.nocode[Number(run) - 1] : PROMPTS[scenario]);

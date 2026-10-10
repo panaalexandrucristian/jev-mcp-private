@@ -1,6 +1,7 @@
 {
   "version": 1,
   "promptsHash": "f45af8d94b2da7a2ab2a4607554ecb9631fc99df24903d7de81eba577a3f4248",
+  "hardPromptsHash": "2d59c4e240878b386257d31a2034feeaea9f12ec26f62043e100a7f9217e2b24",
   "scenarios": {
     "activation": {
       "files": {
@@ -34,6 +35,35 @@
         "test/shipping.test.mjs"
       ],
       "helperHash": "3b26779a8fdb64c2c2a9f74b9632b3b2b05baf278d16374194c4a5191a6e77b9"
+    },
+    "combos": {
+      "files": {
+        "package.json": "dcc3f369b1070f3e774a348620c0cdd4746a2c59cbf49b7b0b588dabbe67608f",
+        "SPEC.md": "8477f2b7b9814b9ffabffc74cbaf0bd67a180b12cb4192970457b834704a9fae",
+        "src/pricing.js": "7a2f8141a5a323f3bf2e6c1f81384f4ee1e58de74b01052d1d8e72c383ba58f9",
+        "test/pricing.test.mjs": "82cfe3945be977a5d4b5d24c3b047c51f4cae1fe2c0253b184453dec995dc777"
+      },
+      "allowedEdits": [
+        "test/pricing.test.mjs"
+      ],
+      "helperHash": "b9043a0fbeffe8916078da2bd965201822c681e264ff8faaa0038d6ef9b95577"
+    },
+    "trace": {
+      "files": {
+        "package.json": "72de21f10893afb72592949694e21ca0b5aef6588da0b5dc5adc6942a3a31b1c",
+        "SPEC.md": "8003b31d8e156f3901d6e240ccc9b60e4f997894b261349b50a4e5095dc49362",
+        "src/fees.js": "f641322b3a7a1f08423244767ee02d9e01570230e124d1b4cb9020fde0d7d3fc",
+        "src/route.js": "4e2db81d4c1f3c9f8e390a5a89829b1be43fef390efb8ee0e7dfcf8e1069d054",
+        "src/zones.js": "ff5011bc3151eb3fe234e90178cdddf2adc1addf71b91040eaa9d5bd3a36c615",
+        "test/route.test.mjs": "4c8b202d009343364e72969d598af96ff0e6e0874eefeb82e771b4d1823d2b9e"
+      },
+      "allowedEdits": [
+        "src/route.js",
+        "src/zones.js",
+        "src/fees.js",
+        "test/route.test.mjs"
+      ],
+      "helperHash": "4a8a422fe972a401945bf4f9b66f97786e6b9c77ca4c7fbf20759bc7b38c8055"
     }
   }
 }

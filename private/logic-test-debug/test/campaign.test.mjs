@@ -42,6 +42,29 @@ describe("the pre-registered order of the sessions", () => {
   });
 });
 
+describe("the second campaign (harder tasks)", () => {
+  const hard = JSON.parse(readFileSync(new URL("../eval/budget-hard.json", import.meta.url), "utf8"));
+  it("plans 20 combos and 20 trace sessions as 10 alternating pairs each, and nothing else", () => {
+    const order = campaignOrder(hard.plan.planned);
+    assert.equal(order.length, 40);
+    assert.deepEqual([...new Set(order.map((e) => e.scenario))], ["combos", "trace"]);
+    for (const scenario of ["combos", "trace"]) {
+      const mine = order.filter((e) => e.scenario === scenario);
+      assert.equal(mine.filter((e) => e.arm === "ON").length, 10);
+      assert.equal(mine.filter((e) => e.arm === "OFF").length, 10);
+      assert.equal(mine[0].arm, "ON", "odd pairs start with ON");
+      assert.equal(mine[2].arm, "OFF", "even pairs start with OFF");
+    }
+  });
+  it("fits its own pool: plan plus reserve within the cap, with the first campaign's pool untouched", () => {
+    const planned = Object.values(hard.plan.planned).reduce((a, b) => a + b, 0);
+    assert.ok(planned + hard.plan.reserve <= hard.sessionsCap - hard.prior);
+    assert.equal(hard.prior, 0);
+    assert.notEqual(hard.ledger, real.ledger);
+    assert.equal(hard.pluginRef, real.pluginRef, "the same plugin commit as the first campaign");
+  });
+});
+
 describe("the campaign driver (stand-in binary, nothing real is started)", () => {
   const prepare = (mode) => {
     const root = mkdtempSync(join(tmpdir(), "ltd-camp-"));

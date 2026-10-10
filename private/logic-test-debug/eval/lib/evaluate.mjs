@@ -7,10 +7,13 @@ import { fileURLToPath } from "node:url";
 import { changedFiles, readLock } from "./workspace.mjs";
 
 const ORACLE = (scenario) => fileURLToPath(new URL(`../oracles/${scenario}.oracle.mjs`, import.meta.url));
-const TOTAL = { activation: 2, conditions: 136, bug: 17 };
+const TOTAL = { activation: 2, conditions: 136, bug: 17, combos: 13, trace: 31 };
 
 /** Run the hidden oracle of a scenario on a workspace. Activation also needs the path of the final-answer text file. */
-export function runOracle(scenario, workspace, { finalTextFile, timeoutMs = 30000 } = {}) {
+// The combos oracle starts up to 26 test runs (13 versions, twice) of at most 15 s each; the others are one short script.
+const TIMEOUT = { combos: 600000 };
+
+export function runOracle(scenario, workspace, { finalTextFile, timeoutMs = TIMEOUT[scenario] ?? 30000 } = {}) {
   const args = [ORACLE(scenario), workspace, ...(scenario === "activation" ? [finalTextFile ?? ""] : [])];
   const result = spawnSync(process.execPath, args, { cwd: tmpdir(), encoding: "utf8", timeout: timeoutMs, env: { PATH: process.env.PATH ?? "" } });
   const line = (result.stdout ?? "").trim().split("\n").at(-1);

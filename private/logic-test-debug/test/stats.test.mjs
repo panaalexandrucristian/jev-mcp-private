@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { allowance, finishSession, readLedger, spentUsd, startSession, started } from "../eval/lib/ledger.mjs";
-import { compareArms, fisherExact } from "../eval/lib/stats.mjs";
+import { compareArms, compareScores, fisherExact, permutationExact } from "../eval/lib/stats.mjs";
 
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 0.0006, `${actual} vs ${expected}`);
 
@@ -85,5 +85,58 @@ describe("session ledger", () => {
     const path = fresh();
     assert.throws(() => startSession({ path, cap: 4, prior: 0, ...base, kind: "free" }));
     assert.throws(() => startSession({ path, cap: 4, prior: 0, ...base, model: "" }));
+  });
+});
+
+describe("exact permutation test for score samples (the harder tasks)", () => {
+  // Brute force: enumerate every choice of n of the pooled scores and compare the mean difference.
+  const brute = (on, off) => {
+    const all = [...on, ...off];
+    const total = all.reduce((a, b) => a + b, 0);
+    const n = on.length;
+    const m = off.length;
+    const observed = Math.abs(on.reduce((a, b) => a + b, 0) / n - off.reduce((a, b) => a + b, 0) / m);
+    let extreme = 0;
+    let all_ = 0;
+    const pick = (start, chosen, sum) => {
+      if (chosen === n) {
+        all_ += 1;
+        if (Math.abs(sum / n - (total - sum) / m) >= observed - 1e-9) extreme += 1;
+        return;
+      }
+      for (let i = start; i < all.length; i += 1) pick(i + 1, chosen + 1, sum + all[i]);
+    };
+    pick(0, 0, 0);
+    return extreme / all_;
+  };
+  it("gives the hand-counted values: 1,1 against 0,0 is 2 of 6 splits", () => {
+    assert.ok(Math.abs(permutationExact([1, 1], [0, 0]) - 2 / 6) < 1e-12);
+    assert.equal(permutationExact([3, 3, 3], [3, 3, 3]), 1);
+  });
+  it("matches brute-force enumeration on unequal and equal sizes, including ties", () => {
+    const cases = [[[4, 6, 5, 7], [1, 2, 2]], [[0, 0, 1, 11], [3, 4, 5, 6, 7]], [[10, 11, 9, 8, 11], [2, 4, 1, 3, 5]], [[2, 2, 2], [2, 2, 3, 3]]];
+    for (const [on, off] of cases) assert.ok(Math.abs(permutationExact(on, off) - brute(on, off)) < 1e-12, JSON.stringify([on, off]));
+  });
+  it("handles ten against ten in one pass and is symmetric in the arms", () => {
+    const on = [9, 10, 8, 11, 9, 7, 10, 9, 8, 11];
+    const off = [4, 6, 5, 7, 3, 5, 6, 4, 2, 5];
+    const p = permutationExact(on, off);
+    assert.ok(p < 0.001 && p > 0);
+    assert.ok(Math.abs(p - permutationExact(off, on)) < 1e-12);
+  });
+  it("claims an effect only below the adjusted level 0.025 and in a clear direction", () => {
+    const strong = compareScores([9, 10, 8, 11, 9, 7, 10, 9, 8, 11], [4, 6, 5, 7, 3, 5, 6, 4, 2, 5]);
+    assert.equal(strong.effectClaimed, true);
+    assert.equal(strong.direction, "ON higher");
+    assert.equal(strong.alpha, 0.025);
+    const weak = compareScores([5, 6, 7], [4, 6, 6]);
+    assert.equal(weak.effectClaimed, false);
+    assert.equal(compareScores([3, 3], [3, 3]).effectClaimed, false);
+    assert.equal(compareScores([1, 1, 1, 1], [9, 9, 9, 9]).direction, "OFF higher");
+  });
+  it("rejects scores that are not non-negative integers", () => {
+    assert.throws(() => permutationExact([1.5], [1]), /invalid scores/);
+    assert.throws(() => permutationExact([-1], [1]), /invalid scores/);
+    assert.throws(() => permutationExact([], [1]), /invalid scores/);
   });
 });

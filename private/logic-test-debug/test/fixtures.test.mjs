@@ -10,12 +10,20 @@ import { FIXTURES_DIR, SCENARIOS, auditWorkspace, changedFiles, createWorkspace,
 
 const EVAL = join(dirname(fileURLToPath(import.meta.url)), "..", "eval");
 const prompts = JSON.parse(readFileSync(join(EVAL, "prompts.json"), "utf8"));
+const hardPrompts = JSON.parse(readFileSync(join(EVAL, "prompts-hard.json"), "utf8"));
 const lock = readLock();
 
 describe("frozen fixtures and prompts", () => {
   it("match the lock file byte for byte (refreeze on purpose with eval/freeze.mjs)", () => {
     for (const scenario of SCENARIOS) assert.deepEqual(hashTree(join(FIXTURES_DIR, scenario)), lock.scenarios[scenario].files, scenario);
     assert.equal(lock.promptsHash, sha256(JSON.stringify(prompts)));
+    assert.equal(lock.hardPromptsHash, sha256(JSON.stringify(hardPrompts)));
+  });
+  it("leave the first campaign's frozen entries as they were when the harder tasks were added", () => {
+    assert.equal(lock.promptsHash, "f45af8d94b2da7a2ab2a4607554ecb9631fc99df24903d7de81eba577a3f4248");
+    assert.equal(lock.scenarios.conditions.helperHash, "3155d65093cd2b7b6f93a030e9cabc7e1c992c496d9fdf4fe821d2ba8d838744");
+    assert.equal(lock.scenarios.bug.helperHash, "3b26779a8fdb64c2c2a9f74b9632b3b2b05baf278d16374194c4a5191a6e77b9");
+    assert.deepEqual(Object.keys(prompts), ["activation", "conditions", "bug", "nocode"]);
   });
   it("give a fresh workspace with no change from the frozen state", () => {
     for (const scenario of SCENARIOS) {
@@ -39,7 +47,7 @@ describe("frozen fixtures and prompts", () => {
   });
   it("keep every oracle outside the fixtures and mark each one", () => {
     const oracles = readdirSync(join(EVAL, "oracles"));
-    assert.deepEqual(oracles.sort(), ["activation.oracle.mjs", "bug.oracle.mjs", "conditions.oracle.mjs"]);
+    assert.deepEqual(oracles.sort(), ["activation.oracle.mjs", "bug.oracle.mjs", "combos.mutants.mjs", "combos.oracle.mjs", "conditions.oracle.mjs", "trace.oracle.mjs"]);
     for (const file of oracles) assert.ok(readFileSync(join(EVAL, "oracles", file), "utf8").includes("HIDDEN-ORACLE"), file);
     for (const scenario of SCENARIOS) {
       for (const name of Object.keys(hashTree(join(FIXTURES_DIR, scenario)))) assert.ok(!/oracle|reference|lock/i.test(name), `${scenario}/${name}`);
@@ -54,6 +62,13 @@ describe("the frozen prompts reach the code-prompt check as designed", () => {
       assert.equal(result.activate, true, `${key}: ${result.reason}`);
       assert.notEqual(handleLogicHook("UserPromptSubmit", { prompt: prompts[key] }, {}), null, key);
     }
+  });
+  it("the two harder-task prompts activate it as well", () => {
+    for (const key of Object.keys(hardPrompts)) {
+      assert.equal(classifyCodePrompt(hardPrompts[key]).activate, true, key);
+      assert.notEqual(handleLogicHook("UserPromptSubmit", { prompt: hardPrompts[key] }, {}), null, key);
+    }
+    assert.deepEqual(Object.keys(hardPrompts), ["combos", "trace"]);
   });
   it("the four non-code prompts add nothing", () => {
     assert.equal(prompts.nocode.length, 4);

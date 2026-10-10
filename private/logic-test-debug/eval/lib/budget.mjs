@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { allowance, readLedger, spentUsd, startSession } from "./ledger.mjs";
 
 export const BUDGET_PATH = fileURLToPath(new URL("../budget.json", import.meta.url));
-const ARMS = { activation: ["ON", "OFF"], conditions: ["ON", "OFF"], bug: ["ON", "OFF"], nocode: ["ON"] };
+import { ARMS } from "./campaign.mjs";
 
 export function loadBudget(path = process.env.LTD_BUDGET ?? BUDGET_PATH) {
   const budget = JSON.parse(readFileSync(path, "utf8"));
