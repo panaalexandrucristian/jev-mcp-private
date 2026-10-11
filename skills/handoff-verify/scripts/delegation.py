@@ -123,7 +123,9 @@ def main(argv=None):
             print(text); return 0
         a = json.load(open(x.assignment, encoding="utf-8"))
         if x.cmd == "prompt": sys.stdout.write(prompt(a)); return 0
-        v = validate(a, open(x.result, "rb").read()); print(json.dumps(v, indent=1, sort_keys=True, ensure_ascii=False)); return 0 if v["valid"] else 1
+        try: raw = open(x.result, "rb").read()
+        except OSError: raw = b""      # a subagent that timed out or was stopped saved nothing: an empty answer, so every chunk is missing
+        v = validate(a, raw); print(json.dumps(v, indent=1, sort_keys=True, ensure_ascii=False)); return 0 if v["valid"] else 1
     except Refused as e: print(json.dumps({"refused": e.code, "detail": e.detail}, ensure_ascii=False)); return 1
 
 if __name__ == "__main__": sys.exit(main())

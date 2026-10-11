@@ -112,6 +112,10 @@ class Cli(Case):
         r["complete"] = False; json.dump(r, open(rf, "w")); rc, out = self.run_cli("validate", "--assignment", af, "--result", rf); self.assertEqual(rc, 1); self.assertTrue(json.loads(out)["accepted_candidates"])
     def test_a_refusal_is_printed_and_exits_one(self):
         rc, out = self.run_cli("assign", "--source", self.t.log, "--note", self.t.note, "--write-id", "nope", "--evaluated-against", "prefix", "--chunk-dir", self.work, "--from", "0", "--to", "3", "--max-chars", str(MAXC)); self.assertEqual(rc, 1); self.assertEqual(json.loads(out)["refused"], "write_not_found")
+    def test_an_answer_file_that_was_never_saved_is_an_invalid_answer_not_a_crash(self):      # a timed-out or killed subagent leaves no file: the parent must still get the missing chunks
+        af = os.path.join(self.d, "a.json"); self.run_cli("assign", "--source", self.t.log, "--note", self.t.note, "--write-id", "w1", "--evaluated-against", "prefix", "--chunk-dir", self.work, "--from", "0", "--to", "3", "--max-chars", str(MAXC), "--out", af)
+        rc, out = self.run_cli("validate", "--assignment", af, "--result", os.path.join(self.d, "never-saved.json")); v = json.loads(out)
+        self.assertEqual(rc, 1); self.assertFalse(v["valid"]); self.assertEqual([p["code"] for p in v["problems"]], ["invalid_json"]); self.assertEqual(v["missing_chunks"], [c["index"] for c in json.load(open(af))["chunks"]])
     def test_it_starts_nothing_and_stays_small(self):
         src = open(os.path.join(HERE, "delegation.py"), "rb").read(); self.assertLessEqual(len(src), 24576); self.assertLessEqual(len(open(__file__, "rb").read()), 24576)
         self.assertIsNone(re.search(rb"subprocess|urllib|socket|jev_|anthropic|claude -p|os\.system|exec\(", src))      # no model, no Jev, no network, no process, nothing is executed

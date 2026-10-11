@@ -29,7 +29,7 @@
   {"id": "evidence-requests", "bytes": 2292, "sha256": "019cea1cb74c593379cbb45b4c1d6ecc92ca3a645b66805efd996e6ba2600aee"},
   {"id": "context-optimizer", "bytes": 5389, "sha256": "5555627dc59bfd277c18f419c93c806da47913661fda11f51b88d4f5aab96a82"},
   {"id": "on-demand-lines", "bytes": 319, "sha256": "adac99e0ac3c1b32dff7ff0708bee8a2020c34e6bae2290f277f87728a8ba4d9"},
-  {"id": "subagent-review", "bytes": 5007, "sha256": "6ff3fb3bf645cf0183da1bfc5faa50c32187001398bc169f04b5b3f84ffb242c"}],
+  {"id": "subagent-review", "bytes": 9351, "sha256": "517543be1e2faa0ec14d233960433ea926bb2e317352b115aa71102cf32af61b"}],
  "files": {
   "SKILL.md": ["head", "triggered", "checklist", "loading", "hard-rules", "categories", "statuses", "flags", "limits", "on-demand-lines"],
   "reference/prepare.md": ["preparation", "source-reads", "kit"],
