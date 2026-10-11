@@ -45,7 +45,7 @@ class Flow(unittest.TestCase):
 
     def test_the_order_the_rule_and_the_registry_are_stated(self):
         for must in ("per_check_only", "once", "advice → collect → authorize → Jev → record → report", "authorized → recorded", "exclusive lock", "BEFORE the call", "never given back", "Never reset an exhausted allowance",
-                     "one grouped question", "not a Jev call", "headless", "compound claim", "every part exactly once", "same single authorization", "sanitizing", "unfinished.reverifications", "protocol violation", "PASS", "FAIL keeps its precedence"):
+                     "one grouped question", "not a Jev call", "headless", "compound claim", "every part exactly once", "same single authorization", "version_bound", "known_request_ids", "the version file", "the proposals file", "the payload file", "corrected_claim_needs_text", "sanitizing", "unfinished.reverifications", "protocol violation", "PASS", "FAIL keeps its precedence"):
             self.assertIn(must, self.t, must)
 
     def test_every_state_remedy_and_stage_the_code_produces_is_named(self):

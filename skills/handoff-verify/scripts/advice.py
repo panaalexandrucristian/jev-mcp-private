@@ -40,6 +40,8 @@ HINTS = {
     "absence_material_not_canonical": "The ABSENCE call did not use the complete canonical material that omissions.py prepare prints, so it proves nothing about the note, and the result does not qualify. A documentary correction cannot make the real call valid; the omission stays UNRESOLVED and needs no SOURCE call.",
     "source_not_qualified": "The SOURCE result does not qualify (verified above 0.95 with the strict auxiliary conditions). The single re-verification may use another eligible record of the session that states the same detail: give the exact quote and send the WHOLE passage of that record as the only evidence, never neighbouring records joined together, never a file and never an answer typed in the chat.",
 }
+VERSION_NOTE = ("No --version-ref-file: the requests are not bound to a version and their ids change once one is given; evidence.py authorize needs the ids of the bound requests, so give the same --version-ref-file "
+                "(the target.version_ref of the request in the report) to advice.py, collect, authorize and check.")
 CAPABILITY_NOTE = ("What the recorded verify/gate responses of this session show, per tool and envelope shape: the state (absent / null / invalid / finite) of same_subject on each result and of subject_at at the top level. Every response is judged on its own fields: "
                    "strict acceptance needs both finite at those locations, a response without them cannot be accepted whatever the evidence, and a later response that carries them is judged normally. Future runs need a server whose recorded responses carry these fields; "
                    "this skill installs or restarts nothing, retrofits no old result and leaves the retry rule unchanged.")
@@ -237,7 +239,7 @@ def main():
     if bad: print(json.dumps({"error": bad})); return 2
     history, consulted, why = load_history(a.registry)
     extra = dict(history_error=why) if why else {}
-    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", history_consulted=consulted, **extra, results=session_advice(calls, history, vref),
+    print(json.dumps(dict(session=sp, resolution=how, rule="at most one re-verification, with new evidence or a corrected claim; never an identical call", history_consulted=consulted, version_bound=vref is not None, **({} if vref is not None else {"version_note": VERSION_NOTE}), **extra, results=session_advice(calls, history, vref),
                           capabilities=J.capabilities(calls), capability_note=CAPABILITY_NOTE, gate_summaries=[dict(tool_use_id=c["tool_use_id"], **J.gate_summary(c)) for c in calls if c["tool"] == "gate"]), indent=1, ensure_ascii=False)); return 0
 
 if __name__ == "__main__": sys.exit(main())

@@ -101,7 +101,9 @@ def read_item(path, lines=None):
     if info["changed"] or info["redaction_dependent"]: return _bad(real, "redaction_dependent")
     return dict(kind="local_file", path=real, lines=[first, last], file_sha256=sha256(data), quote=quote, raw_sha256=sha256(quote), sanitized_sha256=sha256(clean), eligible=True)
 
-def _rejected(kind, path, reason): return dict(kind=kind, path=path, reason=reason)
+KINDS = ("local_file", "local_dir", "transcript_record", "corrected_claim")
+
+def _rejected(kind, path, reason, **extra): return dict(dict(kind=kind, path=path, reason=reason), **extra)
 
 def _transcript(source, version_ref):
     """-> ((eligible blocks [(text, provenance)], sha256 of the transcript, window), None) or (None, reason): the blocks of the shared source window of the evaluated write, nothing else."""
@@ -148,6 +150,7 @@ def collect(request, call, proposals, source=None):
         if not isinstance(p, dict): rejected.append(_rejected(None, None, "malformed_proposal")); continue
         kind = p.get("kind")
         if stage == "source" and kind in ("local_file", "local_dir"): rejected.append(_rejected(kind, None, "source_stage_takes_transcript_records_only")); continue      # a path is not a record of the session
+        if kind in ("local_file", "local_dir") and not (isinstance(p.get("path"), str) and p["path"].strip()): rejected.append(_rejected(kind, None, kind + "_needs_path")); continue
         if kind in ("local_file", "local_dir"):
             real, why = admit_path(p.get("path"))
             if real is None: rejected.append(_rejected(kind, None if why in ("path_redaction_dependent", "not_absolute", "remote_url") else p.get("path"), why)); continue
@@ -160,7 +163,8 @@ def collect(request, call, proposals, source=None):
                 keep(kind, it["path"], it)
         elif kind == "transcript_record":
             quote, uuid = p.get("quote"), p.get("uuid")
-            if not isinstance(quote, str) or not quote.strip() or not (uuid is None or isinstance(uuid, str)): rejected.append(_rejected(kind, None, "malformed_proposal")); continue
+            if not isinstance(quote, str) or not quote.strip(): rejected.append(_rejected(kind, None, "transcript_record_needs_quote")); continue
+            if not (uuid is None or isinstance(uuid, str)): rejected.append(_rejected(kind, None, "malformed_proposal")); continue
             if len(quote) > MAX_QUOTE_CHARS: rejected.append(_rejected(kind, None, "quote_too_long")); continue
             if not tx: tx.append(_transcript(source, version_ref))
             ctx, why = tx[0]
@@ -172,14 +176,14 @@ def collect(request, call, proposals, source=None):
         elif kind == "corrected_claim" and stage == "source": rejected.append(_rejected(kind, None, "source_stage_takes_no_corrected_claim"))      # the claim of the pair is canonical: another detail is another pair, ABSENCE-first
         elif kind == "corrected_claim":
             text = p.get("text")
-            if not isinstance(text, str) or not text.strip(): rejected.append(_rejected(kind, None, "malformed_proposal")); continue
+            if not isinstance(text, str) or not text.strip(): rejected.append(_rejected(kind, None, "corrected_claim_needs_text")); continue
             info = S.sanitize_material(text)[1]
             if info["changed"] or info["redaction_dependent"]: rejected.append(_rejected(kind, None, "redaction_dependent")); continue
             if not isinstance(claim, str): rejected.append(_rejected(kind, None, "no_claim_to_correct")); continue
             if J._norm(text) == J._norm(claim): rejected.append(_rejected(kind, None, "not_a_correction")); continue
             if corrected is not None: rejected.append(_rejected(kind, None, "duplicate")); continue
             corrected = dict(text=text, sha256=sha256(text))
-        else: rejected.append(_rejected(kind if isinstance(kind, str) and not _unsafe(kind) else None, None, "unknown_kind"))
+        else: rejected.append(_rejected(kind if isinstance(kind, str) and not _unsafe(kind) else None, None, "unknown_kind", kinds=list(KINDS)))
     return dict(items=items, rejected=rejected, searched=searched, corrected_claim=corrected)
 
 def advance(request, collected, headless=False, asked=False):
@@ -291,7 +295,7 @@ def record(request_id, call, source):
     status, _ = A.record_evidence(path, D.canon(source), request_id, call["input_hash"], ref); ok = status in ("recorded", "already_recorded")
     return dict(recorded=ok, status=status, reason=None if ok else status, request_id=request_id, recorded_ref=ref if ok else None)
 
-def _fail(msg, rc): print(json.dumps({"error": msg})); return rc
+def _fail(msg, rc, **extra): print(json.dumps(dict({"error": msg}, **extra))); return rc
 
 def _json_file(path, what, want):
     """-> (value, error): a JSON file whose top level has the type `want`."""
@@ -329,7 +333,7 @@ def cmd_collect(a):
         got = collect(req, by_id[r["tool_use_id"]], mine, sp); searched += [x for x in got["searched"] if x not in searched]
         out.append(dict(request=advance(req, got, a.headless, a.asked), collected=got))
     unmatched = [dict(request_id=own(p) if isinstance(own(p), str) else None, kind=p.get("kind") if isinstance(p, dict) and isinstance(p.get("kind"), str) and not _unsafe(p["kind"]) else None) for p in props if own(p) not in ids]
-    res = dict(session=sp, resolution=how, history_consulted=consulted, requests=out, question=grouped_question([o["request"] for o in out], searched), unmatched_proposals=unmatched, ignored_proposals=ignored)
+    res = dict(session=sp, resolution=how, history_consulted=consulted, version_bound=vref is not None, **({} if vref is not None else {"version_note": AD.VERSION_NOTE}), requests=out, question=grouped_question([o["request"] for o in out], searched), unmatched_proposals=unmatched, ignored_proposals=ignored)
     if why: res["history_error"] = why
     print(json.dumps(res, indent=1, ensure_ascii=False)); return 0
 
@@ -340,19 +344,33 @@ def cmd_authorize(a):
     if not bad and a.cmd == "authorize" and a.proposals:
         doc, bad = _json_file(a.proposals, "proposals", dict)
         if not bad and not isinstance(doc.get("proposals"), list): bad = "proposals file must be an object with a list `proposals`"
-        props = [] if bad else doc["proposals"]
+        props = [] if bad else [p for p in doc["proposals"] if not isinstance(p, dict) or p.get("request_id") in (None, a.request_id)]      # as `collect` does: the proposals of another request are not the evidence of this one
     if bad: return _fail(bad, 2)
     if not a.version_ref_file: return _fail("--version-ref-file is required: an allowance is never reserved for an unbound version", 2)
     sp, how, calls, rows, vref, err = _requests(a)
     if err: return _fail(*err)
     row = next((r for r in rows if r["advice"]["evidence_request"]["request_id"] == a.request_id), None)
-    if row is None: return _fail("no verify/gate result of this session has the request id %s (is the version file the one the request was made with?)" % a.request_id, 2)
+    if row is None:
+        known = [r["advice"]["evidence_request"]["request_id"] for r in rows]
+        unbound = a.request_id in [r["advice"]["evidence_request"]["request_id"] for r in AD.session_advice(calls, AD.load_history(None)[0], None)]
+        return _fail(("the request id %s was made without --version-ref-file: run advice.py / collect again with the same --version-ref-file and use the ids they print (the ids of this version are listed in known_request_ids)" if unbound else
+                      "no verify/gate result of this session has the request id %s for this version file (the ids of this version are listed in known_request_ids)") % a.request_id, 2, known_request_ids=known)
     req = row["advice"]["evidence_request"]
     try:
         if a.cmd == "check": ok, why = check_authorization(req, payload, sp); res = dict(authorized=ok, reason=why, request_id=req["request_id"])
         else: res = authorize(req, next(c for c in calls if c["tool_use_id"] == row["tool_use_id"]), props, payload, sp)
     except (OSError, ValueError) as e: return _fail("the registry could not be written (%s)" % e.__class__.__name__, 2)
     print(json.dumps(res, indent=1, ensure_ascii=False)); return 0 if res["authorized"] else 1
+
+FORMATS = """files:
+  --version-ref-file F   JSON {"write_tool_use_id": ..., "sha256": ..., "evaluated_against": "prefix"|"session_end"[, "run": ...]}: the target.version_ref of the request (copy it from the report's checks[].advice.evidence_request)
+  --proposals P          JSON {"proposals": [{"request_id": "<id>", "kind": "local_file", "path": "/abs/file"[, "lines": [first, last]]},
+                                             {"request_id": "<id>", "kind": "local_dir", "path": "/abs/dir"},
+                                             {"request_id": "<id>", "kind": "transcript_record", "quote": "<exact text of a record>"[, "uuid": "<record>"]},
+                                             {"request_id": "<id>", "kind": "corrected_claim", "text": "<the corrected claim>"}]}
+                         a proposal with another request_id is not used for this request; one without a request_id applies to the request being authorized
+  --payload F            JSON, exactly the tool input of the Jev call: {"claims": ["<claim>"], "evidence": [{"id": "...", "text": "<each original evidence entry, then every new item, verbatim>"}]}
+Use the same --version-ref-file for advice.py, collect, authorize and check: the request ids depend on the version."""
 
 def cmd_record(a):
     """record: the call is looked up in the session log by id; the registry is the one DERIVED from the session (there is no --registry here)."""
@@ -366,7 +384,7 @@ def cmd_record(a):
     print(json.dumps(res, indent=1, ensure_ascii=False)); return 0 if res["recorded"] else 1
 
 def main():
-    ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True)
+    ap = argparse.ArgumentParser(description="Collect, authorize and record the single re-verification of a check that did not pass.", epilog=FORMATS, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect"); c.add_argument("--session"); c.add_argument("--cwd"); c.add_argument("--registry"); c.add_argument("--proposals"); c.add_argument("--version-ref-file"); c.add_argument("--headless", action="store_true"); c.add_argument("--asked", action="store_true")
     for name in ("authorize", "check"):
         z = sub.add_parser(name); z.add_argument("--session"); z.add_argument("--cwd"); z.add_argument("--version-ref-file"); z.add_argument("--request-id", required=True); z.add_argument("--payload", required=True)

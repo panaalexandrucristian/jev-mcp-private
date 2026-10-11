@@ -137,18 +137,18 @@ class Collect(Files):
 
     def test_a_malformed_or_unknown_proposal_is_rejected(self):
         got = self.collect(["x", dict(kind="chat_answer", text="trust me"), dict(kind="local_file")])
-        self.assertEqual([r["reason"] for r in got["rejected"]], ["malformed_proposal", "unknown_kind", "not_absolute"])
+        self.assertEqual([r["reason"] for r in got["rejected"]], ["malformed_proposal", "unknown_kind", "local_file_needs_path"])
 
     def test_a_corrected_claim_must_really_differ_and_be_clean(self):
         ok = self.collect([dict(kind="corrected_claim", text="Exactly 69 unit tests pass.")])
         self.assertEqual(ok["corrected_claim"]["text"], "Exactly 69 unit tests pass."); self.assertEqual(ok["corrected_claim"]["sha256"], sha("Exactly 69 unit tests pass."))
-        for text, reason in (("  the UNIT tests   pass. ", "not_a_correction"), ("", "malformed_proposal"), (SECRET_LINE, "redaction_dependent")):
+        for text, reason in (("  the UNIT tests   pass. ", "not_a_correction"), ("", "corrected_claim_needs_text"), (SECRET_LINE, "redaction_dependent")):
             got = self.collect([dict(kind="corrected_claim", text=text)])
             self.assertIsNone(got["corrected_claim"], text); self.assertEqual([r["reason"] for r in got["rejected"]], [reason], text)
 
     def test_an_answer_typed_in_the_chat_is_never_evidence(self):
         got = self.collect([dict(kind="evidence_text", text=NEW_PASSAGE), dict(kind="local_file", path=None, text=NEW_PASSAGE)])
-        self.assertEqual(got["items"], []); self.assertTrue(all(r["reason"] in ("unknown_kind", "not_absolute") for r in got["rejected"]))
+        self.assertEqual(got["items"], []); self.assertTrue(all(r["reason"] in ("unknown_kind", "local_file_needs_path") for r in got["rejected"]))
 
 VREF = dict(write_tool_use_id="w1", sha256="a" * 64, evaluated_against="prefix")
 LATE = "late_report.txt: 12 passed after the note was written"
@@ -211,7 +211,7 @@ class Transcript(Files):
         self.assertEqual(self.reasons(got), ["transcript_unreadable"])
 
     def test_a_malformed_or_oversized_quote_is_refused(self):
-        for q, why in ((None, "malformed_proposal"), ("   ", "malformed_proposal"), (7, "malformed_proposal"), ("x" * (evidence.MAX_QUOTE_CHARS + 1), "quote_too_long")):
+        for q, why in ((None, "transcript_record_needs_quote"), ("   ", "transcript_record_needs_quote"), (7, "transcript_record_needs_quote"), ("x" * (evidence.MAX_QUOTE_CHARS + 1), "quote_too_long")):
             self.assertEqual(self.reasons(self.collect([dict(kind="transcript_record", quote=q)])), [why], q)
 
     def test_the_quote_must_be_exact_and_case_sensitive(self):

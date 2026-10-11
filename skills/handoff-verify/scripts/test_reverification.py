@@ -57,9 +57,12 @@ MATRIX = [
  Row("another legitimate SOURCE record confirms the pair", "COVERED", ["test_omission_evidence.EndToEnd.test_an_authorized_other_record_confirms_the_pair"]),
  Row("an ABSENCE that comes back verified means the detail is present: no finding, no SOURCE call", "COVERED", ["test_omission_advice.Report.test_an_absence_that_comes_back_verified_means_the_detail_is_present_and_needs_nothing"]),
  Row("a FAIL keeps its precedence with the unresolved counts exposed", "COVERED", ["test_omission_evidence.EndToEnd.test_the_same_second_call_without_an_authorization_is_exposed_but_fail_keeps_its_precedence"]),
+ Row("one proposals file serves several requests, each authorized with its own proposals only (found by the live Haiku test)", "COVERED", ["test_evidence_flow.Proposals.test_each_request_is_authorized_with_its_own_proposals_from_one_shared_file", "test_evidence_flow.Proposals.test_the_proposals_of_another_request_are_not_the_evidence_of_this_one"]),
+ Row("request ids made without a version are explained, not silently different (found by the live Haiku test)", "COVERED", ["test_evidence_flow.Versions.test_advice_and_collect_say_when_the_requests_are_not_bound_to_a_version", "test_evidence_flow.Versions.test_an_id_made_without_a_version_is_explained_and_the_known_ids_are_listed"]),
+ Row("a proposal that lacks its field names it, and the file formats are in the help and the documentation (found by the live Haiku test)", "COVERED", ["test_evidence_flow.Format.test_a_proposal_that_lacks_its_field_names_the_field", "test_evidence_flow.Format.test_the_help_shows_the_three_file_formats"]),
  Row("the pair exception: the checks of a finding-linked pair get no advice", "COVERED", ["test_omission_advice.Report.test_the_checks_of_a_finding_linked_pair_still_get_no_advice", "test_retry_advice.ReportAdvice.test_the_checks_of_an_omission_pair_get_no_advice"]),
 ]
-MODULES = ["test_evidence_request", "test_evidence_collect", "test_evidence_authorize", "test_evidence_record", "test_evidence_report", "test_reverification_audit", "test_omission_advice", "test_omission_evidence", "test_reverification"]
+MODULES = ["test_evidence_request", "test_evidence_collect", "test_evidence_authorize", "test_evidence_record", "test_evidence_report", "test_reverification_audit", "test_omission_advice", "test_omission_evidence", "test_reverification", "test_evidence_flow"]
 
 class Matrix(unittest.TestCase):
     def test_every_row_names_existing_tests_and_a_known_kind(self):
