@@ -69,7 +69,7 @@ const field = (text, name) => text.match(new RegExp(`^\\s*[*_]{0,2}${name}[*_]{0
 export function summarizeMessages(messages, skillId = "logic-test-debug") {
   const assistant = messages.filter((m) => m.type === "assistant");
   const items = assistant.flatMap((m) => m.data.content ?? []);
-  const tools = items.filter((c) => c.type === "tool").map((c) => ({ name: c.name, status: c.state?.status ?? null, errorType: c.state?.error?.type ?? null, input: c.state?.input ?? null }));
+  const tools = items.filter((c) => c.type === "tool").map((c) => ({ name: c.name, status: c.state?.status ?? null, errorType: c.state?.error?.type ?? null, errorMessage: c.state?.error?.message ?? "", input: c.state?.input ?? null }));
   const texts = items.filter((c) => c.type === "text").map((c) => c.text);
   const finalText = (assistant.at(-1)?.data.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const all = texts.join("\n");
@@ -81,7 +81,9 @@ export function summarizeMessages(messages, skillId = "logic-test-debug") {
     skillLoaded: tools.some((t) => t.name === "skill" && t.status === "completed" && t.input?.id === skillId),
     skillAttempts: tools.filter((t) => t.name === "skill").length,
     rejected: tools.filter((t) => t.errorType === "permission.rejected").map((t) => ({ name: t.name })),
-    unavailable: tools.filter((t) => /tool\.unavailable|tool\.execution/.test(t.errorType ?? "")).map((t) => t.name),
+    // A call of a tool the session is not offered (shell, web ...). Ordinary failures of a tool that exists (a text to replace that is not found) are in toolErrors.
+    unavailable: tools.filter((t) => /No tool named/.test(t.errorMessage)).map((t) => t.name),
+    toolErrors: tools.filter((t) => t.errorType === "tool.execution" && !/No tool named/.test(t.errorMessage)).map((t) => t.name),
     record: { ...record, present: Boolean(record.scope && record.method && record.result) },
     finalText,
     finished: assistant.at(-1)?.data.finish ?? null,

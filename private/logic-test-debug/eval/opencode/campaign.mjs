@@ -83,11 +83,11 @@ export function loadVerdicts(root) {
 /** Markdown with counts only; nothing is tested at n = 2 per arm. Pure over the verdicts. */
 export function toMarkdown(verdicts) {
   const lines = ["# logic-test-debug on OpenCode, real model: report", "", `Sessions: ${verdicts.length}. Model ${verdicts[0]?.model ?? MODEL}, OpenCode ${verdicts[0]?.version ?? "?"}, task: ${verdicts[0]?.scenario ?? "?"}. ${verdicts.filter((v) => v.arm === "ON").length >= 5 && verdicts.filter((v) => v.arm === "OFF").length >= 5 ? "The tests below were fixed before the first session." : "Counts only; with 2 sessions per arm no test is run and no effect is claimed."}`, ""];
-  lines.push("| id | arm | complete | s | model requests | with directive | skill loaded | record | tools | oracle | success | refused |");
-  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("| id | arm | complete | s | model requests | with directive | skill loaded | record | tools | oracle | success | refused (path) | not offered |");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const v of verdicts) {
     const tools = Object.entries(v.session.toolCalls.reduce((m, n) => ({ ...m, [n]: (m[n] ?? 0) + 1 }), {})).map(([n, c]) => `${n}×${c}`).join(" ");
-    lines.push(`| ${v.id} | ${v.arm} | ${v.complete} | ${v.seconds} | ${v.probe.modelRequests} | ${v.probe.withDirective} | ${v.session.skillLoaded} | ${v.session.record.present} | ${tools} | ${v.oracle.passed}/${v.oracle.total} | ${v.oracle.success} | ${v.session.rejected.length} |`);
+    lines.push(`| ${v.id} | ${v.arm} | ${v.complete} | ${v.seconds} | ${v.probe.modelRequests} | ${v.probe.withDirective} | ${v.session.skillLoaded} | ${v.session.record.present} | ${tools} | ${v.oracle.passed}/${v.oracle.total} | ${v.oracle.success} | ${v.session.rejected.length} | ${v.session.unavailable?.length ?? 0} |`);
   }
   const arm = (a) => verdicts.filter((v) => v.arm === a);
   const n = (list, pick) => list.filter(pick).length;

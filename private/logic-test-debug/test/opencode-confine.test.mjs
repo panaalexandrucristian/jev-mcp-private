@@ -108,6 +108,15 @@ describe("summarizeMessages and summarizeProbe", () => {
     assert.equal(s.finished, "stop");
     assert.deepEqual(s.tokens, { input: 30, output: 7, reasoning: 1 });
   });
+  it("tells a tool that is not offered from an ordinary failure of a tool that exists", () => {
+    const m = [message("assistant", { content: [
+      { type: "tool", name: "bash", state: { status: "error", input: { command: "npm test" }, error: { type: "tool.execution", message: 'No tool named "bash" is currently available. Please use a tool from the available tool list.' } } },
+      { type: "tool", name: "edit", state: { status: "error", input: {}, error: { type: "tool.execution", message: "Could not find oldString in test/pricing.test.mjs." } } },
+    ], finish: "stop" })];
+    const s = summarizeMessages(m);
+    assert.deepEqual(s.unavailable, ["bash"]);
+    assert.deepEqual(s.toolErrors, ["edit"]);
+  });
   it("does not count a failed skill call or a different skill as a load", () => {
     const failed = [message("assistant", { content: [{ type: "tool", name: "skill", state: { status: "error", input: { id: "logic-test-debug" } } }, { type: "tool", name: "skill", state: { status: "completed", input: { id: "jev" } } }], finish: "stop" })];
     const s = summarizeMessages(failed);
