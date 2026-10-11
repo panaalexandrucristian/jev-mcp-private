@@ -199,7 +199,7 @@ def bind_report(doc, calls_jsonl=None, run_dir=None, extra_paths=(), require_ver
     doc["status_claimed"] = claimed if valid_claim else None
     if valid_claim and claimed == ev["status"]: doc.pop("status_claimed")
     if ctr != "R02": doc["omission_contract"] = ctr   # informative only (never read): the contract the writer applied (strict auxiliary conditions and the explicit omission pair; the gate and the auditors recompute under their own contract)
-    doc.update(checks=out_checks, evidence_requests=requests, status=ev["status"], jev_ref_version="1", binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], calls_log_note=note, jev_calls_in_log=len(calls), audit=ev["audit"]))
+    doc.update(checks=out_checks, evidence_requests=requests, blockers=audit.blockers(ev["audit"].get("unfinished")), status=ev["status"], jev_ref_version="1", binding_summary=dict(checks=ev["checks"], bound=ev["bound"], resolved=ev["resolved"], unbound=ev["unbound"], reasons=ev["reasons"], calls_log_note=note, jev_calls_in_log=len(calls), audit=ev["audit"]))
     if vnote is not None:
         doc["binding_summary"]["version_identity"] = vnote
         h = dict(handoff_o); declared = _list(h.get("versions"))
@@ -226,7 +226,7 @@ def seal(doc):
     with the problems counted in the audit and a delivery that is not verified. (It cannot be reached by an input problem: those are counted by the audit already; it keeps a writer defect from certifying malformed output.)"""
     problems = SC.validate_report(doc)
     if not problems or doc.get("status") != "PASS": return doc
-    au = doc["binding_summary"]["audit"]; au["complete"] = False; au["unfinished"] = dict(au.get("unfinished", {}), structure=au.get("unfinished", {}).get("structure", 0) + len(problems))
+    au = doc["binding_summary"]["audit"]; au["complete"] = False; au["unfinished"] = dict(au.get("unfinished", {}), structure=au.get("unfinished", {}).get("structure", 0) + len(problems)); doc["blockers"] = audit.blockers(au["unfinished"])
     why = "the report as emitted does not match report.schema.json: " + SC.summarize(problems); au["reasons"] = ([why] + au["reasons"])[:5]; au["reasons_total"] += 1
     doc["binding_summary"]["reasons"] = doc["binding_summary"]["reasons"] + ["audit incomplete: " + why]
     if doc.get("status_claimed", "absent") == "absent": doc["status_claimed"] = "PASS"

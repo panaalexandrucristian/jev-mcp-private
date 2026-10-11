@@ -189,10 +189,11 @@ CANON = {"b.ledger.file": "ledger.file", "ledger.file.recorded": "ledger.file", 
          "ledger.record2": "ledger.record", "j.report.json": "report.json", "k.omissions.batch": "omissions.prepare", "k.ledger.file": "ledger.file", "k.ledger.resume": "ledger.resume", "report.ext.json": "report.json", "versions.list.err3": "versions.list.err",
          "j.versions.list.copy": "versions.list", "j.omissions.prepare.copy": "omissions.prepare", "i.omissions.prepare.redaction": "omissions.prepare.fail",
          "report.rich.json": "report.json", "l.prepare.err": "prepare.err"}
-# non-identity string leaves of the invented sessions: content hashes of the ledger identity (identity/*_sha256) and the retry advice of a check (fixed texts and the names of numeric fields; advice.py; the enums, codes and hash id of its evidence_request)
+# non-identity string leaves of the invented sessions: content hashes of the ledger identity (identity/*_sha256) and the retry advice of a check (fixed texts and the names of numeric fields; advice.py; the enums, codes and hash id of its evidence_request; the fixed codes, families, remedies and hints of the blockers, audit.BLOCKERS)
 NONIDENTITY = F("report.json", "/checks[]/advice/causes[]", "/checks[]/advice/code", "/checks[]/advice/fields/same_subject", "/checks[]/advice/fields/subject_at", "/checks[]/advice/hint",
                 "/checks[]/advice/evidence_request/allowed_sources[]", "/checks[]/advice/evidence_request/reason_codes[]", "/checks[]/advice/evidence_request/remedy", "/checks[]/advice/evidence_request/request_id", "/checks[]/advice/evidence_request/state",
-                "/checks[]/advice/evidence_request/stop_reason", "/checks[]/advice/evidence_request/target/stage", "/evidence_requests[]/remedy", "/evidence_requests[]/request_id", "/evidence_requests[]/state", "/evidence_requests[]/stop_reason") + F("ledger.file", "/obligations[]/identity/detail_sha256", "/obligations[]/identity/quote_sha256", "/obligations[]/identity/evaluated_sha256", "/obligations[]/identity/material_sha256", "/obligations[]/identity/passage_sha256",
+                "/checks[]/advice/evidence_request/stop_reason", "/checks[]/advice/evidence_request/target/stage", "/evidence_requests[]/remedy", "/evidence_requests[]/request_id", "/evidence_requests[]/state", "/evidence_requests[]/stop_reason",
+                "/blockers[]/code", "/blockers[]/family", "/blockers[]/hint", "/blockers[]/remedy") + F("ledger.file", "/obligations[]/identity/detail_sha256", "/obligations[]/identity/quote_sha256", "/obligations[]/identity/evaluated_sha256", "/obligations[]/identity/material_sha256", "/obligations[]/identity/passage_sha256",
                 "/obligations[]/identity/version_sha256")
 
 _W = None

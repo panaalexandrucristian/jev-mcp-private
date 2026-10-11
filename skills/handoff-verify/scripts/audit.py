@@ -733,6 +733,30 @@ def assess(ctx, evals=None, findings=None, verdicts=None):
     ss = ctx.scope_state() if isinstance(ctx.doc, dict) else dict(valid=0, invalid=0)
     return dict(complete=not reasons, reasons=reasons, unfinished=unfinished, evaluations=n_evals, scope=dict(valid=ss.get("valid", 0), invalid=ss.get("invalid", 0)), limit=LIMIT)
 
+BLOCKERS = {   # unfinished kind (the keys of assess' `unfinished`, in its order) -> (remedy, FIXED hint). Fixed texts only: nothing dynamic is ever put in a blocker, so nothing needs sanitizing.
+    "structure": ("report_structure", "The report does not match report.schema.json (binding_summary.audit.reasons names the problems): fix the structure of the document; no review and no Jev call is needed for this."),
+    "scope": ("audit_completion", "Declare `scope_exclusions` (an empty list is a valid zero) and make every exclusion re-derivable: see the scope filter in the candidates reference (`scope.py prepare`, then `jev_classify`)."),
+    "evaluations": ("audit_completion", "An evaluation has no complete audit block: for each evaluation of the checks run `audit.py template --source S --file F --write-id W --evaluated-against prefix|session_end [--run R]`, read every chunk it lists, "
+                    "review it for all nine categories with a grounded basis, and put the block under `audit.evaluations`. Only the review of the agent completes it."),
+    "chunks_missing": ("audit_completion", "Some expected chunks have no review record: add one record per chunk of the template (`audit.py template`)."),
+    "chunks_duplicate": ("audit_completion", "Some chunks have several review records: keep exactly one per chunk."),
+    "chunks_stale": ("audit_completion", "A chunk was reviewed against another text (stale sha256): run `audit.py template` again and review the current text."),
+    "chunks_unreviewed": ("audit_completion", "Some chunks are not marked reviewed: read each chunk and set `reviewed` with all nine categories."),
+    "chunks_ungrounded": ("audit_completion", "A review record has no basis inside the window: quote (uuid and exact text) a record of that chunk."),
+    "chunks_partial_categories": ("audit_completion", "A chunk review covers fewer than the nine categories: review all nine for every chunk."),
+    "categories": ("audit_completion", "The category outcomes are missing, repeated or wrong: give exactly one outcome per category (`candidates`, `no_candidate` or `not_applicable`), list the registered candidates, and ground the others."),
+    "candidates_unaccounted": ("audit_completion", "A registered candidate has no disposition, or the registry or the ledger of the session cannot be read: register the candidates with `audit.py register`, then give each one a valid exclusion, "
+                               "a resolved present check or a validated finding, or declare it unresolved."),
+    "candidates_unresolved": ("audit_completion", "A registered candidate is declared unresolved work: it stays UNRESOLVED until a real check clears or confirms it; asking does not clear it."),
+    "reverifications": ("protocol_violation", "A verify/gate call repeated an earlier call for the same claim and version without a recorded authorization. It cannot be repaired afterwards: the check stays UNRESOLVED "
+                        "(see the re-verification evidence section of the Jev reference)."),
+}
+
+def blockers(unfinished):
+    """-> the blockers of the report: one {code, family, remedy, count, hint} per kind of unfinished audit work (`unfinished` = the counts of `summary`), in the order of BLOCKERS, nothing for a zero count. Informative: it never
+    changes a status and never completes the audit; the review is the agent's, and the writer, the gate and the per-version evaluation re-derive completeness."""
+    return [dict(code=k, family="audit", remedy=BLOCKERS[k][0], count=unfinished[k], hint=BLOCKERS[k][1]) for k in BLOCKERS if isinstance(unfinished, dict) and type(unfinished.get(k)) is int and unfinished[k] > 0]
+
 def summary(a, cap=5):
     """The compact form stored in `binding_summary.audit` (the reasons are kept up to `cap`; counts are exact). A reason is built only from fixed text, counts, schema names and ids vetted by `O.id_text`, and every dynamic external text
     (a ledger error, a window reason) was sanitized where it was produced, so a recorded identifier stays exact here and a refused one is the display marker."""

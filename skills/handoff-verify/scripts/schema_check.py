@@ -73,7 +73,7 @@ def validate(value, node=None, root=None, path="$", out=None, depth=0):
     return out
 
 # The properties the REPORT WRITER owns: it sets them itself (report.bind_report), so a model-written report is not required to carry them and whatever it holds there is replaced (never carried into the output).
-WRITER_OWNED = ("status", "status_claimed", "binding_summary", "scope_audit", "delivery", "jev_ref_version", "omission_contract", "evidence_requests")
+WRITER_OWNED = ("status", "status_claimed", "binding_summary", "scope_audit", "delivery", "jev_ref_version", "omission_contract", "evidence_requests", "blockers")
 # The properties of the records of a list that the writer also sets on every record it emits (a binding, an advice, the per-version summary): not judged on a model-written record either.
 RECORD_WRITER_OWNED = dict(checks=("binding", "advice"), versions=("audited_status", "binding_summary", "evaluations", "attributed_write", "attribution"))
 

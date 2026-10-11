@@ -79,7 +79,7 @@ class Fields(unittest.TestCase):
     def setUp(self): self.t = section("reference/report.md", FIELDS)
 
     def test_the_new_fields_are_documented_with_their_ownership(self):
-        for must in ("evidence_requests", "advice.evidence_request", "check_id", "request_id", "writer-owned", "never change a status", "unfinished.reverifications", "recorded", "version", "readable"):
+        for must in ("evidence_requests", "advice.evidence_request", "check_id", "request_id", "writer-owned", "never change a status", "unfinished.reverifications", "recorded", "version", "readable", "blockers", "audit_completion", "report_structure", "protocol_violation", "never changes a status"):
             self.assertIn(must, self.t, must)
 
     def test_the_documented_keys_are_the_keys_the_code_writes(self):
@@ -87,5 +87,6 @@ class Fields(unittest.TestCase):
         s = json.load(open(os.path.join(HERE, "report.schema.json"), encoding="utf-8")); item = s["properties"]["evidence_requests"]["items"]
         for k in item["required"]: self.assertIn(k, self.t, k)
         for k in s["properties"]["checks"]["items"]["properties"]["advice"]["properties"]["evidence_request"]["required"]: self.assertIn(k, self.t, k)
+        for k in s["properties"]["blockers"]["items"]["required"]: self.assertIn("`%s`" % k, self.t, k)
 
 if __name__ == "__main__": unittest.main()
