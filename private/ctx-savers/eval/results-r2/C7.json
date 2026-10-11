@@ -1,0 +1,91 @@
+{
+  "id": "C7",
+  "measuredAt": "2026-10-11T20:21:50.402Z",
+  "screenshots": 10,
+  "storedCharsTotal": 3120682,
+  "bytesBefore": 3164791,
+  "bytesAfter": 845567,
+  "rows": [
+    {
+      "file": "s1.png",
+      "storedChars": 27930,
+      "bytesBefore": 26404,
+      "bytesAfter": 14259,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s2.png",
+      "storedChars": 183710,
+      "bytesBefore": 106014,
+      "bytesAfter": 52624,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s3.png",
+      "storedChars": 336214,
+      "bytesBefore": 183807,
+      "bytesAfter": 83500,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s4.png",
+      "storedChars": 148218,
+      "bytesBefore": 83906,
+      "bytesAfter": 47516,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s5.png",
+      "storedChars": 411771,
+      "bytesBefore": 855982,
+      "bytesAfter": 154336,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s6.png",
+      "storedChars": 334970,
+      "bytesBefore": 226640,
+      "bytesAfter": 88894,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s7.png",
+      "storedChars": 288966,
+      "bytesBefore": 176347,
+      "bytesAfter": 86270,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s8.png",
+      "storedChars": 378907,
+      "bytesBefore": 662357,
+      "bytesAfter": 139195,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s9.png",
+      "storedChars": 643958,
+      "bytesBefore": 559859,
+      "bytesAfter": 94248,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    },
+    {
+      "file": "s10.png",
+      "storedChars": 366038,
+      "bytesBefore": 283475,
+      "bytesAfter": 84725,
+      "pxBefore": "1080x2424",
+      "pxAfter": "540x1212"
+    }
+  ],
+  "tokensMeasured": "see eval/measure-tokens.mjs"
+}

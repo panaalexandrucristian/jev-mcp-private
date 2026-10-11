@@ -1,0 +1,16 @@
+{
+  "id": "C3",
+  "measuredAt": "2026-10-11T20:21:49.830Z",
+  "R": 8984,
+  "rawNowChars": 9091,
+  "O": 2641,
+  "reduction": 0.706032947462155,
+  "hits": 77,
+  "rawTriples": 77,
+  "missingFromDigest": 0,
+  "recall": 1,
+  "declarations": 10,
+  "commentHits": 5,
+  "snippetCharsNotPrinted": 3842,
+  "output": "search-digest: 3 names, 77 hits in 20 files, 5 on comment lines\ndeclarations (10):\n  usecases/RewardDisplayRules.kt:8  isEarned  fun isEarned(bankedRewards: Int?): Boolean = (bankedRewards ?: 0) > 0\n  model/HomeInfo.kt:147  isEarned  @SerializedName(\"IsEarned\") val isEarned: Boolean?) : Parcelable\n  viewholder/BopisCartItemViewHolder.kt:244  isEarned  val isEarned = continuityOffer.isRewardEarned()\n  model/aem/AemAuthoring.kt:374  isEarned  var gameUserId: String? = null, var isEarned: Boolean? = null,\n  model/compose/RewardCardItemModel.kt:36  isEarned  val isEarned: Boolean = false,\n  model/compose/RewardCardItemModel.kt:39  bankedRewards  val bankedRewards: Int? = null,\n  model/Wallet.kt:47  isEarned  fun isEarned() = walletActivityType == WalletActivityType.EARNED.value\n  model/Coupons.kt:346  bankedRewards  @SerializedName(\"BankedRewards\", alternate = [\"bankedRewards\"]) val bankedRewards: Int? = null,\n  model/Coupons.kt:403  bankedRewards  data class EarnedRewardsSection(val bankedRewards: Int, val remainingRedemptions: Int? = null) : DealDetailsDa\n  ui/compose/screens/rewardcards/RewardDetailsProgressRules.kt:85  isEarned  val isEarned: Boolean\nby file (c = comment line):\n  adapter/DealDetailsAdapter.kt  isEarned 72\n  model/aem/AemAuthoring.kt  isEarned 374\n  model/compose/RewardCardItemModel.kt  isEarned 36,51 | bankedRewards 39\n  model/Coupons.kt  bankedRewards 111,346,403\n  model/HomeInfo.kt  isEarned 147\n  model/Wallet.kt  isEarned 47\n  ui/compose/screens/rewardcards/EarnedRewardItemPhase1.kt  currentStep 117,126\n  ui/compose/screens/rewardcards/EarnedRewardsSectionContent.kt  bankedRewards 59\n  ui/compose/screens/rewardcards/RewardCardItem.kt  bankedRewards 182,1080 | currentStep 183,403,419,436 | isEarned 421,438,582,584,1079\n  ui/compose/screens/rewardcards/RewardCardItemPhase1.kt  currentStep 350,366,383c,384\n  ui/compose/screens/rewardcards/RewardDetailsProgressRules.kt  bankedRewards 20,21,27,28,42,45,67,71,98,102,105 | isEarned 85\n  ui/compose/screens/rewardcards/RewardPDPUI.kt  isEarned 20\n  usecases/GetRewardsCardsUseCase.kt  bankedRewards 82,89,106 | isEarned 88\n  usecases/RewardDisplayRules.kt  isEarned 8,117,127,148 | bankedRewards 8,14c,16c,23,29,30,66c,98c,103,108\n  utilities/AdobeLoggingUtils.kt  currentStep 1569 | isEarned 3122,3125\n  utilities/DealDetailsDiffUtilCallback.kt  bankedRewards 23\n  viewholder/BopisCartItemViewHolder.kt  isEarned 244,245,246\n  viewholder/RecentActivityEventViewHolder.kt  isEarned 43\n  viewholder/RewardCardDetailsHeaderViewHolder.kt  isEarned 114 | currentStep 206,214,306,315,335,343,351\n  viewmodel/AemParsingViewModel.kt  isEarned 1074,2319"
+}

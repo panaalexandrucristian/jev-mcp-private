@@ -1,0 +1,14 @@
+{
+  "id": "C2",
+  "measuredAt": "2026-10-11T19:01:04.284Z",
+  "R": 10750,
+  "O": 1713,
+  "reduction": 0.8406511627906976,
+  "files": 4,
+  "functions": 10,
+  "changedLines": 116,
+  "recall": 1,
+  "B": 26398,
+  "breakEven": 0.34233654064701874,
+  "output": "diff-map: 4 files, +116 -15, 8 hunks\napp/src/main/java/dgapp2/dollargeneral/com/dgapp2_android/ui/compose/screens/rewardcards/MultiRedeemProgressCard.kt  +6 -10\n  MultiRedeemProgressCard 52-228  +6 -10  lines 57,61-63,65,211\napp/src/main/java/dgapp2/dollargeneral/com/dgapp2_android/ui/compose/screens/rewardcards/RewardCardItem.kt  +16 -5\n  RewardCardUI 127-513  +16 -5  lines 176-186,403,419,421,436,438\napp/src/main/java/dgapp2/dollargeneral/com/dgapp2_android/ui/compose/screens/rewardcards/RewardDetailsProgressRules.kt  +29 -0\n  RewardDetailsProgressRules.cardProgress 94-107  +14 -0  lines 94-107\n  outside functions: lines 79-93\napp/src/test/java/dgapp2/dollargeneral/com/dgapp2_android/ui/compose/screens/rewardcards/RewardDetailsProgressRulesTest.kt  +65 -0\n  RewardDetailsProgressRulesTest.cardProgress 164-170  +7 -0  lines 164-170\n  RewardDetailsProgressRulesTest.cardProgress matches the details scenarios 173-188  +16 -0  lines 173-188\n  RewardDetailsProgressRulesTest.cardProgress shows a full earned card when the limit is reached with a stray balance 191-195  +5 -0  lines 191-195\n  RewardDetailsProgressRulesTest.cardProgress with a banked reward and balance 0 is earned and the bar stays at 0 198-202  +5 -0  lines 198-202\n  RewardDetailsProgressRulesTest.cardProgress with banked rewards and partial progress is not earned 205-209  +5 -0  lines 205-209\n  RewardDetailsProgressRulesTest.cardProgress keeps the overshoot when the balance is above the threshold 212-216  +5 -0  lines 212-216\n  RewardDetailsProgressRulesTest.cardProgress with the flag off follows the threshold only 219-225  +7 -0  lines 219-225\n  outside functions: lines 161-163,171-172,189-190,196-197,203-204,210-211,217-218"
+}

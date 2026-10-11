@@ -1,0 +1,490 @@
+{
+  "id": "screens-sonnet",
+  "measuredAt": "2026-10-11T19:29:12.635Z",
+  "note": "context at the last call, sonnet, confined, 13 screens",
+  "results": [
+    {
+      "id": "baseline",
+      "kind": "base",
+      "contextAtLastCall": 3092,
+      "tools": [],
+      "answer": "OK",
+      "cost": 0.0063356,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk1-01-deals-rewards-start|image",
+      "kind": "image",
+      "screen": "walk1-01-deals-rewards-start",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Explore Deals\n2. Top tabs: Coupons & Cash Back, Weekly Ads, Rewards (one more is cut off at the edge). Filters: Coupons, Cash Back. Bottom nav: Home, Deals, myDG Wallet, List, Cart.\n3. Deals is the active tab in the bottom nav, and Coupons & Cash Back is the active top tab. No card or tile is shown as complete or earned.",
+      "cost": 0.015586800000000001,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk1-01-deals-rewards-start|digest",
+      "kind": "digest",
+      "screen": "walk1-01-deals-rewards-start",
+      "contextAtLastCall": 4657,
+      "tools": [],
+      "answer": "1. Explore Deals\n2. Help, Weekly Ads, Rewards, Rebates, Just For You offer (add), Search, Filters, Coupons, Cash Back, coupon cards (add/View details), clipped coupons button, Home, Deals, myDG® Wallet, List, Cart\n3. The Deals tab is shown as selected, and the Coupons & Cash Back tab appears active. The clipped coupons button shows 3, and the List tab shows 1 item.",
+      "cost": 0.010571500000000001,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk1-03-deals-weekly-ads|image",
+      "kind": "image",
+      "screen": "walk1-03-deals-weekly-ads",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) \"Explore Deals\" (the overlay card reads \"Discover the best deals for your store this week.\")\n(2) Coupons & Cash Back, Weekly Ads, Rewards, a partly cut-off \"R…\" tab, and \"Next\". The bottom bar has Home, Deals, myDG Wallet, List, Cart.\n(3) Weekly Ads is the active tab and Deals is the active bottom-bar item. Nothing is shown as complete or earned.",
+      "cost": 0.015656800000000002,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk1-03-deals-weekly-ads|digest",
+      "kind": "digest",
+      "screen": "walk1-03-deals-weekly-ads",
+      "contextAtLastCall": 3374,
+      "tools": [],
+      "answer": "1) No explicit header; the only text is \"Discover the best deals for your store this week.\"\n2) Tappable: \"Next\", plus two unlabeled tab items in the tab indicator.\n3) None. The digest doesn't show any item as complete, earned or active.",
+      "cost": 0.0046695,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk2-01-deals-after-back|image",
+      "kind": "image",
+      "screen": "walk2-01-deals-after-back",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) Explore Deals\n(2) Top tabs: Coupons & Cash Back, Weekly Ads, Rewards, and a cut-off \"R…\" tab. Bottom bar: Home, Deals, myDG Wallet, List, Cart.\n(3) Weekly Ads (top tab) and Deals (bottom bar) are the active ones. No card is shown as complete or earned.",
+      "cost": 0.015406800000000002,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk2-01-deals-after-back|digest",
+      "kind": "digest",
+      "screen": "walk2-01-deals-after-back",
+      "contextAtLastCall": 3872,
+      "tools": [],
+      "answer": "1. Explore Deals\n2. Help, Coupons & Cash Back, Rewards, Rebates, Home, Deals, myDG® Wallet, List, Cart (plus the Weekly Ad, Wireless Deals and Spend $30, Earn $5 cards, and the sponsored ad)\n3. \"Spend $30, Earn $5\" (Exp. 12/31/26) is marked Complete. The Deals tab is the selected one.",
+      "cost": 0.0073215,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk2-02-deals-rebates|image",
+      "kind": "image",
+      "screen": "walk2-02-deals-rebates",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. \"Your email needs to be verified.\" (with the myDG logo above it)\n2. \"Send verification email\", \"Remind me next time\", and a pencil icon to edit the email address (qa-user@example.invalid)\n3. None",
+      "cost": 0.0148368,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk2-02-deals-rebates|digest",
+      "kind": "digest",
+      "screen": "walk2-02-deals-rebates",
+      "contextAtLastCall": 3259,
+      "tools": [],
+      "answer": "1. Unknown: the digest shows 0 app elements, so there's no header text to read.\n2. Unknown: no tabs or buttons are exposed (the screen may be loading, a WebView, or a secure window).\n3. None can be identified. I won't guess at a complete, earned or active item without any screen content.\n\nI can't re-query the screen from here. Please send a fresh digest or a screenshot file path, and I'll read it with the image reader.",
+      "cost": 0.0058295,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk3-01-start-after-dismiss|image",
+      "kind": "image",
+      "screen": "walk3-01-start-after-dismiss",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. \"Explore Deals\" is the screen header, with a \"Connect your PayPal account.\" popup open on top of it.\n2. The popup has a \"Next\" button. Behind it are the tabs \"& Cash Back\", \"Weekly Ads\", \"Rewards\" and \"Rebates\", and the bottom bar has Home, Deals, myDG Wallet, List and Cart.\n3. No card is shown as complete or earned. The active items are the \"Rebates\" tab and the \"Deals\" bottom-bar item, and the first dot of the popup's four-step indicator is highlighted.",
+      "cost": 0.0159568,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk3-01-start-after-dismiss|digest",
+      "kind": "digest",
+      "screen": "walk3-01-start-after-dismiss",
+      "contextAtLastCall": 3389,
+      "tools": [],
+      "answer": "1. Header/title: \"Connect your PayPal account.\"\n2. Tappable: \"Next\", plus three unlabeled tab indicator dots and two unlabeled clickable layouts (the digest shows no text for them).\n3. None. The digest shows no card, tile or item as complete, earned or active.",
+      "cost": 0.0048695000000000006,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-01-deals-rebates-soon|image",
+      "kind": "image",
+      "screen": "walk4-01-deals-rebates-soon",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) Explore Deals\n(2) Top tabs: \"& Cash Back\" (partly cut off), Weekly Ads, Rewards, Rebates. Bottom nav: Home, Deals, myDG® Wallet, List, Cart.\n(3) The Rebates tab is active, and Deals is active in the bottom nav. There are no completed or earned cards.",
+      "cost": 0.015316800000000002,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-01-deals-rebates-soon|digest",
+      "kind": "digest",
+      "screen": "walk4-01-deals-rebates-soon",
+      "contextAtLastCall": 3662,
+      "tools": [],
+      "answer": "1. Explore Deals\n2. Help, Coupons & Cash Back, Weekly Ads, Rewards, Home, Deals, myDG® Wallet, List (1), Cart (Rebates tab is shown but not tappable)\n3. The Deals tab in the bottom nav is shown as selected. The Rebates tab shows \"Rebates are coming.\"",
+      "cost": 0.006191500000000001,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-02-home|image",
+      "kind": "image",
+      "screen": "walk4-02-home",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) There's no title. The top bar has a search field (\"Search products\") and a \"Delivering to 643 WASHINGTON ST\" banner.\n(2) The bottom tabs are Home, Deals, myDG Wallet, List and Cart. Other tappable items are the \"Join Today\" and \"Start Saving\" buttons and the \"OSIRIS TEST PAGE\" button.\n(3) Home is the active tab, shown highlighted in bold with a yellow icon.",
+      "cost": 0.0156368,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-02-home|digest",
+      "kind": "digest",
+      "screen": "walk4-02-home",
+      "contextAtLastCall": 4207,
+      "tools": [],
+      "answer": "1. Header: the search field \"Search products\" (with \"Delivering to 643 WASHINGTON ST\" below it). The screen has no separate title.\n2. Tappable: Search products, scan barcode, account, Change store button, stories (P&G Oral Care, $1 off Cottonelle, Poll & Votes, Save with True Living, Laundry Deals), my-dg-plus hero banner, 3 Days of Savings ($1, $2, $3 SALE), Dollar Deals, M-F $5 off $25, OSIRIS TEST PAGE, and the tabs Home, Deals, myDG® Wallet, List, Cart.\n3. Active: the Home tab is selected. The \"$1 off Cottonelle\" story is marked as read and seen.",
+      "cost": 0.0096815,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-03-home-scrolled|image",
+      "kind": "image",
+      "screen": "walk4-03-home-scrolled",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) There is no screen title. The top bar has a \"Search products\" field, and the page includes an \"OSIRIS TEST PAGE\" heading.\n(2) The bottom tabs are Home, Deals, myDG Wallet, List and Cart. The screen also has \"Join Today\" and \"Start Saving\" buttons.\n(3) Home is the active tab, shown highlighted in bold.",
+      "cost": 0.0153668,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-03-home-scrolled|digest",
+      "kind": "digest",
+      "screen": "walk4-03-home-scrolled",
+      "contextAtLastCall": 4175,
+      "tools": [],
+      "answer": "1. Header: \"Search products\" (Dollar General home screen; the search bar sits at the top, with the page content \"OSIRIS TEST PAGE\" lower down).\n2. Tappable items: Search products, scan barcode, account, Unread/Read stories (P&G Oral Care, $1 off Cottonelle, Poll & Votes, Save with True Living, Laundry Deals), my-dg-plus hero banner, 3 Days of Savings ($1, $2, $3 SALE), Dollar Deals, M-F $5 off $25, OSIRIS TEST PAGE, aaa, and the bottom tabs Home, Deals, myDG® Wallet, List (1 item), Cart.\n3. Active: the Home tab is selected. The \"$1 off Cottonelle\" story is marked as read and seen.",
+      "cost": 0.0097535,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-04-wallet|image",
+      "kind": "image",
+      "screen": "walk4-04-wallet",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. There's no single header. The top card reads \"QA Test User\" (myDG member card), and the main section heading is \"Just For You\".\n2. Order History, Payment Methods, Coupons, Cash Back, Explore Deals, and the bottom tabs Home, Deals, myDG Wallet, List, Cart. There are also search and filter icon buttons, and a Saved Deals / Deals Available banner.\n3. The \"Spend $30, Earn $5\" reward card is marked \"Complete\". The myDG Wallet tab is the active tab.",
+      "cost": 0.0158868,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-04-wallet|digest",
+      "kind": "digest",
+      "screen": "walk4-04-wallet",
+      "contextAtLastCall": 4135,
+      "tools": [],
+      "answer": "1. The screen has no explicit title. The nearest header text is \"myDG® Wallet\", which is the selected bottom tab. The profile area shows \"QA Test User\".\n2. The tappable items are Order History, Payment Methods, Deals Available, Coupons, Cash Back, Explore Deals, the search and filters icons, and the bottom tabs Home, Deals, myDG® Wallet, List and Cart.\n3. The \"REWARD\" card, \"Spend $30, Earn $5\" (Exp. 12/31/26), is shown as Completed.",
+      "cost": 0.0087235,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-05-list|image",
+      "kind": "image",
+      "screen": "walk4-05-list",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) Shopping List\n(2) Home, Deals, myDG Wallet, List, Cart\n(3) The List tab is the active one, highlighted in yellow with a badge of 1. The Diet Coke item's checkbox is unchecked, so no item is marked complete.",
+      "cost": 0.0150068,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-05-list|digest",
+      "kind": "digest",
+      "screen": "walk4-05-list",
+      "contextAtLastCall": 3792,
+      "tools": [],
+      "answer": "1. Shopping List\n2. Home, Deals, myDG® Wallet, List (1 item), Cart, plus Search & add items, scan barcode, question (help), and Estimated total (expand)\n3. Diet Coke Fridge Pack, 12 fl oz - 12 ct ($4.00, Qty 1) is the only item shown, and its checkbox isn't marked checked. The List tab is the active one, with 1 item.",
+      "cost": 0.0069515,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-06-cart|image",
+      "kind": "image",
+      "screen": "walk4-06-cart",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Cart — Total $0.00 (0 items)\n2. Home, Deals, myDG Wallet, List, Cart, plus Start shopping, \"How does delivery work?\", the search icon and the \"Delivering to 643 WASHINGTON ST\" dropdown\n3. Cart is the active tab (bolded). The cart itself is empty.",
+      "cost": 0.015246800000000001,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-06-cart|digest",
+      "kind": "digest",
+      "screen": "walk4-06-cart",
+      "contextAtLastCall": 3614,
+      "tools": [],
+      "answer": "1. Cart (with \"Total $0.00 (0 items)\" beneath it)\n2. btn_search, fulfillment picker (Delivering to 643 Washington St / Change store button), How does delivery work?, Start shopping, Home, Deals, myDG® Wallet, List, Cart\n3. None. The cart is empty, and the Cart tab is the current screen, though the screen doesn't mark it as active.",
+      "cost": 0.0061595,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-07-deals-again|image",
+      "kind": "image",
+      "screen": "walk4-07-deals-again",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Explore Deals\n2. Top tabs: Coupons & Cash Back, Weekly Ads, Rewards (one more is cut off at the edge). Filters: Coupons, Cash Back, plus search and filter icons. Bottom nav: Home, Deals, myDG Wallet, List, Cart.\n3. Deals is the active bottom tab, and Coupons & Cash Back is the active top tab. No coupon card is shown as clipped or complete.",
+      "cost": 0.0156468,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-07-deals-again|digest",
+      "kind": "digest",
+      "screen": "walk4-07-deals-again",
+      "contextAtLastCall": 4651,
+      "tools": [],
+      "answer": "1. Explore Deals\n2. Weekly Ads, Rewards, Rebates, Coupons & Cash Back (tab), Coupons and Cash Back filters, Home, Deals, myDG® Wallet, List, Cart, help, search, filters, add (+) buttons, and the clipped coupons button\n3. The Deals tab is shown as selected, and the clipped coupons button shows 3 clipped. No coupon card is marked as complete or earned.",
+      "cost": 0.0104775,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-08-deals-rewards-end|image",
+      "kind": "image",
+      "screen": "walk4-08-deals-rewards-end",
+      "contextAtLastCall": 5685,
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) Explore Deals\n\n(2) Top tabs: \"& Cash Back\" (cut off), Weekly Ads, Rewards, Rebates. There's also an Activate button, and the bottom bar has Home, Deals, myDG Wallet, List, Cart.\n\n(3) The Rewards tab and the Deals bottom-nav item are active. The \"Activated Rewards (3)\" section shows the Common Good Newman's Own Marinara \"Make 5 Trips to DG\" card, with trips 4 and 5 highlighted.",
+      "cost": 0.0158668,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "id": "walk4-08-deals-rewards-end|digest",
+      "kind": "digest",
+      "screen": "walk4-08-deals-rewards-end",
+      "contextAtLastCall": 3996,
+      "tools": [],
+      "answer": "1. Explore Deals\n2. Help, Coupons & Cash Back, Weekly Ads, Rebates, How to use Rewards, Activate, Home, Deals, myDG® Wallet, List, Cart\n3. \"Make 5 Trips to DG\" (expires 12/31/26) is shown as Complete! with steps 1–5 done.",
+      "cost": 0.0074975,
+      "subtype": "success",
+      "denials": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "walk1-01-deals-rewards-start",
+      "rawChars": 14197,
+      "digestChars": 3008,
+      "digestText": "ui-digest: 70 of 71 elements (system windows left out)\nTextView | Explore Deals | 540,200\nImageView | help_btn | 1017,199 | click\nHorizontalScrollView | tab_layout | 540,320 | scroll\nLinearLayout | Coupons & Cash Back | 254,320\nTextView | Coupons & Cash Back | 254,320\nLinearLayout | Weekly Ads | 601,320 | click\nTextView | Weekly Ads | 600,319\nLinearLayout | Rewards | 871,320 | click\nTextView | Rewards | 870,319\nLinearLayout | Rebates | 1043,320 | click\nTextView | Rebates | 1077,319\nGridView | coupons_section_recycler_view | 540,1300 | scroll\nViewGroup | - | 540,497 | click\nTextView | Green background with yellow CTA | 506,456\nTextView | BBQ Lays - the perfect snack partner for every occasion! | 506,502\nTextView | Sponsored | 968,594\nTextView | Just For You | 172,672\nRecyclerView | jfy_section_recycler_view | 540,832 | scroll\nViewGroup | offer_item_layout | 499,832 | click\nEditText | JUST FOR YOU | 84,845 | click,longclick,edit\nTextView | Dollar General | 548,793\nTextView | Save $7.00 | 548,849\nTextView | Exp. 10/31/26 | 548,900\nImageView | btn_add | 881,845 | click\nView | - | 1489,840 | click\nTextView | REWARD | 1022,840\nTextView | Explore Coupons & Cash Back | 331,1034\nTextView | (368) | 678,1034\nRelativeLayout | search_icon | 100,1122 | click\nRelativeLayout | filters_icon | 239,1122 | click\nRelativeLayout | coupons_filter | 492,1122 | click\nTextView | Coupons | 492,1121\nRelativeLayout | cash_back_filter | 861,1122 | click\nTextView | Cash Back | 861,1121\nFrameLayout | coupon_card_view | 280,1582 | click\nTextView | DIGITAL COUPON | 154,1235\nTextView | View details | 232,1546\nImageView | add_btn | 412,1545 | click\nTextView | Dollar General | 280,1629\nTextView | Save $5.00 | 280,1680\nTextView | on your purchase of $25.00 or more (pre-tax) at Dollar General | 280,1758\nTextView | 10/17/26 | 169,1842\nTextView | DG STORE | 141,1900\nFrameLayout | coupon_card_view | 799,1582 | click\nTextView | CASH BACK | 641,1235\nTextView | Eligible items | 751,1546\nImageView | add_btn | 931,1545 | click\nTextView | Unified API Test Reward MBO_MRO_RETAILER_OFFER | 799,1629\nTextView | Earn $1.00 | 799,1680\nTextView | This is a Simple Buy 1 Offer created by the test rewards endpoint in RIS | 799,1758\nTextView | LIMIT 1 | 641,1842\nTextView | MANUFACTURER | 697,1900\nFrameLayout | coupon_card_view | 280,2109 | click\nTextView | CASH BACK | 122,2029\nFrameLayout | coupon_card_view | 799,2109 | click\nTextView | DIGITAL COUPON | 673,2029\nRelativeLayout | clipped_coupons_fab_layout | 969,2107 | click\nFloatingActionButton | clipped_coupons_fab | 969,2106\nTextView | 3 | 1021,2054\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab, selected | 324,2289 | click\nTextView | Deals | 324,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk1-03-deals-weekly-ads",
+      "rawChars": 2926,
+      "digestChars": 394,
+      "digestText": "ui-digest: 8 of 10 elements (system windows left out)\nLinearLayout | - | 540,1212 | click\nFrameLayout | - | 540,1143 | click\nViewPager | viewpager | 540,1064 | scroll\nTextView | Discover the best deals for your store this week. | 540,1598\nHorizontalScrollView | tab_indicator | 537,1732\nLinearLayout | - | 536,1732 | click\nLinearLayout | - | 575,1732 | click\nTextView | Next | 915,1731 | click"
+    },
+    {
+      "id": "walk2-01-deals-after-back",
+      "rawChars": 7100,
+      "digestChars": 1354,
+      "digestText": "ui-digest: 35 of 36 elements (system windows left out)\nTextView | Explore Deals | 540,200\nImageView | help_btn | 1017,199 | click\nHorizontalScrollView | tab_layout | 540,320 | scroll\nLinearLayout | Coupons & Cash Back | 240,320 | click\nTextView | Coupons & Cash Back | 240,319\nLinearLayout | Weekly Ads | 582,320\nTextView | Weekly Ads | 581,320\nLinearLayout | Rewards | 852,320 | click\nTextView | Rewards | 851,319\nLinearLayout | Rebates | 1033,320 | click\nTextView | Rebates | 1068,319\nView | - | 409,840 | click\nView | Completed | 241,788\nTextView | Complete | 433,789\nTextView | Spend $30, Earn $5 | 304,840\nTextView | Exp. 12/31/26 | 205,892\nViewGroup | kevel_ad_view | 540,476 | click\nTextView | Sponsored | 889,552\nView | - | 540,843 | click\nTextView | Weekly Ad | 219,673\nTextView | Oct 11 - Oct 18th, 2026 | 256,742\nView | - | 540,1369 | click\nTextView | Wireless Deals | 266,1199\nTextView | Sep 22 - Oct 20th, 2026 | 269,1268\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab, selected | 324,2289 | click\nTextView | Deals | 324,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk2-02-deals-rebates",
+      "rawChars": 1181,
+      "digestChars": 54,
+      "digestText": "ui-digest: 0 app elements: the screen exposes no layout (loading, a WebView or a secure window). Wait a few seconds and ask again once; if it stays empty, use a screenshot."
+    },
+    {
+      "id": "walk3-01-start-after-dismiss",
+      "rawChars": 3040,
+      "digestChars": 409,
+      "digestText": "ui-digest: 9 of 11 elements (system windows left out)\nLinearLayout | - | 540,1212 | click\nFrameLayout | - | 540,1144 | click\nViewPager | viewpager | 540,1065 | scroll\nTextView | Connect your PayPal account. | 540,1673\nHorizontalScrollView | tab_indicator | 537,1836\nLinearLayout | - | 517,1836 | click\nLinearLayout | - | 556,1836 | click\nLinearLayout | - | 595,1836 | click\nTextView | Next | 915,1835 | click"
+    },
+    {
+      "id": "walk4-01-deals-rebates-soon",
+      "rawChars": 5470,
+      "digestChars": 968,
+      "digestText": "ui-digest: 23 of 24 elements (system windows left out)\nTextView | Explore Deals | 540,200\nImageView | help_btn | 1017,199 | click\nHorizontalScrollView | tab_layout | 540,320 | scroll\nLinearLayout | Coupons & Cash Back | 114,320 | click\nTextView | Coupons & Cash Back | 98,319\nLinearLayout | Weekly Ads | 363,320 | click\nTextView | Weekly Ads | 362,319\nLinearLayout | Rewards | 633,320 | click\nTextView | Rewards | 632,319\nLinearLayout | Rebates | 903,320\nTextView | Rebates | 903,320\nTextView | Rebates are coming.\nCheck back again soon. | 540,1301\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab, selected | 324,2289 | click\nTextView | Deals | 324,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-02-home",
+      "rawChars": 9682,
+      "digestChars": 2092,
+      "digestText": "ui-digest: 46 of 46 elements (system windows left out)\nImageView | dollar general logo | 74,211\nFrameLayout | search_products_cv | 545,210\nViewGroup | Search edit field | 545,210 | click\nTextView | Search products | 542,210\nImageView | scan barcode | 871,210 | click\nImageView | account | 1003,210 | click\nGridView | home_items_recycler_view | 540,1248 | scroll\nFrameLayout | - | 540,342 | click\nTextView | Delivering to | 249,317\nTextView | 643 WASHINGTON ST | 369,360\nImageView | Change store button | 998,342\nViewGroup | - | 540,566 | click\nRecyclerView | recycler | 540,579 | scroll\nButton | Unread, story 1 of 9. P&G Oral Care. Story is SPONSORED | 145,565\nTextView | SPONSORED | 132,623\nTextView | P&G Oral Care | 132,669\nButton | Read, story 2 of 9. $1 off Cottonelle. Story is SPONSORED and seen | 367,565\nTextView | SPONSORED | 354,623\nTextView | $1 off Cottonelle | 354,669\nButton | Unread, story 3 of 9. Poll & Votes | 589,565\nTextView | Poll & Votes | 576,669\nButton | Unread, story 4 of 9. Save with True Living | 811,579\nTextView | Save with True Living | 798,683\nButton | Unread, story 5 of 9. Laundry Deals | 1001,565\nTextView | Laundry Deals | 1001,669\nRelativeLayout | my-dg-plus-hero-banner-mobile | 540,941 | click\nRecyclerView | carousel_recycler_view | 540,1454 | scroll\nRelativeLayout | 3 Days of Savings ($1, $2, $3 SALE) | 268,1454 | click\nRelativeLayout | Dollar Deals  | 736,1454 | click\nRelativeLayout | M-F $5 off $25 | 1029,1454 | click\nView | scroll_view_pager_left | 223,1770 | click\nView | scroll_view_pager_right | 856,1770 | click\nView | - | 540,1882 | click\nTextView | OSIRIS TEST PAGE | 540,1882\nRelativeLayout | aaa | 540,2053 | click\nLinearLayout | home tab, selected | 108,2289 | click\nTextView | Home | 108,2340\nLinearLayout | Deals tab | 324,2289 | click\nTextView | Deals | 323,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-03-home-scrolled",
+      "rawChars": 9320,
+      "digestChars": 2014,
+      "digestText": "ui-digest: 44 of 44 elements (system windows left out)\nImageView | dollar general logo | 74,211\nFrameLayout | search_products_cv | 545,210\nViewGroup | Search edit field | 545,210 | click\nTextView | Search products | 542,210\nImageView | scan barcode | 871,210 | click\nImageView | account | 1003,210 | click\nGridView | home_items_recycler_view | 540,1248 | scroll\nViewGroup | - | 540,368 | click\nRecyclerView | recycler | 540,368 | scroll\nButton | Unread, story 1 of 9. P&G Oral Care. Story is SPONSORED | 145,354\nTextView | SPONSORED | 132,354\nTextView | P&G Oral Care | 132,400\nButton | Read, story 2 of 9. $1 off Cottonelle. Story is SPONSORED and seen | 367,354\nTextView | SPONSORED | 354,354\nTextView | $1 off Cottonelle | 354,400\nButton | Unread, story 3 of 9. Poll & Votes | 589,354\nTextView | Poll & Votes | 576,400\nButton | Unread, story 4 of 9. Save with True Living | 811,368\nTextView | Save with True Living | 798,414\nButton | Unread, story 5 of 9. Laundry Deals | 1001,354\nTextView | Laundry Deals | 1001,400\nRelativeLayout | my-dg-plus-hero-banner-mobile | 540,672 | click\nRecyclerView | carousel_recycler_view | 540,1185 | scroll\nRelativeLayout | 3 Days of Savings ($1, $2, $3 SALE) | 268,1185 | click\nRelativeLayout | Dollar Deals  | 736,1185 | click\nRelativeLayout | M-F $5 off $25 | 1029,1185 | click\nView | scroll_view_pager_left | 223,1501 | click\nView | scroll_view_pager_right | 856,1501 | click\nView | - | 540,1613 | click\nTextView | OSIRIS TEST PAGE | 540,1613\nRelativeLayout | aaa | 540,1784 | click\nTextView | Text Test Osiris | 178,2000\nViewGroup | - | 540,2153 | click\nLinearLayout | home tab, selected | 108,2289 | click\nTextView | Home | 108,2340\nLinearLayout | Deals tab | 324,2289 | click\nTextView | Deals | 323,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-04-wallet",
+      "rawChars": 9985,
+      "digestChars": 1958,
+      "digestText": "ui-digest: 52 of 52 elements (system windows left out)\nGridView | home_wallet_recycler_view | 540,1180\nView | - | 540,163 | click\nView | - | 540,205 | click\nView | - | 540,247 | click\nView | - | 540,289 | click\nView | - | 540,634 | click\nTextView | QA Test User | 487,420\nTextView | Member since 2026 | 234,536\nTextView | 000 000 0000 | 221,585\nTextView | YTD Savings | 186,815\nTextView | $ | 114,863\nTextView | 28 | 161,863\nTextView | Just For You | 172,1046\nRecyclerView | jfy_section_recycler_view | 540,1203 | scroll\nView | - | 544,1214 | click\nTextView | REWARD | 81,1214\nView | Completed | 380,1162\nTextView | Complete | 572,1163\nTextView | Spend $30, Earn $5 | 443,1214\nTextView | Exp. 12/31/26 | 344,1266\nFrameLayout | order_history_btn | 285,1424 | click\nTextView | Order History | 323,1424\nFrameLayout | payment_methods_btn | 794,1424 | click\nTextView | Payment Methods | 799,1424\nTextView | $ | 264,1553\nTextView | 25 | 302,1553\nTextView | Saved Deals | 291,1599\nViewGroup | deals_available_cl | 789,1571 | click\nTextView | $ | 741,1553\nTextView | 1833 | 800,1553\nTextView | Deals Available | 789,1599\nTextView | Saved Coupons & Cash Back | 317,1718\nTextView | (0) | 628,1718\nRelativeLayout | search_icon | 100,1806 | click\nRelativeLayout | filters_icon | 239,1806 | click\nRelativeLayout | coupons_filter | 492,1806 | click\nTextView | Coupons | 492,1805\nRelativeLayout | cash_back_filter | 861,1806 | click\nTextView | Cash Back | 861,1805\nTextView | You have no Saved Deals yet | 540,1953\nTextView | Explore Deals | 539,2071 | click\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab | 324,2289 | click\nTextView | Deals | 323,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 539,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-05-list",
+      "rawChars": 7009,
+      "digestChars": 1266,
+      "digestText": "ui-digest: 29 of 29 elements (system windows left out)\nView | expanded_details_click_listener_view | 540,145 | click\nTextView | Shopping List | 559,216\nImageView | question | 1006,215 | click\nRecyclerView | shopping_list_recycler_view | 540,1188\nFrameLayout | list_search_card_view | 540,397\nViewGroup | search_view | 490,397 | click\nTextView | Search & add items | 317,397\nImageView | scan barcode | 980,397 | click\nFrameLayout | - | 540,612 | click\nCheckBox | shopping list item | 93,613 | check,click\nTextView | Diet Coke Fridge Pack, 12 fl oz - 12 ct | 591,576\nTextView | $4.00 | 980,565\nTextView | Qty: | 983,615\nTextView | 1 | 1035,615\nTextView | 20 in stock | 955,666\nViewGroup | Estimated total (1 item):$4.27. Currently collapsed. Double tap to expand. | 540,2152 | click\nTextView | Estimated total (1 item): | 589,2152\nTextView | $4.27 | 974,2152\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab | 324,2289 | click\nTextView | Deals | 323,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-06-cart",
+      "rawChars": 5556,
+      "digestChars": 886,
+      "digestText": "ui-digest: 21 of 22 elements (system windows left out)\nTextView | Cart | 540,179\nTextView | Total $0.00 (0 items) | 540,231\nImageView | btn_search | 1016,203 | click\nViewGroup | fulfillment_picker_layout | 540,344 | click\nTextView | Delivering to | 249,318\nTextView | 643 WASHINGTON ST | 369,361\nImageView | Change store button | 998,343\nViewGroup | empty_cart | 540,1313 | click\nTextView | How does delivery work? | 540,1136 | click\nButton | Start shopping | 540,2103 | click\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab | 324,2289 | click\nTextView | Deals | 323,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-07-deals-again",
+      "rawChars": 14188,
+      "digestChars": 2999,
+      "digestText": "ui-digest: 70 of 71 elements (system windows left out)\nTextView | Explore Deals | 540,200\nImageView | help_btn | 1017,199 | click\nHorizontalScrollView | tab_layout | 540,320 | scroll\nLinearLayout | Coupons & Cash Back | 254,320\nTextView | Coupons & Cash Back | 254,320\nLinearLayout | Weekly Ads | 601,320 | click\nTextView | Weekly Ads | 600,319\nLinearLayout | Rewards | 871,320 | click\nTextView | Rewards | 870,319\nLinearLayout | Rebates | 1043,320 | click\nTextView | Rebates | 1077,319\nGridView | coupons_section_recycler_view | 540,1300 | scroll\nViewGroup | - | 540,497 | click\nTextView | Green background with yellow CTA | 506,456\nTextView | BBQ Lays - the perfect snack partner for every occasion! | 506,502\nTextView | Sponsored | 968,594\nTextView | Just For You | 172,672\nRecyclerView | jfy_section_recycler_view | 540,832 | scroll\nViewGroup | offer_item_layout | 499,832 | click\nEditText | JUST FOR YOU | 84,845 | click,longclick,edit\nTextView | Dollar General | 548,793\nTextView | Save $7.00 | 548,849\nTextView | Exp. 10/31/26 | 548,900\nImageView | btn_add | 881,845 | click\nView | - | 1489,840 | click\nTextView | REWARD | 1022,840\nTextView | Explore Coupons & Cash Back | 331,1034\nTextView | (366) | 678,1034\nRelativeLayout | search_icon | 100,1122 | click\nRelativeLayout | filters_icon | 239,1122 | click\nRelativeLayout | coupons_filter | 492,1122 | click\nTextView | Coupons | 492,1121\nRelativeLayout | cash_back_filter | 861,1122 | click\nTextView | Cash Back | 861,1121\nFrameLayout | coupon_card_view | 280,1582 | click\nTextView | DIGITAL COUPON | 154,1235\nTextView | View details | 232,1546\nImageView | add_btn | 412,1545 | click\nTextView | Dollar General | 280,1629\nTextView | Save $5.00 | 280,1680\nTextView | on your purchase of $25.00 or more (pre-tax) at Dollar General | 280,1758\nTextView | 10/17/26 | 169,1842\nTextView | DG STORE | 141,1900\nFrameLayout | coupon_card_view | 799,1582 | click\nTextView | CASH BACK | 641,1235\nTextView | Eligible items | 751,1546\nImageView | add_btn | 931,1545 | click\nTextView | Unified API Test Reward MBO_MRO_OFFER | 799,1629\nTextView | Earn $1.00 | 799,1680\nTextView | This is a Simple Buy 1 Offer created by the test rewards endpoint in RIS | 799,1758\nTextView | LIMIT 1 | 641,1842\nTextView | MANUFACTURER | 697,1900\nFrameLayout | coupon_card_view | 280,2109 | click\nTextView | CASH BACK | 122,2029\nFrameLayout | coupon_card_view | 799,2109 | click\nTextView | DIGITAL COUPON | 673,2029\nRelativeLayout | clipped_coupons_fab_layout | 969,2107 | click\nFloatingActionButton | clipped_coupons_fab | 969,2106\nTextView | 3 | 1021,2054\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab, selected | 324,2289 | click\nTextView | Deals | 324,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    },
+    {
+      "id": "walk4-08-deals-rewards-end",
+      "rawChars": 8126,
+      "digestChars": 1628,
+      "digestText": "ui-digest: 46 of 48 elements (system windows left out)\nTextView | Explore Deals | 540,200\nImageView | help_btn | 1017,199 | click\nHorizontalScrollView | tab_layout | 540,320 | scroll\nLinearLayout | Coupons & Cash Back | 114,320 | click\nTextView | Coupons & Cash Back | 98,319\nLinearLayout | Weekly Ads | 363,320 | click\nTextView | Weekly Ads | 362,319\nLinearLayout | Rewards | 633,320\nTextView | Rewards | 632,320\nLinearLayout | Rebates | 903,320 | click\nTextView | Rebates | 902,319\nTextView | Activated Rewards | 216,589\nTextView | (3) | 430,589\nTextView | How to use Rewards | 880,586 | click\nView | - | 540,706 | click\nTextView | Rewards | 898,715\nView | - | 540,811 | click\nTextView | Rewards | 904,819\nView | - | 540,1180 | click\nTextView | 1 | 133,1288\nTextView | 2 | 217,1288\nTextView | 3 | 301,1288\nTextView | 4 | 385,1288\nTextView | 5 | 469,1288\nTextView | Complete! | 170,1347\nTextView | Rewards | 909,954\nTextView | Make 5 Trips to DG | 370,1226\nTextView | 12/31/26 | 193,1421\nTextView | Available Rewards | 212,1560\nTextView | (4) | 423,1560\nView | - | 540,1890 | click\nView | - | 353,1717 | click\nTextView | Activate | 353,1717\nTextView | Rewards | 909,1717\nTextView | EARN $4 REWARD | 370,2051\nLinearLayout | home tab | 108,2289 | click\nTextView | Home | 107,2340\nLinearLayout | Deals tab, selected | 324,2289 | click\nTextView | Deals | 324,2343\nLinearLayout | nav_bar_wallet_layout | 540,2289 | click\nTextView | myDG® Wallet | 540,2343\nLinearLayout | list tab with 1 item | 755,2289 | click\nTextView | 1 | 788,2245\nTextView | List | 755,2343\nLinearLayout | cart tab | 971,2289 | click\nTextView | Cart | 971,2343"
+    }
+  ]
+}

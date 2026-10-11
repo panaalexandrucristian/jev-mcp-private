@@ -1,0 +1,319 @@
+{
+  "id": "tokens-sonnet",
+  "measuredAt": "2026-10-11T19:12:46.430Z",
+  "note": "context length at the last model call, sonnet, confined sessions, sets pdf+img+ui+base",
+  "results": [
+    {
+      "id": "pdf-read-1",
+      "kind": "C1",
+      "variant": "A: Read PDF",
+      "contextAtLastCall": 14552,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 7432,
+        "cache_read_input_tokens": 7118,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 7432
+        },
+        "output_tokens": 149,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read",
+        "Read"
+      ],
+      "answer": "DSE-47553: On the Android reward details screen, show \"Reward Earned!\" and a full progress indicator once the redemption limit is reached (limit − redeemed − banked ≤ 0), and fix the \"N more times\" message, behind the Rewards Phase 2 flag.\nDSE-47609: Make every Android reward card (wallet, rewards gallery, etc.) use the same progress and \"Reward Earned!\" logic as the reward details screen.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.061779799999999996,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "pdf-script-1",
+      "kind": "C1",
+      "variant": "B: pdf-text",
+      "contextAtLastCall": 10102,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 971,
+        "cache_read_input_tokens": 9129,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 971
+        },
+        "output_tokens": 145,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "answer": "DSE-47553: On the Android reward details screen, mirror the web fix so \"Reward Earned!\" and the \"N more times\" message use the redemption-limit logic (limit minus redeemed minus banked), behind the Rewards Phase 2 flag.\nDSE-47609: Make every other Android place that shows the reward card (wallet, rewards gallery and so on) use the same \"Reward Earned\" and progress logic as the reward details screen.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.0303303,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "pdf-read-2",
+      "kind": "C1",
+      "variant": "A: Read PDF",
+      "contextAtLastCall": 14557,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 7437,
+        "cache_read_input_tokens": 7118,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 7437
+        },
+        "output_tokens": 143,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read",
+        "Read"
+      ],
+      "answer": "DSE-47553: On the Android reward details screen, show \"Reward Earned!\" and a full progress indicator once the user reaches the redemption limit, and compute the \"N more times\" message from rewards still left to earn, all behind the Rewards Phase 2 flag.\nDSE-47609: Make every Android reward card (wallet, rewards gallery and so on) use the same progress and \"Reward Earned!\" logic as the reward details screen.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.0442795,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "pdf-script-2",
+      "kind": "C1",
+      "variant": "B: pdf-text",
+      "contextAtLastCall": 10091,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2890,
+        "cache_read_input_tokens": 7199,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2890
+        },
+        "output_tokens": 152,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "answer": "DSE-47553: Fix the Android reward details screen so \"Reward Earned!\" and the \"N more times\" message follow the redemption limit (limit minus redeemed minus banked), matching the web patch, when the Rewards Phase 2 flag is on.\nDSE-47609: Make every Android screen that shows the reward card (wallet, rewards gallery and others) use the same progress and \"Reward Earned!\" logic as the reward details screen from DSE-47553.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.0270055,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "img-full-1",
+      "kind": "C7",
+      "variant": "A: full PNG",
+      "shot": "s3.png",
+      "contextAtLastCall": 9620,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2492,
+        "cache_read_input_tokens": 7126,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2492
+        },
+        "output_tokens": 61,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Sign in.\n2. Sign in, Create account (a third button is partly cut off by the keyboard, and its label isn't visible)\n3. No, there is no error or red warning text.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.025147799999999998,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "img-small-1",
+      "kind": "C7",
+      "variant": "B: 540px JPEG",
+      "shot": "s3.png",
+      "contextAtLastCall": 8153,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 1023,
+        "cache_read_input_tokens": 7128,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1023
+        },
+        "output_tokens": 68,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read"
+      ],
+      "answer": "(1) \"Sign in.\"\n(2) \"Sign in\", \"Create account\". A third button is partly hidden behind the keyboard, so its label can't be read.\n(3) No. No error or red warning text is shown.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.01939,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "img-full-2",
+      "kind": "C7",
+      "variant": "A: full PNG",
+      "shot": "s9.png",
+      "contextAtLastCall": 9619,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2489,
+        "cache_read_input_tokens": 7128,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2489
+        },
+        "output_tokens": 104,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Explore Deals\n2. Activate (the \"How to use Rewards\" link also appears; the tabs are & Cash Back, Weekly Ads, Rewards, Rebates)\n3. No, no error or red warning text is shown. The only red text is the \"COMMON GOOD\" product label on the sauce jar.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.025574,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "img-small-2",
+      "kind": "C7",
+      "variant": "B: 540px JPEG",
+      "shot": "s9.png",
+      "contextAtLastCall": 8158,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 1026,
+        "cache_read_input_tokens": 7130,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1026
+        },
+        "output_tokens": 131,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Explore Deals\n2. Activate (card button). The tabs are \"& Cash Back\", \"Weekly Ads\", \"Rewards\" and \"Rebates\". The bottom nav has Home, Deals, myDG Wallet, List and Cart. \"How to use Rewards\" is a link.\n3. No. No error or red warning text is shown. The red text is only the \"COMMON GOOD\" product label.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.0200402,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "ui-full",
+      "kind": "C8",
+      "variant": "A: screenshot",
+      "contextAtLastCall": 9627,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2489,
+        "cache_read_input_tokens": 7136,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2489
+        },
+        "output_tokens": 3,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [
+        "Read"
+      ],
+      "answer": "1. Sign in.\n2. Sign in, Create account, Continue as a guest (plus the \"Forgot password?\" link).\n3. The black \"Sign in\" button signs the user in. Its center is about (538, 1170) in the original 1080x2424 image, or about (445, 967) in the displayed 891x2000 image.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.0261068,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "ui-digest",
+      "kind": "C8",
+      "variant": "B: ui-digest text",
+      "contextAtLastCall": 7389,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 3455,
+        "cache_read_input_tokens": 3932,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3455
+        },
+        "output_tokens": 4,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [],
+      "answer": "1. Title: \"Sign in.\"\n2. Buttons: Forgot password?, Sign in, Create account, Continue as a guest\n3. The \"Sign in\" button signs the user in, centered at about 539,1173.",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.014927200000000002,
+      "subtype": "success",
+      "denials": 0
+    },
+    {
+      "id": "baseline",
+      "kind": "base",
+      "variant": "no file",
+      "contextAtLastCall": 7048,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 3114,
+        "cache_read_input_tokens": 3932,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3114
+        },
+        "output_tokens": 4,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [],
+      "answer": "OK",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "cost": 0.0128932,
+      "subtype": "success",
+      "denials": 0
+    }
+  ]
+}

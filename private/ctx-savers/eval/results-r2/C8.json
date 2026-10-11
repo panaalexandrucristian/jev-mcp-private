@@ -1,0 +1,12 @@
+{
+  "id": "C8",
+  "measuredAt": "2026-10-11T20:21:49.865Z",
+  "R": 3370,
+  "O": 593,
+  "reduction": 0.8240356083086053,
+  "appElements": 14,
+  "wanted": 12,
+  "missing": 0,
+  "recall": 1,
+  "output": "ui-digest: 12 of 14 elements (system windows left out)\nView | Sign in. | 539,189\nView | Sign in to access coupons and offers to save money. | 539,313\nView | EMAIL OR PHONE | 539,470\nEditText | user-email | 539,553 | click,edit\nView | PASSWORD | 539,675\nEditText | user-password | 539,755 | password,click,edit\nCheckBox | gigya-checkbox-134169059437444960 | 92,888 | click\nView | Keep me signed in on this device | 549,913\nButton | Forgot password? | 539,1032 | click\nButton | Sign in | 539,1173 | click\nButton | Create account | 539,1342 | click\nButton | Continue as a guest | 539,1489 | click"
+}

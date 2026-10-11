@@ -1,0 +1,30 @@
+{
+  "id": "tokens-baseline",
+  "measuredAt": "2026-10-11T18:51:20.482Z",
+  "note": "context length at the last model call, Haiku, confined sessions",
+  "results": [
+    {
+      "id": "baseline",
+      "kind": "base",
+      "variant": "no file",
+      "contextAtLastCall": 7840,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 3126,
+        "cache_read_input_tokens": 4712,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3126
+        },
+        "output_tokens": 1,
+        "service_tier": "standard",
+        "inference_geo": "global"
+      },
+      "tools": [],
+      "answer": "OK",
+      "cost": 0.0006745200000000001,
+      "subtype": "success",
+      "denials": 0
+    }
+  ]
+}

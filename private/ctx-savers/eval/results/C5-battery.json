@@ -1,0 +1,13 @@
+{
+  "id": "C5-battery",
+  "note": "Haiku battery for the slim SKILL.md. Written by hand from the session folders named below; the battery was stopped after the routing gate failed (stop rule).",
+  "reference": { "R2 routing (find-usages)": "4 of 4 passed (r6rt, c5r2ref x3)", "mean cost of R2 sessions": 0.00692, "sources": ["results-r6rt/r2", "results-c5r2ref/r2_1..3"] },
+  "slim": {
+    "first attempt (plugin folder not readable, harness limit)": "R2 failed: 10 calls, 5 refusals (reference Read refused)",
+    "rerun with the plugin folder readable": "R2 passed 2 of 4: c5rtB r2 failed (skill not started), r2slim #1 passed, #2 passed, #3 failed (skill not started)",
+    "mean cost of the 2 passing R2 sessions": 0.00903,
+    "sources": ["results-c5rt/r2", "results-c5rtB/r2", "results-r2slim/r2_1..3"]
+  },
+  "gateResult": "FAIL: routing R2 2/4 against 4/4 for the reference; find-usages session cost +30% (0.00903 vs 0.00692), limit +10%",
+  "notRun": "R3-R6, probes pB pD pF pP pS and pV on the slim variant (stop rule after the gate failed)"
+}

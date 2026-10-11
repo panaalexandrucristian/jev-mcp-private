@@ -1,0 +1,32 @@
+{
+  "id": "V2",
+  "measuredAt": "2026-10-11T20:23:50.687277+00:00",
+  "claim": "the ui-digest wrong answers come from elements that are in the layout but not visible, and an attribute of the raw layout separates them from the visible ones",
+  "method": "offline, no session: all attributes of the raw `android layout --flat` elements of the 2 wrong screens, then a z-order heuristic (an element whose bounds lie fully inside a LATER element's bounds is covered) run on all 13 recorded layouts",
+  "attributesPresent": [
+    "class",
+    "resource-id",
+    "text",
+    "content-desc",
+    "bounds",
+    "center",
+    "interactions",
+    "state"
+  ],
+  "screens": {
+    "walk2-01-deals-after-back": {
+      "invisible": "5 elements of a stale rewards card (indices 12-16: an unlabeled clickable View with bounds starting at x=-97, Completed, Complete, Spend $30 Earn $5, Exp.)",
+      "heuristicRemoves": "4 (Completed, Complete, Spend $30 Earn $5, Exp.), covered by the later full-width Weekly Ad card; the unlabeled clickable View stays (its bounds exceed the card)",
+      "falsePositives": 0
+    },
+    "walk4-08-deals-rewards-end": {
+      "invisible": "'Complete!' (index 26), a child of the front card like its visible siblings",
+      "heuristicRemoves": "nothing",
+      "separatingAttribute": "none: its keys are class, text, bounds, center only; there is no alpha, visibility or off-screen attribute in this CLI's output"
+    }
+  },
+  "heuristicOnAll13Screens": "flags 4 elements on walk2-01 and 0 on the other 12 screens (so no visible element of this set is removed)",
+  "gate": "FAIL: no attribute removes every invisible element of both screens (screen 2 has none); the limit stays 'needs a screenshot for visual state'",
+  "note": "the occlusion heuristic is a partial fix built on ONE screen: not recommended without more cases",
+  "label": "measured offline on the recorded layouts; which elements are invisible comes from the round 3 judgement and the screenshots (walk4-08 re-read in this check)"
+}

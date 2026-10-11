@@ -1,0 +1,211 @@
+{
+  "id": "C11",
+  "measuredAt": "2026-10-11T20:17:10.208Z",
+  "note": "sonnet, confined, stand-in device, ledger 1.672533 of 10",
+  "records": [
+    {
+      "arm": "A",
+      "n": 1,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "android layout",
+        "adb shell input tap 540 2289; sleep 3; android layout | grep -o '\"text\":\"[^\"]*\"' | head -60"
+      ],
+      "reads": [],
+      "answer": "The completed (earned) reward card in the myDG Wallet tab is \"Spend $30, Earn $5\". It's marked Complete and expires 12/31/26.",
+      "subtype": "success",
+      "cost": 0.060701,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 14131,
+      "durationMs": 10698,
+      "usedUiStep": false,
+      "uiStepCommands": 0,
+      "directLayoutCalls": 2,
+      "shimLayoutReads": 2,
+      "shimTaps": 1,
+      "shimNoops": 0,
+      "screenshotsRead": 0,
+      "finalScreen": "wallet",
+      "answerRight": true
+    },
+    {
+      "arm": "B",
+      "n": 1,
+      "modelCalls": 2,
+      "toolCalls": 1,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash"
+      ],
+      "bashCommands": [
+        "node /private/tmp/c11-bWxDrl/tools/ui-step.mjs --tap \"myDG Wallet\""
+      ],
+      "reads": [],
+      "answer": "The myDG Wallet tab shows the reward card \"Spend $30, Earn $5\" as complete (earned). It's marked \"Completed\" and expires 12/31/26.",
+      "subtype": "success",
+      "cost": 0.0275586,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10138,
+      "durationMs": 6369,
+      "usedUiStep": true,
+      "uiStepCommands": 1,
+      "directLayoutCalls": 0,
+      "shimLayoutReads": 3,
+      "shimTaps": 1,
+      "shimNoops": 0,
+      "screenshotsRead": 0,
+      "finalScreen": "wallet",
+      "answerRight": true
+    },
+    {
+      "arm": "A",
+      "n": 2,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "android layout",
+        "adb shell input tap 540 2289; sleep 3; android layout | grep -o '\"text\":\"[^\"]*\"\\|\"content-desc\":\"[^\"]*\"' | head -80"
+      ],
+      "reads": [],
+      "answer": "The completed (earned) reward card in the myDG Wallet tab is \"Spend $30, Earn $5\". It's marked Complete and expires 12/31/26.",
+      "subtype": "success",
+      "cost": 0.0372465,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 14312,
+      "durationMs": 9027,
+      "usedUiStep": false,
+      "uiStepCommands": 0,
+      "directLayoutCalls": 2,
+      "shimLayoutReads": 2,
+      "shimTaps": 1,
+      "shimNoops": 0,
+      "screenshotsRead": 0,
+      "finalScreen": "wallet",
+      "answerRight": true
+    },
+    {
+      "arm": "B",
+      "n": 2,
+      "modelCalls": 2,
+      "toolCalls": 1,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash"
+      ],
+      "bashCommands": [
+        "node /private/tmp/c11-YVE4dY/tools/ui-step.mjs --tap \"myDG Wallet\" --region bottom"
+      ],
+      "reads": [],
+      "answer": "The completed reward card in the myDG Wallet tab is \"Spend $30, Earn $5\". It's marked Complete and expires 12/31/26.",
+      "subtype": "success",
+      "cost": 0.0275343,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10137,
+      "durationMs": 6226,
+      "usedUiStep": true,
+      "uiStepCommands": 1,
+      "directLayoutCalls": 0,
+      "shimLayoutReads": 3,
+      "shimTaps": 1,
+      "shimNoops": 0,
+      "screenshotsRead": 0,
+      "finalScreen": "wallet",
+      "answerRight": true
+    },
+    {
+      "arm": "A",
+      "n": 3,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "android layout",
+        "adb shell input tap 540 2289; sleep 3; android layout | grep -o '\"\\(text\\|content-desc\\)\":\"[^\"]*\"'"
+      ],
+      "reads": [],
+      "answer": "The completed reward card in the myDG Wallet tab is \"Spend $30, Earn $5\". It's marked Complete and expires 12/31/26.",
+      "subtype": "success",
+      "cost": 0.03712130000000001,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 14313,
+      "durationMs": 9200,
+      "usedUiStep": false,
+      "uiStepCommands": 0,
+      "directLayoutCalls": 2,
+      "shimLayoutReads": 2,
+      "shimTaps": 1,
+      "shimNoops": 0,
+      "screenshotsRead": 0,
+      "finalScreen": "wallet",
+      "answerRight": true
+    },
+    {
+      "arm": "B",
+      "n": 3,
+      "modelCalls": 2,
+      "toolCalls": 1,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash"
+      ],
+      "bashCommands": [
+        "node /private/tmp/c11-v9dvql/tools/ui-step.mjs --tap \"myDG Wallet\" --region bottom"
+      ],
+      "reads": [],
+      "answer": "The completed reward card on the myDG Wallet tab is \"Spend $30, Earn $5\". It's marked Complete and expires 12/31/26.",
+      "subtype": "success",
+      "cost": 0.0274834,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10127,
+      "durationMs": 6172,
+      "usedUiStep": true,
+      "uiStepCommands": 1,
+      "directLayoutCalls": 0,
+      "shimLayoutReads": 3,
+      "shimTaps": 1,
+      "shimNoops": 0,
+      "screenshotsRead": 0,
+      "finalScreen": "wallet",
+      "answerRight": true
+    }
+  ],
+  "gate": {
+    "armBUsesUiStepIn": "3 of 3 (gate >= 2)",
+    "armAUsesUiStepIn": "0 of 3 (gate <= 1, trivial: arm A is not told about ui-step)",
+    "armBAnswersRight": "3 of 3",
+    "armAAnswersRight": "3 of 3"
+  },
+  "totals": {
+    "A": {
+      "modelCalls": 9,
+      "toolCalls": 6,
+      "cost": 0.1350688
+    },
+    "B": {
+      "modelCalls": 6,
+      "toolCalls": 3,
+      "cost": 0.0825763
+    }
+  }
+}

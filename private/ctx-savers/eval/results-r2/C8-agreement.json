@@ -1,0 +1,7 @@
+{
+  "id": "C8-agreement",
+  "judgedBy": "the assistant, reading the two answers (Sonnet, ui-full vs ui-digest)",
+  "agreed": 3,
+  "note": "title identical (Sign in.); button set identical (Sign in, Create account, Continue as a guest, Forgot password?); sign-in button and centre: screenshot about (538,1170) in the original 1080x2424 image, digest 539,1173 (exact from layout)",
+  "limit": "one screen, a WebView login; the screenshot answer was also correct, so this does not show the digest is better at reading, only cheaper"
+}

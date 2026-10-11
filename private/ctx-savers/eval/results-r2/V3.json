@@ -1,0 +1,20 @@
+{
+  "id": "V3",
+  "measuredAt": "2026-10-11T20:23:50.687277+00:00",
+  "claim": "the tests, the gate tables and the results files still reproduce the stored numbers",
+  "tests": {
+    "command": "RESULTS_SUBDIR=results-r2 node --test test/*.test.mjs",
+    "total": 74,
+    "pass": 73,
+    "fail": 1,
+    "failure": "replay of the two real PDF Reads: cannot read ~/Downloads/[#DSE-47553]...pdf: Operation not permitted (this session cannot even `ls ~/Downloads`; an environment limit, not a result); C1.json was not overwritten"
+  },
+  "tables": "node eval/run-all-2.mjs and run-all-3.mjs print again: pdf-text 7,507 -> 3,049 (-59.4%), img-shrink 2,572 -> 1,108 (-56.9%), ui-digest 33,709 vs 10,587 tokens, median 19.1%, agreement 10 of 13 (76.9%), search-digest 8,984 -> 2,641 (-70.6%), 77 of 77, diff-map f*=0.34, md-outline net -412 chars and 839 of 27,298, duplicate guard 0 of 294,265 chars, multi-target 7 of 13 (53.8%), slim SKILL.md 4,150 chars with routing 2/4 vs 4/4 (round-1 file, not repeated)",
+  "changedByRerun": {
+    "C4b": "later reads 24 -> 30 (transcript grew)",
+    "C6": "active chain 106 -> 112 results, 286,696 -> 294,265 chars, share of all branches 3.63% -> 3.58%",
+    "C3": "two lines in a different position; same 77 hits in 20 files (the replay runs rg on the live project)"
+  },
+  "gate": "PASS except one test that cannot run here; transcript-dependent numbers only grew",
+  "note": "model-session numbers (tokens-sonnet, screens-*, V1, C11, C12) are stored files, not recomputed by the tests; pdf-text numbers come from the stored C1/tokens files because the PDF replay is blocked here; a copy of results-r2 before the rerun is in the session scratchpad"
+}

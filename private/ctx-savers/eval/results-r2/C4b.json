@@ -1,0 +1,72 @@
+{
+  "id": "C4b",
+  "measuredAt": "2026-10-11T20:21:49.778Z",
+  "R": 27298,
+  "O": 839,
+  "reduction": 0.969265147629863,
+  "sections": 5,
+  "avgSectionChars": 5436,
+  "breakEvenSectionsWorstCase": 4,
+  "sectionsWithReappearingNames": 5,
+  "usedChars": 27178,
+  "netIfOnlyThoseRead": -719,
+  "later": 30,
+  "used": [
+    {
+      "title": "Jev tool contracts (exact shapes; do not stretch them)",
+      "chars": 4080,
+      "count": 4,
+      "reappearing": [
+        "jevref.py",
+        "UNRESOLVED",
+        "advice.py",
+        "coverage.json"
+      ]
+    },
+    {
+      "title": "Mandatory audit (full-report review; a PASS needs it)",
+      "chars": 8804,
+      "count": 9,
+      "reappearing": [
+        "audit.py",
+        "versions.py",
+        "schema.json",
+        "COMPLETE",
+        "UNRESOLVED"
+      ]
+    },
+    {
+      "title": "Retry advice",
+      "chars": 3822,
+      "count": 3,
+      "reappearing": [
+        "advice.py",
+        "UNRESOLVED",
+        "report.py"
+      ]
+    },
+    {
+      "title": "Re-verification evidence",
+      "chars": 6697,
+      "count": 4,
+      "reappearing": [
+        "advice.py",
+        "evidence.py",
+        "Romanian",
+        "UNRESOLVED"
+      ]
+    },
+    {
+      "title": "Engine: txdiff — events, epochs, states",
+      "chars": 3775,
+      "count": 4,
+      "reappearing": [
+        "versions.py",
+        "UNRESOLVED",
+        "ABSENCE",
+        "OpenCode"
+      ]
+    }
+  ],
+  "output": "md-outline: jev-and-audit.md 42 lines, 27178 chars\n   1-9    ## Jev tool contracts (exact shapes; do not stretch them)  (9 lines, 4080 chars)  | - `mcp__jev__jev_verify` `{\"claims\": [\"...\"], \"evidence\": [{\"id\": \"chunk-0002\", \n  10-19   ## Mandatory audit (full-report review; a PASS needs it)  (10 lines, 8804 chars)  | ONE audit (`scripts/audit.py`) judges every status: `report.write_report` (the r\n  20-22   ## Retry advice  (3 lines, 3822 chars)  | Before the single re-verification of a `jev_verify`/`jev_gate` claim that did no\n  23-35   ## Re-verification evidence  (13 lines, 6697 chars)  | A check that did not pass may be re-verified **once** (`per_check_only`: one re-\n  36-42   ## Engine: txdiff — events, epochs, states  (7 lines, 3775 chars)  | 1. **Event register**: walk every chunk (prefix of the version) and record event"
+}

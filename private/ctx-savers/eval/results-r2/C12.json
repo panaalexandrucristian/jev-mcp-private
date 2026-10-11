@@ -1,0 +1,252 @@
+{
+  "id": "C12",
+  "measuredAt": "2026-10-11T20:18:45.000Z",
+  "note": "sonnet, confined, 3 pairs, ledger 1.852476 of 10",
+  "records": [
+    {
+      "arm": "A",
+      "n": 1,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "cd /private/tmp/c12-EIWFyS/project 2>/dev/null || cd project; pwd; find . -name '*.mjs' -not -path '*/node_modules/*' | wc -l; find . -name '*.mjs' | wc -l; find . -name ui-digest.mjs -exec wc -l {} \\;; grep -rn \"shrink\" --include=*.mjs . | grep -v node_modules | grep -E \"function +shrink|shrink *=\" ; grep -n \"exit\" $(find . -name ui-step.mjs)",
+        "cd /private/tmp/c12-EIWFyS/project; grep -rnE \"function +shrink|shrink *=\" --include='*.mjs' . ; grep -n \"Stop(\" ui-step.mjs | head -20"
+      ],
+      "reads": [],
+      "answer": "1. 38\n2. img-shrink.mjs, line 14\n3. 3\n4. 31",
+      "subtype": "success",
+      "cost": 0.0465052,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10223,
+      "durationMs": 6130,
+      "expected": {
+        "lines": 38,
+        "shrink": "14",
+        "exit": "3",
+        "mjs": 31
+      },
+      "judged": {
+        "q1": true,
+        "q2": true,
+        "q3": true,
+        "q4": true
+      },
+      "allRight": true
+    },
+    {
+      "arm": "B",
+      "n": 1,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "cd project 2>/dev/null || cd PROJECT; f=$(find . -name ui-digest.mjs -not -path '*/node_modules/*'); echo \"$f\"; wc -l $f; grep -rnE \"function shrink|shrink *=\" . --include=*.mjs --exclude-dir=node_modules; grep -nE \"exit\\(|exitCode\" $(find . -name ui-step.mjs -not -path '*/node_modules/*'); find . -name '*.mjs' | wc -l; find . -name '*.mjs' -path '*node_modules*' | wc -l",
+        "grep -rnE \"function shrink|shrink *=\" . --include='*.mjs'; grep -n \"Stop\" ui-step.mjs | head -20"
+      ],
+      "reads": [],
+      "answer": "1. 38\n2. img-shrink.mjs, line 14\n3. 3\n4. 31",
+      "subtype": "success",
+      "cost": 0.0261379,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10420,
+      "durationMs": 6398,
+      "expected": {
+        "lines": 38,
+        "shrink": "14",
+        "exit": "3",
+        "mjs": 31
+      },
+      "judged": {
+        "q1": true,
+        "q2": true,
+        "q3": true,
+        "q4": true
+      },
+      "allRight": true
+    },
+    {
+      "arm": "A",
+      "n": 2,
+      "modelCalls": 3,
+      "toolCalls": 3,
+      "maxToolsInOneTurn": 2,
+      "tools": [
+        "Bash",
+        "Grep",
+        "Grep"
+      ],
+      "bashCommands": [
+        "cd /private/tmp/c12-CdXAiX/project && wc -l $(find . -name ui-digest.mjs -not -path '*/node_modules/*'); grep -rnE \"function\\s+shrink|shrink\\s*=\" . --include=*.mjs --include=*.js; find . -name ui-step.mjs; find . -name '*.mjs' | wc -l; find . -name '*.mjs' -path '*node_modules*' | wc -l"
+      ],
+      "reads": [],
+      "answer": "1. 38\n2. img-shrink.mjs, line 14\n3. 3\n4. 31",
+      "subtype": "success",
+      "cost": 0.0303179,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 11770,
+      "durationMs": 7163,
+      "expected": {
+        "lines": 38,
+        "shrink": "14",
+        "exit": "3",
+        "mjs": 31
+      },
+      "judged": {
+        "q1": true,
+        "q2": true,
+        "q3": true,
+        "q4": true
+      },
+      "allRight": true
+    },
+    {
+      "arm": "B",
+      "n": 2,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "cd project; wc -l $(find . -name ui-digest.mjs); grep -rn \"function shrink\\|shrink *=\" . --include=*.mjs; grep -n \"exit\" $(find . -name ui-step.mjs); find . -name \"*.mjs\" | wc -l",
+        "grep -rn \"function shrink\\|shrink *= \" . --include='*.mjs'; grep -n \"Stop\" ui-step.mjs | head -20"
+      ],
+      "reads": [],
+      "answer": "1. 38\n2. img-shrink.mjs, line 14\n3. Exit code 3\n4. 31",
+      "subtype": "success",
+      "cost": 0.021295599999999998,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10254,
+      "durationMs": 5979,
+      "expected": {
+        "lines": 38,
+        "shrink": "14",
+        "exit": "3",
+        "mjs": 31
+      },
+      "judged": {
+        "q1": true,
+        "q2": true,
+        "q3": true,
+        "q4": true
+      },
+      "allRight": true
+    },
+    {
+      "arm": "A",
+      "n": 3,
+      "modelCalls": 3,
+      "toolCalls": 3,
+      "maxToolsInOneTurn": 2,
+      "tools": [
+        "Bash",
+        "Grep",
+        "Bash"
+      ],
+      "bashCommands": [
+        "cd /private/tmp/c12-9etkfl/project && wc -l $(find . -name ui-digest.mjs) ; grep -rn \"function shrink\\|shrink *=\" --include=*.mjs . ; find . -name \"*.mjs\" | wc -l; grep -n \"exit\" $(find . -name ui-step.mjs)",
+        "grep -n \"Stop\" ui-step.mjs | head -30"
+      ],
+      "reads": [],
+      "answer": "1. 38\n2. img-shrink.mjs, line 14\n3. 3\n4. 31",
+      "subtype": "success",
+      "cost": 0.02913,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 11895,
+      "durationMs": 6123,
+      "expected": {
+        "lines": 38,
+        "shrink": "14",
+        "exit": "3",
+        "mjs": 31
+      },
+      "judged": {
+        "q1": true,
+        "q2": true,
+        "q3": true,
+        "q4": true
+      },
+      "allRight": true
+    },
+    {
+      "arm": "B",
+      "n": 3,
+      "modelCalls": 3,
+      "toolCalls": 2,
+      "maxToolsInOneTurn": 1,
+      "tools": [
+        "Bash",
+        "Bash"
+      ],
+      "bashCommands": [
+        "cd project; wc -l $(find . -name ui-digest.mjs); grep -rn \"function shrink\\|shrink *=\" . --include=*.mjs; find . -name '*.mjs' | wc -l; grep -n \"exit\" $(find . -name ui-step.mjs)",
+        "grep -rn \"function shrink\\|shrink *=\" . --include='*.mjs'; grep -n \"Stop(\" ui-step.mjs | head -20"
+      ],
+      "reads": [],
+      "answer": "1. 38\n2. img-shrink.mjs, line 14\n3. 3\n4. 31",
+      "subtype": "success",
+      "cost": 0.0209137,
+      "denials": 0,
+      "toolErrors": 0,
+      "contextAtLastCall": 10162,
+      "durationMs": 6124,
+      "expected": {
+        "lines": 38,
+        "shrink": "14",
+        "exit": "3",
+        "mjs": 31
+      },
+      "judged": {
+        "q1": true,
+        "q2": true,
+        "q3": true,
+        "q4": true
+      },
+      "allRight": true
+    }
+  ],
+  "gate": {
+    "pairs": [
+      {
+        "n": 1,
+        "aCalls": 3,
+        "bCalls": 3,
+        "saved": 0,
+        "bothRight": true
+      },
+      {
+        "n": 2,
+        "aCalls": 3,
+        "bCalls": 3,
+        "saved": 0,
+        "bothRight": true
+      },
+      {
+        "n": 3,
+        "aCalls": 3,
+        "bCalls": 3,
+        "saved": 0,
+        "bothRight": true
+      }
+    ],
+    "pairsWithAtLeast2FewerCallsAndSameRightAnswer": "0 of 3 (gate >= 2)",
+    "meanModelCallsA": 3,
+    "floorNote": "arm A averages 3 calls or fewer: no room to save 2 calls"
+  }
+}

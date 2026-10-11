@@ -1,0 +1,123 @@
+{
+  "id": "V1",
+  "measuredAt": "2026-10-11T20:13:31.240614Z",
+  "claim": "a 540 px JPEG (quality 70) of a screen is enough to confirm a visual state",
+  "judgedBy": "the assistant, reading the stored full-size answer and the shrunk answer of each screen (same method as round 3); no independent ground truth beyond the full-size answers",
+  "screens": [
+    {
+      "id": "walk1-01-deals-rewards-start",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same title, tabs, active state; shrunk adds search/filter icons"
+    },
+    {
+      "id": "walk1-03-deals-weekly-ads",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same overlay + tabs + bottom bar; shrunk also names the active dot of the popup pager"
+    },
+    {
+      "id": "walk2-01-deals-after-back",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same; shrunk adds the help icon"
+    },
+    {
+      "id": "walk2-02-deals-rebates",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same (verification screen)"
+    },
+    {
+      "id": "walk3-01-start-after-dismiss",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same dialog, tabs, active tab and dot"
+    },
+    {
+      "id": "walk4-01-deals-rebates-soon",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same"
+    },
+    {
+      "id": "walk4-02-home",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same title (none), bottom tabs, Home active; shrunk omits the OSIRIS button, adds the List badge"
+    },
+    {
+      "id": "walk4-03-home-scrolled",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same"
+    },
+    {
+      "id": "walk4-04-wallet",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same: 'Spend $30, Earn $5' marked Complete, myDG Wallet active"
+    },
+    {
+      "id": "walk4-05-list",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same: List active, Diet Coke unchecked"
+    },
+    {
+      "id": "walk4-06-cart",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same: Cart active (bold), empty"
+    },
+    {
+      "id": "walk4-07-deals-again",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same"
+    },
+    {
+      "id": "walk4-08-deals-rewards-end",
+      "agreed": 3,
+      "q3FullRight": true,
+      "q3ShrunkSame": true,
+      "note": "same: Rewards tab active, Marinara card with trips 4 and 5 highlighted"
+    }
+  ],
+  "agreedAtLeast2of3": 13,
+  "screens_total": 13,
+  "shareAgreed": 1.0,
+  "q3_regressions": 0,
+  "tokens": {
+    "baselineContext": 3092,
+    "fullContextAtLastCall": 5685,
+    "shrunkContextAtLastCall": 4220,
+    "incrementFull": 2593,
+    "incrementShrunk": 1128,
+    "incrementSavedPct": 56.5,
+    "label": "measured (context length at the last model call, Sonnet 5.5, same on all 13 screens)"
+  },
+  "cost_usd": {
+    "full13": 0.2014184,
+    "shrunk13": 0.1262284,
+    "label": "measured"
+  },
+  "gate": {
+    "agreement>=75%": "pass (13 of 13)",
+    "noQ3Regression": "pass (0)",
+    "verdict": "V1 holds on this set"
+  },
+  "limits": "one app, one account, 13 screens; shrunk and full-size answers come from the same model, so a misreading shared by both is not caught; agreement judged by the assistant."
+}

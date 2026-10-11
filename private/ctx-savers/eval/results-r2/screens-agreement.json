@@ -1,0 +1,21 @@
+{
+  "id": "screens-agreement",
+  "judgedBy": "the assistant, reading the image answer and the digest answer of each screen; ground truth for the disputed ones from the screenshots (read by the assistant) and the raw layout",
+  "screens": [
+    { "id": "walk1-01-deals-rewards-start", "agreed": 3, "note": "same title and state; digest listed more (Rebates, offers) because the image cut the last tab" },
+    { "id": "walk1-03-deals-weekly-ads", "agreed": 1, "note": "an intro pager window covers the screen: the layout has only the overlay (Next, dots); the image shows Explore Deals and the tabs behind it. Only Q3 (nothing complete) agrees" },
+    { "id": "walk2-01-deals-after-back", "agreed": 2, "note": "Q3 WRONG in the digest answer ('Spend $30, Earn $5 is Complete'): those elements are in the layout with on-screen bounds but are not visible in the screenshot (Weekly Ads page shows Weekly Ad / Wireless Deals)" },
+    { "id": "walk2-02-deals-rebates", "agreed": 1, "note": "layout was empty during the screen transition (verification screen): the digest said so and asked for a screenshot (the intended fallback); the image answered everything" },
+    { "id": "walk3-01-start-after-dismiss", "agreed": 1, "note": "intro pager over Rebates (Connect your PayPal account): overlay only in the layout, background tabs only in the image" },
+    { "id": "walk4-01-deals-rebates-soon", "agreed": 3, "note": "same" },
+    { "id": "walk4-02-home", "agreed": 3, "note": "same title (none, search field), same bottom tabs, same active tab; different but overlapping tappable lists" },
+    { "id": "walk4-03-home-scrolled", "agreed": 3, "note": "same as the unscrolled home" },
+    { "id": "walk4-04-wallet", "agreed": 3, "note": "same reward card marked complete, same buttons" },
+    { "id": "walk4-05-list", "agreed": 3, "note": "same item, same unchecked state, List tab active" },
+    { "id": "walk4-06-cart", "agreed": 2, "note": "Q3: the image says the Cart tab is active (bold); the layout exposes no selected state for it ('screen does not mark it as active')" },
+    { "id": "walk4-07-deals-again", "agreed": 3, "note": "same as the first Deals screen" },
+    { "id": "walk4-08-deals-rewards-end", "agreed": 2, "note": "Q3 WRONG in the digest answer ('Make 5 Trips to DG is Complete!'): the Complete! element belongs to a card layer that is not visible; the screenshot shows the front card with steps 1-5 and no Complete! text" }
+  ],
+  "wrongAnswersFromDigest": 2,
+  "wrongAnswersFromImage": 0
+}

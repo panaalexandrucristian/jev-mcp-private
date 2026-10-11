@@ -1,0 +1,33 @@
+{
+  "id": "C1",
+  "measuredAt": "2026-10-11T19:13:28.680Z",
+  "R": 447051,
+  "O": 6038,
+  "reduction": 0.9864937110083637,
+  "rows": [
+    {
+      "file": "[#DSE-47553] Android - Fix the logic for the redem",
+      "storedChars": 244160,
+      "outputChars": 4225,
+      "images": 1,
+      "pagesFlagged": 1
+    },
+    {
+      "file": "[#DSE-47609] [Android] Reward card_ use the same _",
+      "storedChars": 202891,
+      "outputChars": 1813,
+      "images": 1,
+      "pagesFlagged": 1
+    }
+  ],
+  "ownExtractionChars": 5910,
+  "retention": {
+    "aInB": 0.9702602230483272,
+    "bInA": 0.9595588235294118
+  },
+  "retentionContent": {
+    "aInB": 0.9922480620155039,
+    "bInA": 1
+  },
+  "dependency": "python3 + pypdf (or PyMuPDF); neither is shipped with the plugin"
+}

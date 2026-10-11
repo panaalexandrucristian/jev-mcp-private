@@ -1,0 +1,82 @@
+{
+  "id": "C4",
+  "measuredAt": "2026-10-11T19:01:04.059Z",
+  "R": 12243,
+  "O": 1216,
+  "reduction": 0.9006779384137875,
+  "sections": 7,
+  "avgSectionChars": 1634,
+  "breakEvenSectionsWorstCase": 5,
+  "sectionsWithReappearingNames": 6,
+  "usedChars": 11199,
+  "netIfOnlyThoseRead": -172,
+  "used": [
+    {
+      "title": "Handoff - rewards status line (DSE-47545), written 2026-10-09",
+      "chars": 240,
+      "reappearing": [],
+      "count": 0
+    },
+    {
+      "title": "1. What was delivered (done)",
+      "chars": 2530,
+      "reappearing": [
+        "Android",
+        "MultiRedeemProgressRules",
+        "RewardDisplayRules",
+        "MultiRedeemProgressCard.kt"
+      ],
+      "count": 4
+    },
+    {
+      "title": "2. Verification evidence (kept for the next bug)",
+      "chars": 2713,
+      "reappearing": [
+        "MultiRedeemProgressRulesTest",
+        "Progress",
+        "Rewards",
+        "Android",
+        "Downloads"
+      ],
+      "count": 5
+    },
+    {
+      "title": "3. Rewards code map (for the next bug)",
+      "chars": 1794,
+      "reappearing": [
+        "Rewards",
+        "Android",
+        "RewardDisplayRules.kt",
+        "MultiRedeemProgressCard.kt",
+        "GetRewardsCardsUseCase.kt",
+        "DealDetailsAdapter.kt"
+      ],
+      "count": 6
+    },
+    {
+      "title": "4. Environment procedures (learned the hard way)",
+      "chars": 2373,
+      "reappearing": [
+        "StudioProjects"
+      ],
+      "count": 1
+    },
+    {
+      "title": "5. Session modes and user preferences",
+      "chars": 703,
+      "reappearing": [
+        "Session"
+      ],
+      "count": 1
+    },
+    {
+      "title": "6. What is still running or open",
+      "chars": 1086,
+      "reappearing": [
+        "Android"
+      ],
+      "count": 1
+    }
+  ],
+  "output": "md-outline: handoff-2026-10-09-rewards-dse-47545.md 60 lines, 11828 chars, front matter lines 1-9\n  11-14   # Handoff - rewards status line (DSE-47545), written 2026-10-09  (4 lines, 240 chars)  | Next session: the user wants to fix **another bug in rewards**. They will descri\n  15-25   ## 1. What was delivered (done)  (11 lines, 2530 chars)  | - Bug: on the Android reward detail progress card, `MultiRedeemProgressRules.sta\n  26-34   ## 2. Verification evidence (kept for the next bug)  (9 lines, 2713 chars)  | - Test command that works: `./gradlew :app:testQaNonBetaDebugUnitTest --tests '*\n  35-43   ## 3. Rewards code map (for the next bug)  (9 lines, 1794 chars)  | - Android (package `dgapp2.dollargeneral.com.dgapp2_android`):\n  44-51   ## 4. Environment procedures (learned the hard way)  (8 lines, 2373 chars)  | - VPNs conflict: US VPN is needed for the emulator/QA backend and for `qa.dollar\n  52-55   ## 5. Session modes and user preferences  (4 lines, 703 chars)  | - User speaks Romanian, wants very short plain updates, one question at a time (\n  56-60   ## 6. What is still running or open  (5 lines, 1086 chars)  | - UPDATE after the report was written: at the user's request (2026-10-09 ~11:10)"
+}

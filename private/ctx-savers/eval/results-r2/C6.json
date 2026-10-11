@@ -1,0 +1,13 @@
+{
+  "id": "C6",
+  "measuredAt": "2026-10-11T20:21:49.718Z",
+  "R": 294265,
+  "O": 294265,
+  "redundantActive": 0,
+  "shareActive": 0,
+  "redundantAllBranches": 19849,
+  "shareAllBranches": 0.035773890412835276,
+  "repeatsActive": [],
+  "activeResults": 112,
+  "abandonedMessages": 152
+}

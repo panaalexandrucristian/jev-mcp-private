@@ -1,0 +1,112 @@
+{
+  "id": "C9",
+  "measuredAt": "2026-10-11T19:12:08.498Z",
+  "projectCodeLookupSections": 13,
+  "inScope": 7,
+  "outOfScope": 6,
+  "share": 0.5384615384615384,
+  "gate": 0.7,
+  "builtPrototype": false,
+  "reason": "coverage below the 70% gate fixed in EVAL-RULES-2.md",
+  "classifiedBy": "the assistant (judgement, listed row by row)",
+  "rows": [
+    {
+      "section": 4,
+      "ts": "18:33:30",
+      "what": "names reward.currentStep|getRewardStatus in one file",
+      "scope": "out",
+      "why": "several names in a single file"
+    },
+    {
+      "section": 5,
+      "ts": "18:44:32",
+      "what": "callers of RewardCardUI(",
+      "scope": "in",
+      "why": "users of a named top-level function"
+    },
+    {
+      "section": 6,
+      "ts": "18:44:32",
+      "what": "animatedProgress|topSectionAlpha in RewardCardItem.kt",
+      "scope": "out",
+      "why": "local names in a single file"
+    },
+    {
+      "section": 7,
+      "ts": "18:44:32",
+      "what": "callers of cardProgress(",
+      "scope": "in",
+      "why": "users of a named function"
+    },
+    {
+      "section": 8,
+      "ts": "18:44:48",
+      "what": "def of fun isMultiRedeemEnabled in UserSessionManager.kt (-A6)",
+      "scope": "in",
+      "why": "definition of a named function (find-def)"
+    },
+    {
+      "section": 9,
+      "ts": "18:44:48",
+      "what": "constructions of RewardCardItemModel(",
+      "scope": "in",
+      "why": "users of a named class"
+    },
+    {
+      "section": 10,
+      "ts": "18:44:48",
+      "what": "isMultiRedeemEnabled|RewardCardDetailsHeaderViewHolder in DealDetailsAdapter.kt",
+      "scope": "out",
+      "why": "several names in a single file"
+    },
+    {
+      "section": 13,
+      "ts": "18:44:49",
+      "what": "includeCurrentSteps|logRewardsListView|... in AdobeLoggingUtils.kt",
+      "scope": "out",
+      "why": "several names in a single file"
+    },
+    {
+      "section": 15,
+      "ts": "18:45:18",
+      "what": "who calls logRewardsListingDisplayedEvent|getRewardsDetailsString",
+      "scope": "in",
+      "why": "users of named members (find-usages)"
+    },
+    {
+      "section": 16,
+      "ts": "18:45:18",
+      "what": "constructions of DealDetailsAdapter(",
+      "scope": "in",
+      "why": "users of a named class"
+    },
+    {
+      "section": 17,
+      "ts": "18:45:18",
+      "what": "fun getInstance in FirebaseConfigUtils.kt (-B2 -A12)",
+      "scope": "in",
+      "why": "definition of a named function (find-def)"
+    },
+    {
+      "section": 19,
+      "ts": "18:46:58",
+      "what": "TrackerType.DOLLAR in RewardCardItem.kt",
+      "scope": "out",
+      "why": "literal/enum text in a single file"
+    },
+    {
+      "section": 20,
+      "ts": "18:46:58",
+      "what": "import lines of Preview in RewardCardItem.kt",
+      "scope": "out",
+      "why": "import text"
+    }
+  ],
+  "notCounted": [
+    "git ls-files discovery 18:31:51",
+    "review script 18:32:16",
+    "status 18:33:30",
+    "gradle 18:47:21",
+    "handoff-verify checks 19:10:22 and 19:11:39 (not project code)"
+  ]
+}
