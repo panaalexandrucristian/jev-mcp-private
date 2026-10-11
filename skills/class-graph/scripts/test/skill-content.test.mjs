@@ -56,6 +56,8 @@ describe("SKILL.md", () => {
     assert.match(skillText, /rg -n -g '\*\.kt' 'fun \.\*\\b<name>\\\(' <project> \| head -n 80/);
     assert.match(skillText, /`\| tail -n \+81 \| head -n 80` and `\| tail -n \+161 \| head -n 80` \(3 pages at most/);
     assert.match(skillText, /A bare name needs no search first: run class-graph with it straight away/);
+    assert.match(skillText, /A bare `\/jev:class-graph` \(nothing after the command\) switches the skill on for the session/);
+    assert.match(skillText, /An explicit `\/jev:class-graph` request outside this scope: run nothing and ask/);
     for (const rule of ["- Exit 1:", "- Exit 2:", "label the range provisional", "Named functions only", "A scan, not a Kotlin parser"]) assert.ok(skillText.includes(rule), rule);
   });
 
