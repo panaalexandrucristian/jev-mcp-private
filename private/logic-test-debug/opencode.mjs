@@ -6,7 +6,8 @@
 // Checked on OpenCode 2.0.22 against a stand-in provider (eval/opencode/): the prompt hook payload is {sessionID, messageID,
 // prompt: {text, files, agents, skills}, ...}, the context hook gets {sessionID, system, ...} and takes {type:"text", text} objects
 // in `system` (a plain string there ends the session), the skill is listed and loadable, the directive reaches the model in the
-// first request after a code prompt only. NOT checked: a real model, the terminal UI, other versions.
+// first request after a code prompt only (0.10.3; since 0.10.4 in every request until the next prompt). NOT checked: the terminal UI,
+// other versions.
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { classifyCodePrompt, logicEnabled, LOGIC_DIRECTIVE, MAX_PROMPT_BYTES } from "./check.mjs";
@@ -161,8 +162,10 @@ export async function setupLogicTestDebug(ctx, env = process.env, options = {}) 
             diagnose("delivery");
             return;
           }
+          // Every model request of the turn gets the directive (a turn has several: after each tool call the system prompt is
+          // built again and OpenCode keeps no trace of what a hook added). It stays until the next prompt of the session,
+          // which clears or renews it.
           input.system.push({ type: "text", text: LOGIC_DIRECTIVE });
-          pending.delete(sessionID);
         } catch {
           pending.clear();
           diagnose("delivery");

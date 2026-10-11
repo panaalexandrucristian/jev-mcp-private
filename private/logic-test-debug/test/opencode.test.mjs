@@ -120,14 +120,22 @@ describe("hook capabilities degrade independently", () => {
 });
 
 describe("directive delivery", () => {
-  it("delivers once per code prompt cycle and re-emits on a later prompt", async () => {
+  it("delivers in every model request of the turn and renews on a later code prompt", async () => {
     const fake = fakeCtx();
     await setup(fake);
     fake.registered.prompt({ sessionID: "s1", prompt: CODE });
-    assert.deepEqual(deliver(fake, "s1"), [{ type: "text", text: LOGIC_DIRECTIVE }]);
-    assert.deepEqual(deliver(fake, "s1"), [], "consumed");
+    for (let step = 0; step < 4; step += 1) assert.deepEqual(deliver(fake, "s1"), [{ type: "text", text: LOGIC_DIRECTIVE }], `request ${step + 1} of the turn`);
     fake.registered.prompt({ sessionID: "s1", prompt: CODE });
     assert.equal(deliver(fake, "s1").length, 1);
+    assert.equal(deliver(fake, "s1").length, 1);
+  });
+  it("adds the directive once per request, not twice", async () => {
+    const fake = fakeCtx();
+    await setup(fake);
+    fake.registered.prompt({ sessionID: "s1", prompt: CODE });
+    const system = [{ type: "text", text: "base" }];
+    fake.registered.context({ sessionID: "s1", system });
+    assert.deepEqual(system.map((p) => p.text), ["base", LOGIC_DIRECTIVE]);
   });
   it("clears a stale directive when the next prompt is not about code", async () => {
     const fake = fakeCtx();
