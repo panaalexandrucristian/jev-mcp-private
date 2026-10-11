@@ -86,14 +86,24 @@ def rebuild(root=SKILL_DIR, m=None, blocks_only=False):
     if not check(root, m, blocks_only): return top if not os.path.isdir(os.path.join(root, "reference")) else b"".join(_found(root, m, blocks_only)[0][b["id"]] for b in m["blocks"])
 
 def fill(m, root=None):
-    """Computes bytes and sha256 of the original and of every block from the baseline (the data come from the frozen source, never typed). With `root`, also those of the additions, read from the active files: a file holds at most one addition, which is
-    what is left of the file after its blocks (its place comes from `files`)."""
-    data = baseline(m); m["original"].update(bytes=len(data), sha256=sha(data)); size = {}
-    for i, c in cut(data, m).items(): next(b for b in m["blocks"] if b["id"] == i).update(bytes=len(c), sha256=sha(c)); size[i] = len(c)
+    """Computes bytes and sha256 of the original and of every block from the baseline (the data come from the frozen source, never typed). With `root`, also those of the additions, read from the active files: a file is walked block after block (a block is found by its
+    own bytes), and what lies between two blocks, or after the last one, is the addition declared there; at most ONE addition may stand between two blocks, and no byte may lie outside a block or an addition."""
+    data = baseline(m); m["original"].update(bytes=len(data), sha256=sha(data)); cuts = cut(data, m)
+    for i, c in cuts.items(): next(b for b in m["blocks"] if b["id"] == i).update(bytes=len(c), sha256=sha(c))
+    def settle(add, raw):
+        add.update(bytes=len(raw), sha256=sha(raw))
     for name, ids in m["files"].items() if root else ():
-        mine = [a for a in m.get("additions", []) if a["id"] in ids]; assert len(mine) <= 1, "%s: more than one addition" % name
-        if mine:
-            raw = _read(os.path.join(root, name)); start = sum(size[i] for i in ids[:ids.index(mine[0]["id"])]); n = len(raw) - sum(size[i] for i in ids if i in size); mine[0].update(bytes=n, sha256=sha(raw[start:start + n]))
+        adds = {a["id"]: a for a in m.get("additions", [])}
+        if not any(i in adds for i in ids): continue
+        raw = _read(os.path.join(root, name)); off, pending = 0, []
+        for i in ids:
+            if i in adds: pending.append(adds[i]); continue
+            at = raw.find(cuts[i], off); assert at >= 0, "%s: block %s not found after offset %d" % (name, i, off)
+            assert len(pending) <= 1 and (pending or at == off), "%s: bytes before block %s belong to no addition, or to more than one" % (name, i)
+            if pending: settle(pending[0], raw[off:at]); pending = []
+            off = at + len(cuts[i])
+        assert len(pending) <= 1, "%s: more than one addition after the last block" % name
+        if pending: settle(pending[0], raw[off:])
     return m
 
 def dump(m, path=MANIFEST):

@@ -26,11 +26,16 @@
   {"id": "source-reads", "bytes": 189, "sha256": "8fe9ff339927434f82cac2c129baf23d9d2849c26a8a838ba5feeb589596d04a"},
   {"id": "reverification", "bytes": 6709, "sha256": "fc36063f10c8e0a4add464fa274dfa57d1a783586353894c37aa56ed5a843dd1"},
   {"id": "omission-halves", "bytes": 2675, "sha256": "5f3563b778d3a8dad5eede2e3f12a503dbd75770ff433da0f6e8e131fbb55d96"},
-  {"id": "evidence-requests", "bytes": 2292, "sha256": "019cea1cb74c593379cbb45b4c1d6ecc92ca3a645b66805efd996e6ba2600aee"}],
+  {"id": "evidence-requests", "bytes": 2292, "sha256": "019cea1cb74c593379cbb45b4c1d6ecc92ca3a645b66805efd996e6ba2600aee"},
+  {"id": "context-optimizer", "bytes": 5389, "sha256": "5555627dc59bfd277c18f419c93c806da47913661fda11f51b88d4f5aab96a82"},
+  {"id": "on-demand-lines", "bytes": 319, "sha256": "adac99e0ac3c1b32dff7ff0708bee8a2020c34e6bae2290f277f87728a8ba4d9"},
+  {"id": "subagent-review", "bytes": 5007, "sha256": "6ff3fb3bf645cf0183da1bfc5faa50c32187001398bc169f04b5b3f84ffb242c"}],
  "files": {
-  "SKILL.md": ["head", "triggered", "checklist", "loading", "hard-rules", "categories", "statuses", "flags", "limits"],
+  "SKILL.md": ["head", "triggered", "checklist", "loading", "hard-rules", "categories", "statuses", "flags", "limits", "on-demand-lines"],
   "reference/prepare.md": ["preparation", "source-reads", "kit"],
   "reference/opencode-sessions.md": ["opencode"],
   "reference/jev-and-audit.md": ["contracts", "audit", "retry", "reverification", "engine"],
   "reference/candidates.md": ["omissions", "omission-halves", "scope"],
-  "reference/report.md": ["output", "binding", "evidence-requests", "examples"]}}
+  "reference/report.md": ["output", "binding", "evidence-requests", "examples"],
+  "reference/context-optimizer.md": ["context-optimizer"],
+  "reference/subagent-review.md": ["subagent-review"]}}

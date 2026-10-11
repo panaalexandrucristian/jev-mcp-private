@@ -88,3 +88,5 @@ python3 -B <skill-dir>/scripts/audit.py template --source <session> --file <hand
 ## Limits (state them in the report when they bite)
 Extraction by the model can miss details — hence every chunk is audited; Jev scores come from the evidence you supply and a low score is not proof of a defect; regex `not_found` is not absence; kit/config signals reflect the *current* filesystem; the report never claims the handoff is transferable, only that the listed checks resolved. Historical measurements (probes, backtests, live-session outcomes) are NOT rules: they are kept on demand in `scripts/HISTORY.md` and nothing in the skill depends on them.
 
+Context optimization: only on explicit user request, read reference/context-optimizer.md. No automatic suggestions. Require a deterministic zero-loss proof before any edit.
+Delegated review: only on explicit user request, read reference/subagent-review.md. Jev calls, report and delivery gate stay in the main session.

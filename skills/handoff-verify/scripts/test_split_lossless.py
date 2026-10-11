@@ -28,6 +28,9 @@ BRANCHES = (("preparation", "R1", "first preparation command"), ("inventory deci
             ("Jev call", "R3", "any Jev call"), ("classification", "R3", "inventory classification"), ("source review", "R3", "reviewing any source chunk"), ("candidate registration", "R3", "registering any candidate"),
             ("candidate processing", "R4", "step 4 processes any candidate"), ("scope", "R4", "scope preparation"), ("omission", "R4", "omission preparation"), ("omission call", "R4", "omission call"), ("ledger", "R4", "ledger record"),
             ("resume", "R4", "resume"), ("Jev call (report)", "R5", "any Jev call"), ("report", "R5", "writing any verification report"))
+CONTEXT_LINE = "Context optimization: only on explicit user request, read reference/context-optimizer.md. No automatic suggestions. Require a deterministic zero-loss proof before any edit."      # the agreed text (173 bytes with its newline), the only root line of the context optimizer
+DELEGATION_LINE = "Delegated review: only on explicit user request, read reference/subagent-review.md. Jev calls, report and delivery gate stay in the main session."      # task 4: shortened from the agreed 176-byte text to the 146 bytes that the 22000-byte root cap still holds after the context line (the full list of what stays in the main session is in the reference)
+ON_DEMAND = {"reference/context-optimizer.md": CONTEXT_LINE, "reference/subagent-review.md": DELEGATION_LINE}      # read only when the user asks: named by an exact root line, not by a loading rule of the verification procedure
 SOURCE_READS = "Reads of the five reference files named in the entry-point loading rules are verification material of this skill, under the same recorded-cwd and path-component rules as reads of SKILL.md."
 LABEL = re.compile(r"^(?:\d+\.\s+|- )?\*\*([^*]{3,80})\*\*")
 
@@ -57,7 +60,8 @@ def loading_problems(root):
         if path not in next((l for l in lines if l.startswith(r + ":")), ""): out.append("%s does not name %s" % (r, path))
     for what, r, phrase in BRANCHES:
         if phrase not in next((l for l in lines if l.startswith(r + ":")), ""): out.append("the branch %r is not governed by %s" % (what, r))
-    if set(RULE_FILE.values()) != {n for n in S.load_manifest()["files"] if n != "SKILL.md"}: out.append("a reference file has no loading rule")
+    if set(RULE_FILE.values()) != {n for n in S.load_manifest()["files"] if n != "SKILL.md" and n not in ON_DEMAND}: out.append("a reference file has no loading rule")
+    out += ["the on-demand file %s has no request-only line in the root" % n for n, line in ON_DEMAND.items() if line not in t.split("\n")]
     if set(os.path.basename(p) for p in RULE_FILE.values()) != set(omissions.SKILL_REFERENCES): out.append("the rules and omissions.SKILL_REFERENCES name different files")
     if t.index("**Bound report**") > t.index("**Delivery gate**"): out.append("the report step must precede the delivery step")      # R5 (before writing the report) therefore also precedes delivery
     return out
@@ -122,6 +126,13 @@ class LosslessSplit(unittest.TestCase):
         swapped = S.load_manifest(); swapped["files"]["reference/candidates.md"].reverse()
         self.assertTrue(S.check(d, swapped)); self.assertTrue([p for p in S.manifest_problems(swapped) if "original order" in p])
 
+    def test_fill_settles_two_additions_of_one_file_and_refuses_stray_bytes(self):
+        d = self.fresh(); self.mutate(d, "SKILL.md", b"before any edit.", b"before any edit now."); self.mutate(d, "SKILL.md", b"Never reset an exhausted", b"Never ever reset an exhausted")
+        m = S.load_manifest(); self.assertTrue(S.check(d, m)); S.fill(m, d); adds = {a["id"]: a for a in m["additions"]}; old = {a["id"]: a for a in S.load_manifest()["additions"]}
+        self.assertEqual(adds["on-demand-lines"]["bytes"], old["on-demand-lines"]["bytes"] + 4); self.assertEqual(adds["loading"]["bytes"], old["loading"]["bytes"] + 5); self.assertEqual(S.check(d, m), [])      # both additions of SKILL.md, found between their blocks
+        d = self.fresh(); self.mutate(d, "SKILL.md", b"## Hard rules", b"stray line\n## Hard rules"); m = S.load_manifest(); S.fill(m, d); self.assertEqual(S.check(d, m), [])      # the stray line is part of the addition declared before that block
+        d = self.fresh(); self.mutate(d, "SKILL.md", b"# handoff-verify (txdiff)", b"stray line\n# handoff-verify (txdiff)"); self.assertRaises(AssertionError, S.fill, S.load_manifest(), d)      # bytes inside the first block, or before it, belong to no addition
+
     def test_every_new_byte_is_declared(self):
         for what, name, act in (("appended bytes", "SKILL.md", lambda p, s: s + b"\nOne more rule.\n"), ("inserted byte", "SKILL.md", lambda p, s: s[:40] + b"x" + s[40:]),
                                 ("trailing space", "reference/prepare.md", lambda p, s: s.replace(b"\n", b" \n", 1)), ("missing file", "reference/report.md", None), ("undeclared file", "reference/extra.md", lambda p, s: b"# extra\n")):
@@ -168,9 +179,10 @@ class LosslessSplit(unittest.TestCase):
         d = self.fresh(); open(os.path.join(d, "SKILL.md"), "ab").write(b"x" * 3000); self.assertTrue(over_cap(d)); self.assertTrue(S.check(d))
 
     def test_the_additions_are_declared_and_within_their_budgets(self):
-        m = self.m; adds = {a["id"]: a for a in m["additions"]}; self.assertEqual(sorted(adds), ["evidence-requests", "loading", "omission-halves", "reverification", "source-reads"])
+        m = self.m; adds = {a["id"]: a for a in m["additions"]}; self.assertEqual(sorted(adds), ["context-optimizer", "evidence-requests", "loading", "omission-halves", "on-demand-lines", "reverification", "source-reads", "subagent-review"])
         self.assertLessEqual(adds["loading"]["bytes"], 2782); self.assertLessEqual(adds["source-reads"]["bytes"], 250)      # the budgets of the agreed layout
         for i, cap in (("reverification", 7500), ("omission-halves", 3000), ("evidence-requests", 3000)): self.assertLessEqual(adds[i]["bytes"], cap, i)      # re-verification evidence (plan 2): measured size 5283 / 2675 / 1743 bytes plus a margin; the text is separate, declared addition
+        self.assertEqual(adds["on-demand-lines"]["bytes"], len((CONTEXT_LINE + "\n" + DELEGATION_LINE + "\n").encode())); self.assertEqual(len((CONTEXT_LINE + "\n").encode()), 173); self.assertLessEqual(len((DELEGATION_LINE + "\n").encode()), 200); self.assertLessEqual(adds["context-optimizer"]["bytes"], 8192); self.assertLessEqual(adds["subagent-review"]["bytes"], 12288)      # context optimizer (task 3): the agreed line, and a reference of at most 8192 bytes
         self.assertEqual(sum(b["bytes"] for b in m["blocks"]) + sum(a["bytes"] for a in adds.values()), sum(len(t.encode("utf-8")) for t in docs(S.SKILL_DIR).values()))
         bad = S.load_manifest(); del bad["additions"][0]["sha256"]; self.assertTrue([p for p in S.manifest_problems(bad) if "not declared" in p])      # an addition without its hash
         bad = S.load_manifest(); bad["files"]["reference/report.md"].append("loading"); self.assertTrue([p for p in S.manifest_problems(bad) if "exactly one home" in p])      # an addition in two places
