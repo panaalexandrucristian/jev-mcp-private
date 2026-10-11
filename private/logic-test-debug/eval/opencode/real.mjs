@@ -21,8 +21,17 @@ export const MODEL = "github-copilot/claude-haiku-5.5";
 
 export const openCodeVersion = () => spawnSync(OPENCODE, ["--version"], { encoding: "utf8", timeout: 20000 }).stdout.trim();
 
-const PLANNED_MAX = 4;
-const TOTAL_MAX = 6;
+const DEFAULT_CAPS = { planned: 4, total: 6 };
+/** The caps of a root: caps.json when the campaign wrote one, else 4 planned and 6 in all. */
+export function capsOf(root) {
+  try {
+    const caps = JSON.parse(readFileSync(join(root, "caps.json"), "utf8"));
+    if (Number.isInteger(caps.planned) && Number.isInteger(caps.total) && caps.planned > 0 && caps.total >= caps.planned) return caps;
+  } catch {
+    // No file, or not valid: the defaults.
+  }
+  return DEFAULT_CAPS;
+}
 
 /**
  * Session accounting: one line per start and per finish; refuses a start past the cap. A session that made no model request at all
@@ -36,8 +45,9 @@ export function ledgerStart(root, { id, kind, scenario, arm, run }) {
   const voidTimes = lines.filter((l) => l[2] === "void").map((l) => [l[1], l[0]]);
   const started = lines.filter((l) => l[2] === "started" && !voidTimes.some(([id, at]) => id === l[1] && at >= l[0]));
   const planned = started.filter((l) => l[3] === "planned").length;
-  if (started.length >= TOTAL_MAX) throw new Error(`cap reached: ${started.length} of ${TOTAL_MAX} sessions already started`);
-  if (kind === "planned" && planned >= PLANNED_MAX) throw new Error(`cap reached: ${planned} of ${PLANNED_MAX} planned sessions already started`);
+  const caps = capsOf(root);
+  if (started.length >= caps.total) throw new Error(`cap reached: ${started.length} of ${caps.total} sessions already started`);
+  if (kind === "planned" && planned >= caps.planned) throw new Error(`cap reached: ${planned} of ${caps.planned} planned sessions already started`);
   appendFileSync(file, `${new Date().toISOString()}\t${id}\tstarted\t${kind}\t${scenario}\t${arm}\t${run}\n`);
 }
 export const ledgerFinish = (root, id, status) => appendFileSync(join(root, "ledger.tsv"), `${new Date().toISOString()}\t${id}\t${status}\n`);

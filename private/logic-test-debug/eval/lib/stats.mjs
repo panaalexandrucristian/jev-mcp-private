@@ -61,3 +61,36 @@ export function compareScores(on, off, alpha = 0.025) {
   const direction = onMean > offMean ? "ON higher" : onMean < offMean ? "OFF higher" : "equal";
   return { onMean, offMean, onN: on.length, offN: off.length, p, alpha, effectClaimed: p < alpha && direction !== "equal", direction };
 }
+
+const binomialCdf = (k, n, p) => {
+  // P(X <= k) for X ~ Binomial(n, p), summed term by term in log space.
+  if (k < 0) return 0;
+  if (k >= n) return 1;
+  if (p <= 0) return 1;
+  if (p >= 1) return 0;
+  let sum = 0;
+  for (let i = 0; i <= k; i += 1) {
+    let logTerm = 0;
+    for (let j = 1; j <= i; j += 1) logTerm += Math.log((n - i + j) / j);
+    sum += Math.exp(logTerm + i * Math.log(p) + (n - i) * Math.log(1 - p));
+  }
+  return Math.min(1, sum);
+};
+
+/** Exact (Clopper-Pearson) two-sided confidence interval for a proportion of k out of n, found by bisection. */
+export function clopperPearson(k, n, alpha = 0.05) {
+  if (!Number.isInteger(k) || !Number.isInteger(n) || n <= 0 || k < 0 || k > n) throw new Error("invalid counts");
+  const solve = (target, increasing) => {
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 80; i += 1) {
+      const mid = (lo + hi) / 2;
+      const value = binomialCdf(increasing ? k - 1 : k, n, mid);
+      // P(X <= k-1 | p) falls as p rises; P(X <= k | p) falls as p rises too: both are decreasing in p.
+      if (value > target) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  return { low: k === 0 ? 0 : solve(1 - alpha / 2, true), high: k === n ? 1 : solve(alpha / 2, false) };
+}

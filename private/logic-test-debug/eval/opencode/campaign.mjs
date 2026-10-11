@@ -2,7 +2,7 @@
 //   confine <root> <pluginDir>   prove the confinement with the stand-in provider (no model); writes confinement.json
 //   credentials <root>           import the GitHub Copilot credential into a template folder (removed by `cleanup`)
 //   run <root> <pluginDir> [ids] [scenario]  the four planned sessions, one after the other: ON, OFF, OFF, ON (or only the ids given,
-//                                e.g. s1; `-` for all); the scenario is conditions (default), combos or trace
+//                                e.g. s1; `-` for all); the scenario is conditions (default), combos or trace; then an optional model id and the number of pairs (default 2, so four sessions)
 //   report <root>                counts of what the stored sessions show, as markdown
 //   cleanup <root>               remove the credential template
 // The design (question, model, task, arms, order, what is counted, what would stop it) is in eval/README.md and was fixed before the
@@ -13,14 +13,19 @@ import { pathToFileURL } from "node:url";
 import { promptFor } from "../lib/run.mjs";
 import { CONFINED_PERMISSION, confineScript, confinementProven, judgeConfine, prepareSentinels, writeProof } from "./confine.mjs";
 import { MODEL, PROBE_PLUGIN, openCodeVersion, prepareCredentials, removeCredentials, runReal, summarizeProbe } from "./real.mjs";
+import { clopperPearson, compareArms, compareScores } from "../lib/stats.mjs";
 import { runSession, summarizeRequests } from "./run.mjs";
 
-export const PLAN = [
-  { id: "s1", arm: "ON", run: 1 },
-  { id: "s2", arm: "OFF", run: 1 },
-  { id: "s3", arm: "OFF", run: 2 },
-  { id: "s4", arm: "ON", run: 2 },
-];
+/** The planned order for `pairs` pairs: odd pairs start with ON, even pairs with OFF, so a drift in time cannot favour one arm. Two pairs: ON, OFF, OFF, ON. */
+export function makePlan(pairs = 2) {
+  const plan = [];
+  for (let k = 1; k <= pairs; k += 1) {
+    const arms = k % 2 === 1 ? ["ON", "OFF"] : ["OFF", "ON"];
+    arms.forEach((arm, j) => plan.push({ id: `s${plan.length + 1}`, arm, run: k, order: j }));
+  }
+  return plan;
+}
+export const PLAN = makePlan(2);
 
 async function confine(root, pluginDir) {
   mkdirSync(root, { recursive: true });
@@ -54,9 +59,11 @@ async function confine(root, pluginDir) {
   }
 }
 
-async function runAll(root, pluginDir, only = null, scenario = "conditions") {
-  for (const step of PLAN.filter((p) => !only || only.includes(p.id))) {
-    const verdict = await runReal({ root, id: step.id, kind: "planned", scenario, arm: step.arm, run: step.run, prompt: promptFor(scenario, step.run), pluginDir });
+async function runAll(root, pluginDir, only = null, scenario = "conditions", model = MODEL, pairs = 2) {
+  const plan = makePlan(pairs);
+  writeFileSync(join(root, "caps.json"), `${JSON.stringify({ planned: plan.length, total: plan.length + 2 })}\n`);
+  for (const step of plan.filter((p) => !only || only.includes(p.id))) {
+    const verdict = await runReal({ root, id: step.id, kind: "planned", scenario, arm: step.arm, run: step.run, prompt: promptFor(scenario, step.run), pluginDir, model });
     if (verdict.voided) {
       console.log(`${step.id} VOIDED: no model request was made (see ledger.tsv); stopping, nothing else is started`);
       process.exitCode = 1;
@@ -75,7 +82,7 @@ export function loadVerdicts(root) {
 
 /** Markdown with counts only; nothing is tested at n = 2 per arm. Pure over the verdicts. */
 export function toMarkdown(verdicts) {
-  const lines = ["# logic-test-debug on OpenCode, real model: report", "", `Sessions: ${verdicts.length} (planned: ${PLAN.length}). Model ${verdicts[0]?.model ?? MODEL}, OpenCode ${verdicts[0]?.version ?? "?"}, task: ${verdicts[0]?.scenario ?? "?"}. Counts only; with 2 sessions per arm no test is run and no effect is claimed.`, ""];
+  const lines = ["# logic-test-debug on OpenCode, real model: report", "", `Sessions: ${verdicts.length}. Model ${verdicts[0]?.model ?? MODEL}, OpenCode ${verdicts[0]?.version ?? "?"}, task: ${verdicts[0]?.scenario ?? "?"}. ${verdicts.filter((v) => v.arm === "ON").length >= 5 && verdicts.filter((v) => v.arm === "OFF").length >= 5 ? "The tests below were fixed before the first session." : "Counts only; with 2 sessions per arm no test is run and no effect is claimed."}`, ""];
   lines.push("| id | arm | complete | s | model requests | with directive | skill loaded | record | tools | oracle | success | refused |");
   lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const v of verdicts) {
@@ -98,6 +105,24 @@ export function toMarkdown(verdicts) {
     lines.push("", "Behaviour measures (descriptive, not scored): the test file edited, loops in it, the answer mentions combinations or pairs, the answer names INFERENCE.", "", "| id | arm | edited tests | loops in tests | mentions combinations | mentions INFERENCE |", "|---|---|---|---|---|---|");
     for (const v of withBehaviour) lines.push(`| ${v.id} | ${v.arm} | ${v.behaviour.editedTests} | ${v.behaviour.testLoops ?? "-"} | ${v.behaviour.mentionsCombination} | ${v.behaviour.mentionsInference} |`);
   }
+  if (arm("ON").length >= 5 && arm("OFF").length >= 5) {
+    const yes = (list, pick) => list.filter(pick).length;
+    const row = (label, pick) => {
+      const c = compareArms({ onSuccess: yes(arm("ON"), pick), onN: arm("ON").length, offSuccess: yes(arm("OFF"), pick), offN: arm("OFF").length });
+      return `| ${label} | ${c.on} | ${c.off} | ${c.p.toFixed(4)} | ${c.effectClaimed ? `yes (${c.direction})` : "no"} |`;
+    };
+    lines.push("", "Exact two-sided Fisher tests of yes/no outcomes (an effect is claimed only below 0.05):", "", "| outcome | ON | OFF | p | effect claimed |", "|---|---|---|---|---|");
+    lines.push(row("skill loaded", (v) => v.session.skillLoaded), row("record written", (v) => v.session.record.present), row("a clean version failed (score 0 by the rule)", (v) => v.oracle.clean && !(v.oracle.clean.correct && v.oracle.clean.equivalent)));
+    if (verdicts.some((v) => v.scenario === "combos" || v.scenario === "trace")) {
+      const c = compareScores(arm("ON").map((v) => v.oracle.score ?? 0), arm("OFF").map((v) => v.oracle.score ?? 0), 0.05);
+      lines.push("", `Score (the one pre-registered comparison, exact permutation test of the difference of the means, alpha 0.05): ON mean ${c.onMean.toFixed(2)}, OFF mean ${c.offMean.toFixed(2)}, p = ${c.p.toFixed(4)}, effect claimed: ${c.effectClaimed ? `yes (${c.direction})` : "no"}.`);
+    }
+    const failed = verdicts.filter((v) => v.oracle.clean && !(v.oracle.clean.correct && v.oracle.clean.equivalent)).length;
+    if (verdicts.some((v) => v.oracle.clean)) {
+      const ci = clopperPearson(failed, verdicts.length);
+      lines.push("", `A clean version failed in ${failed} of ${verdicts.length} sessions (${(100 * failed / verdicts.length).toFixed(0)} %; exact 95 % interval ${(100 * ci.low).toFixed(0)} to ${(100 * ci.high).toFixed(0)} %): the share of sessions whose score the rule turns into 0.`);
+    }
+  }
   const outside = verdicts.filter((v) => v.oracle.outOfScope?.length);
   const everyRequest = arm("ON").length > 0 && arm("ON").every((v) => v.probe.modelRequests > 0 && v.probe.withDirective === v.probe.modelRequests);
   lines.push("", `Gates: every ON session had the directive in its first model request: ${arm("ON").length > 0 && arm("ON").every((v) => v.probe.firstHasDirective)}; in every model request of the session (plugin 0.10.4 and later): ${everyRequest}; no OFF session had it: ${arm("OFF").every((v) => v.probe.withDirective === 0)}; sessions that changed files outside the allowed edits: ${outside.length}.`);
@@ -110,7 +135,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   else if (command === "credentials") {
     prepareCredentials(root);
     console.log("credential template ready");
-  } else if (command === "run") await runAll(root, pluginDir, process.argv[5] && process.argv[5] !== "-" ? process.argv[5].split(",") : null, process.argv[6] ?? "conditions");
+  } else if (command === "run") await runAll(root, pluginDir, process.argv[5] && process.argv[5] !== "-" ? process.argv[5].split(",") : null, process.argv[6] ?? "conditions", process.argv[7] ?? MODEL, Number(process.argv[8] ?? 2));
   else if (command === "report") {
     const md = toMarkdown(loadVerdicts(root));
     writeFileSync(join(root, "report.md"), md);

@@ -141,3 +141,36 @@ What happened in s1, found by running its test file on the correct `quote` after
 Descriptive, not scored: the ON sessions loaded the skill (2 of 2), wrote the record (2 of 2) and mentioned combinations and INFERENCE in the answer (2 of 2); one of them (s1) wrote a grid with loops over combinations, the other wrote none; the OFF sessions did none of these. Both arms used reasoning tokens (ON 3,056 and 4,176; OFF 4,800 and 2,955), so the skill did not make the model think more here. 19 main-agent model requests in all, 36 to 42 s per session, 0.0162 USD by OpenCode's price list (the guess was 0.01 to 0.02).
 
 Reading: on a task with room below the ceiling and no way to run the tests, haiku with the skill loaded and the record written did not catch more faulty versions than without; the one big difference is a single arithmetic slip that the scoring rule magnifies. At this sample size the skill's effect on the quality of the tests, if there is one, is not visible; this round cannot say whether the near-equal scores of the Claude Code campaign (with a shell) were a ceiling effect, because it has no shell and a different harness. Limits as before: two sessions per arm, one model, one task, no shell (not comparable with the earlier `combos` numbers), the terminal interface untested.
+
+### Fourth round: another model, plugin 0.10.4 (design fixed before its first session, 2026-10-11)
+
+**Question.** Does the directive in every request make a model of another family load the skill and write the record, as it did for haiku? (Everything above is one model.)
+
+**Design.** The same as the second round (task `conditions`, ON, OFF, OFF, ON, same permission set and gates, a root of its own with its own confinement proof, ledger and caps, the plugin as a clean checkout of the pushed commit) with one change: the model is `github-copilot/gemini-3.8-flash`, the one this machine's own OpenCode history uses most. Counts only; two sessions per arm. The model differs in more than family (size, price, reasoning), so a difference from the haiku rounds says nothing about the skill.
+
+**Estimate before the run, from the haiku rounds (measured: 3 to 6 model requests, 11 to 22 s and about 0.0015 USD per session):** 3 to 8 requests and 10 to 40 s per session, 12 to 32 requests in all, under 0.01 USD by OpenCode's price list.
+
+### Fifth round: how often one wrong expectation zeroes a session, and a comparison with ten sessions per arm (design fixed before its first session, 2026-10-11)
+
+**Questions.** (a) In what share of sessions of haiku on `combos` without a shell does at least one clean version fail, so that the scoring rule gives 0 (the third round had 1 of 4, a guess about frequency from one case)? (b) With ten sessions per arm, does the directive change the score?
+
+**Design.** Plugin 0.10.4 (clean checkout of the pushed commit), `github-copilot/claude-haiku-5.5`, the `combos` prompt, the same permission set, the same scan of the agent's code, a root of its own with its own confinement proof. Ten pairs, twenty planned sessions plus at most two reserve (`caps.json`: 20 and 22); odd pairs start with ON, even pairs with OFF. The four sessions of the third round are not pooled with these (a different root, run before this plan existed).
+
+**Tests, fixed in advance.** Primary and the only comparison on which an effect may be claimed: the score (faulty versions caught of 11, 0 when a clean version fails), exact two-sided permutation test of the difference of the means, alpha 0.05. Secondary, reported with exact two-sided Fisher p-values and not corrected for the three of them, so read as descriptive: skill loaded, record written (both expected to be 10 of 10 against 0 of 10 by the nature of the directive, so manipulation checks and not findings), and «a clean version failed». For (a): the share of all twenty sessions in which a clean version failed, with its exact (Clopper-Pearson) 95 % interval. Descriptive only: loops in the test file, mention of combinations, INFERENCE, tools used, reasoning tokens.
+
+**Stops.** The run stops at the first accepted access outside the workspace or after two voided attempts (no model output); an oracle skipped by the scan counts as a session with score 0 and is listed.
+
+**Estimate before the run, from the third round (measured there: 5 model requests, 36 to 42 s, about 0.004 USD by OpenCode's price list and about 100 s of wall time per session including the oracle):** 20 sessions, about 100 model requests (80 to 140), about 35 minutes, about 0.08 USD (0.06 to 0.10).
+
+**Result of the terminal-interface check (2026-10-11, `eval/opencode/tui.mjs`, the stand-in provider, no model).** The first attempt got no request because the script blocked the stand-in provider (a synchronous spawn in the same process); fixed. Then: a prompt typed in the OpenCode terminal UI inside a pseudo-terminal was stored and sent as plain text, **without** the quotes that `opencode run` puts around it (`"Fix the bug ..."`), so the quote wrapper that plugin 0.10.3 removes is specific to `opencode run`; the directive was in the system prompt of the model request and the skill was listed. One prompt, one OpenCode version; the unwrapping in `extractPromptText` is harmless for the plain text (a prompt that is one JSON string is the only case it changes).
+
+**Result of the fourth round (2026-10-11, `github-copilot/gemini-3.8-flash`, plugin 0.10.4 at `e5d5558`; `~/Dev/jev-test-runs/logic-test-debug-opencode-real4/report.md`).** Confinement probe passed (16 of 16, the probe plugin agreed). Counts, two sessions per arm, task `conditions`:
+
+| | sessions | directive in every request | skill loaded | record written | oracle 136/136 |
+|---|---|---|---|---|---|
+| ON | 2 | 2 (9 of 9 and 12 of 12) | 2 | 2 | 2 |
+| OFF | 2 | 0 (0 of 7 twice) | 0 | 0 | 2 |
+
+No refused attempt, nothing outside the allowed edits, no failed attempt. The ON sessions also wrote tests with loops over combinations (7 loops each), named INFERENCE and mentioned combinations; the OFF sessions did none of that. Time 34 to 67 s per session; 7 to 12 model requests per session, more than haiku used on the same task (3 to 6). The pattern is the same as for haiku in the second round; the task is at the ceiling for this model too, and with two sessions per arm no test is run.
+
+The estimate for this round («under 0.01 USD by OpenCode's price list») was wrong: the measured figure is 0.173 USD for 35 model requests (0.029 to 0.072 per session), about 17 times the guess. The cause is the accounting, not the number of requests: this model reports 30,000 to 80,000 input tokens per session and no cache (the haiku sessions reported 8 to 14 input tokens, the rest being cache reads), so the haiku figures could not be carried over. The price list is not what Copilot bills, and Copilot shows no figure of its own.

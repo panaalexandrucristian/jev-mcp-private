@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { CONFINED_PERMISSION, confineScript, confinementProven, judgeConfine, permissionFingerprint, prepareSentinels, writeProof } from "../eval/opencode/confine.mjs";
-import { ledgerStart, ledgerVoid, oracleScore, scanAgentCode, summarizeMessages, summarizeProbe } from "../eval/opencode/real.mjs";
-import { PLAN, toMarkdown } from "../eval/opencode/campaign.mjs";
+import { capsOf, ledgerStart, ledgerVoid, oracleScore, scanAgentCode, summarizeMessages, summarizeProbe } from "../eval/opencode/real.mjs";
+import { PLAN, makePlan, toMarkdown } from "../eval/opencode/campaign.mjs";
+import { clopperPearson } from "../eval/lib/stats.mjs";
 
 const dirs = [];
 const temp = () => {
@@ -189,5 +190,48 @@ describe("hard-task helpers", () => {
     assert.match(md, /\| s1 \| ON \| true, true \| 2 \| 2 \| false \|/);
     assert.match(md, /Behaviour measures/);
     assert.match(md, /\| s2 \| OFF \| true \| 0 \| false \| false \|/);
+  });
+});
+
+describe("plan, caps and the larger report", () => {
+  it("alternates the first arm of each pair", () => {
+    assert.deepEqual(makePlan(2).map((p) => p.arm), ["ON", "OFF", "OFF", "ON"]);
+    assert.deepEqual(makePlan(3).map((p) => p.arm), ["ON", "OFF", "OFF", "ON", "ON", "OFF"]);
+    assert.deepEqual(makePlan(10).map((p) => p.id).slice(-2), ["s19", "s20"]);
+    assert.equal(makePlan(10).filter((p) => p.arm === "ON").length, 10);
+  });
+  it("takes the caps from caps.json and falls back to 4 and 6", () => {
+    const root = temp();
+    assert.deepEqual(capsOf(root), { planned: 4, total: 6 });
+    writeFileSync(join(root, "caps.json"), JSON.stringify({ planned: 20, total: 22 }));
+    assert.deepEqual(capsOf(root), { planned: 20, total: 22 });
+    for (let i = 1; i <= 20; i += 1) ledgerStart(root, { id: `s${i}`, kind: "planned", scenario: "combos", arm: "ON", run: 1 });
+    assert.throws(() => ledgerStart(root, { id: "s21", kind: "planned", scenario: "combos", arm: "ON", run: 1 }), /20 of 20 planned/);
+    writeFileSync(join(root, "caps.json"), "not json");
+    assert.deepEqual(capsOf(root), { planned: 4, total: 6 });
+  });
+  it("matches known exact binomial intervals", () => {
+    const near = (a, b) => assert.ok(Math.abs(a - b) < 2e-3, `${a} vs ${b}`);
+    const a = clopperPearson(1, 4);
+    near(a.low, 0.0063);
+    near(a.high, 0.8059);
+    const b = clopperPearson(0, 10);
+    assert.equal(b.low, 0);
+    near(b.high, 0.3085);
+    const c = clopperPearson(5, 20);
+    near(c.low, 0.0866);
+    near(c.high, 0.491);
+    assert.throws(() => clopperPearson(5, 4));
+  });
+  it("adds Fisher rows, the score test and the failure rate when each arm has five sessions", () => {
+    const v = (id, arm, clean, killed) => ({ id, arm, scenario: "combos", model: "m", version: "2.0.22", complete: true, seconds: 1, probe: { modelRequests: 2, withDirective: arm === "ON" ? 2 : 0, firstHasDirective: arm === "ON" }, session: { skillLoaded: arm === "ON", record: { present: arm === "ON" }, toolCalls: ["write"], rejected: [] }, oracle: { passed: 0, total: 13, success: false, score: clean ? killed : 0, killed: Array(killed).fill("x"), clean: { correct: clean, equivalent: clean }, skipped: false, outOfScope: [] }, behaviour: { editedTests: true, testLoops: 0, mentionsCombination: false, mentionsInference: false } });
+    const verdicts = [];
+    for (let i = 0; i < 5; i += 1) verdicts.push(v(`a${i}`, "ON", true, 9), v(`b${i}`, "OFF", i !== 0, 10));
+    const md = toMarkdown(verdicts);
+    assert.match(md, /Exact two-sided Fisher tests/);
+    assert.match(md, /\| skill loaded \| 5\/5 \| 0\/5 \|/);
+    assert.match(md, /the one pre-registered comparison/);
+    assert.match(md, /A clean version failed in 1 of 10 sessions/);
+    assert.doesNotMatch(toMarkdown(verdicts.slice(0, 4)), /Exact two-sided Fisher tests/);
   });
 });
