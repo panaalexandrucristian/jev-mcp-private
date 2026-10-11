@@ -4,6 +4,7 @@ add the new ones) is the opposite of what the pair needs: the evidence of the SO
 complete canonical material. So: an ABSENCE request is blocked and takes nothing; a SOURCE request takes ONE other eligible record of the session (a transcript_record, never a file, never a corrected claim), its payload is the
 canonical SOURCE claim with that whole record as the only evidence (neighbours joined together, the old passage kept, a file or a changed claim are refused), and the user is not asked for a path (a path cannot be a record
 of the session).
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_omission_evidence.py [-v]"""
 import json, os, subprocess, sys, unittest
 

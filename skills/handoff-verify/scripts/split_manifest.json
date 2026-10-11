@@ -22,12 +22,15 @@
   {"id": "engine", "lines": [158, 164], "bytes": 3795, "sha256": "3f88ee9ca28f1ca7e5f3df9bf1d35bf00bbab1f79365f728d009e932e3d39be7"},
   {"id": "examples", "lines": [165, 292], "bytes": 11360, "sha256": "60e38a3a75dc1d19f796b58941760ba0d2c196db7480535922a81f44f5588ff7"}],
  "additions": [
-  {"id": "loading", "bytes": 2111, "sha256": "db4488455fc0aa74c3490dd0a31ca7fc9d47f5669024e51ea829fadbf6d80169"},
-  {"id": "source-reads", "bytes": 189, "sha256": "8fe9ff339927434f82cac2c129baf23d9d2849c26a8a838ba5feeb589596d04a"}],
+  {"id": "loading", "bytes": 2458, "sha256": "b6e6f104719d38b440ce9219c07b66adf9b398bae390b1b9a0f10293aa3a6f5f"},
+  {"id": "source-reads", "bytes": 189, "sha256": "8fe9ff339927434f82cac2c129baf23d9d2849c26a8a838ba5feeb589596d04a"},
+  {"id": "reverification", "bytes": 5449, "sha256": "59c7fc226702ec2eb84b81609d1008e8bea1156303a6910bf48ca0bcb220e3b5"},
+  {"id": "omission-halves", "bytes": 2675, "sha256": "5f3563b778d3a8dad5eede2e3f12a503dbd75770ff433da0f6e8e131fbb55d96"},
+  {"id": "evidence-requests", "bytes": 1743, "sha256": "3a1f3d3f7fb2909255b4cddd3d0a2e30a1bd600b6c0624058b2b74596f37cfc0"}],
  "files": {
   "SKILL.md": ["head", "triggered", "checklist", "loading", "hard-rules", "categories", "statuses", "flags", "limits"],
   "reference/prepare.md": ["preparation", "source-reads", "kit"],
   "reference/opencode-sessions.md": ["opencode"],
-  "reference/jev-and-audit.md": ["contracts", "audit", "retry", "engine"],
-  "reference/candidates.md": ["omissions", "scope"],
-  "reference/report.md": ["output", "binding", "examples"]}}
+  "reference/jev-and-audit.md": ["contracts", "audit", "retry", "reverification", "engine"],
+  "reference/candidates.md": ["omissions", "omission-halves", "scope"],
+  "reference/report.md": ["output", "binding", "evidence-requests", "examples"]}}

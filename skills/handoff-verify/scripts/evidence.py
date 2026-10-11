@@ -15,7 +15,7 @@ never the note's own Write or Edit, never a Jev call, never verification materia
 re-verification is authorized, not here. Material is NEW only when its normalized text is not already inside one evidence entry the original call received (case, spacing and identifiers do not make it new), and one passage counts once. An answer typed in
 the chat is never evidence. THE TWO HALVES OF AN OMISSION PAIR (R04) have their own rules, by `target.stage`: `absence` takes the complete canonical material and nothing else (nothing is collected, the request is blocked); `source` takes\nONE other eligible record of the session as a transcript_record (never a file, never a corrected claim, no question to the user) and its payload is the canonical SOURCE claim with that WHOLE record as the only evidence. AUTHORIZING (`authorize`): the exact tool input the agent will send (a payload {claims, evidence, ...}) is checked and the single re-verification is reserved in the candidate registry of the session BEFORE the call
 (audit.reserve_evidence: exclusive lock + atomic replace, never given back); the authorization fixes the input hash (the hash the recorded call will carry) and the version of the note. The payload must carry the claim
-(the original one, or exactly the corrected one), keep every evidence entry of the original call, add every new item, and hold nothing the sanitizing policy would change; changed bytes are refused, the same bytes
+(the original one, exactly the corrected one, or for a compound claim its parts, every part exactly once: the split spends the same authorization), keep every evidence entry of the original call, add every new item, and hold nothing the sanitizing policy would change; changed bytes are refused, the same bytes
 are the same authorization, not a second allowance. `check` is the preflight right before the call. The registry is DERIVED from the session (audit.registry_path_of), never chosen. This module cannot call Jev:
 a direct call made without an authorization is exposed by the audit (audit.py), not prevented here. RECORDING (`record`): after the call, the authorized entry moves to recorded and carries the reference of the real call,
 copied from the session log by its tool_use_id (audit.record_evidence); only a verify / gate call made with exactly the authorized bytes is recorded, once.
@@ -224,6 +224,13 @@ def _claim_texts(payload):
     out = [c if isinstance(c, str) else (c.get("claim") if isinstance(c.get("claim"), str) else c.get("text")) if isinstance(c, dict) else None for c in cs]
     return out if all(isinstance(c, str) and c for c in out) else None
 
+def _is_split(request, want, claims):
+    """The advice tells the agent to split a compound claim in the SAME single re-verification (one claim per fact): the payload may carry the parts of the original claim instead of the claim, every part exactly once and nothing
+    else (an obligation dropped, a part twice or a new claim is no split). The split spends the same authorization: the request is still the one of the original result."""
+    if request["remedy"] != "semantic_evidence" or not isinstance(want, str) or not AD.compound(want) or len(claims) < 2: return False
+    norm = lambda t: J._norm(t).strip(" .,;:")
+    return sorted(norm(c) for c in claims) == sorted(norm(p) for p in AD.split_parts(want))
+
 def check_payload(request, call, collected, payload):
     """-> None or the reason why the exact tool input is not a re-verification of this request: it carries the claim (the original, or exactly the corrected one), keeps every evidence entry of the ORIGINAL call (dropping
     contrary proof is not new evidence), adds every collected new item, and holds nothing the sanitizing policy would change."""
@@ -237,7 +244,7 @@ def check_payload(request, call, collected, payload):
         if not any(O.passage_matches(raw, i["passage"]) for i in collected.get("items", []) if isinstance(i.get("passage"), str)): return "source_evidence_not_one_eligible_record"
         return "payload_redaction_dependent" if any(_unsafe(t) for t in _strings(payload)) else None
     want = (collected.get("corrected_claim") or {}).get("text") if request["remedy"] == "claim_correction" else request["target"]["jev_ref"]["key"]
-    if want not in claims: return "claim_missing_in_payload"
+    if want not in claims and not _is_split(request, want, claims): return "claim_missing_in_payload"
     sent = [J._norm(t) for t in J.call_evidence(dict(input=payload))]
     if any(not any(o in t for t in sent) for o in J.call_evidence(call)): return "original_evidence_dropped"
     if any(not any(J._norm(i["quote"]) in t for t in sent) for i in collected.get("items", [])): return "new_evidence_missing_in_payload"

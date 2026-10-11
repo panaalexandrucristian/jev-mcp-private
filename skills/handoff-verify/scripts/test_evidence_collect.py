@@ -2,6 +2,7 @@
 """Offline test of the collection of new evidence (stdlib only, no Jev call, no network, nothing executed, never reads .handoff-verify/): evidence.py admits only local paths, reads them read-only, applies the shared
 sanitizing policy BEFORE anything is shown or stored, keeps only material that is NEW against what the original call received, and moves a request from collect_local to ready, ask_user or blocked. The one grouped
 question carries the agreed Romanian text. A question is not a Jev call and does not consume the single re-verification. Authorizing and recording come later.
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_evidence_collect.py [-v]"""
 import hashlib, json, os, subprocess, sys, tempfile, unittest
 

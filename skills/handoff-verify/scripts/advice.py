@@ -48,6 +48,10 @@ SPLIT_HINT = " It joins several facts: in the same single re-verification, split
 DETAIL = re.compile(r"`[^`]+`|[\w./~:-]*\d[\w./:-]*|[\w-]+(?:/[\w.-]+)+|\w+\.(?:md|txt|json|py|sh|yml|yaml|toml|js|mjs|ts)\b|\b\w+_\w+\b")
 JOIN = re.compile(r";|\b(?:and|but|while|whereas|și|iar|dar|însă)\b", re.I)
 
+def split_parts(claim):
+    """The parts a compound claim is split into (see `compound`): the pieces of three or more words between `;` and the conjunctions, stripped of surrounding punctuation. Meaningful when `compound(claim)` is true."""
+    return [p.strip(" ,;:") for p in JOIN.split(claim or "") if len(p.split()) >= 3]
+
 def passed(entry, call):
     """The claim holds: `verified`, strictly > 0.95, with the strict auxiliary conditions (a confirmed `contradicted` is a claim that failed, not a pass)."""
     return str(entry.get("verdict")).lower() == "verified" and J.strict_pass(entry.get("confidence")) and J.aux_ok(entry, call, True)

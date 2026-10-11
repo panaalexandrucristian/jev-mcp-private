@@ -3,6 +3,7 @@
 `evidence_request` advice.py derives (check.advice.evidence_request), bound to the version of the note that the writer demonstrated for that check, and lists them in the writer-owned top-level `evidence_requests`. The
 authorizations come from the registry of the session (a missing, unreadable or foreign registry refuses a new allowance: the request is blocked). A result that is itself the recorded re-verification of another call is
 exhausted (the allowance cannot be reset through the id of the re-verification). Nothing the author wrote there is kept; a status never changes because of a request.
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_evidence_report.py [-v]"""
 import json, os, sys, unittest
 

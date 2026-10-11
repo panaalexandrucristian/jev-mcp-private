@@ -3,6 +3,7 @@
 note is allowed only when the registry of the session holds a RECORDED authorization for exactly that call (the real tool_use_id and the authorized bytes). A repeat without it is exposed by the audit as a protocol violation
 (`unfinished.reverifications`, one reason each) and a PASS cannot survive it; a FAIL keeps its precedence. An authorization that was only reserved, other bytes, another call, another claim, another version or a lost registry
 authorize nothing. What it cannot see is stated: an earlier attempt that no check cites, and a corrected claim (another text) are not repeats of a claim.
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_reverification_audit.py [-v]"""
 import json, os, sys, unittest
 

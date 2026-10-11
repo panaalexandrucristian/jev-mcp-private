@@ -3,6 +3,7 @@
 the complete canonical material and NOTHING else, and the SOURCE half takes exactly one eligible record. So a distinct generator knows the stage: a qualified `unsupported` ABSENCE (> 0.95, action auto) is the EXPECTED half and
 is told to go on to the SOURCE call (a first call, not a re-verification); an ABSENCE that does not qualify takes no new evidence (the request is blocked: the material is unchanged, or the call did not use the canonical
 material); an unqualified SOURCE may be re-asked once with ANOTHER eligible record from the session, never a file. The pair exception stays: the checks of a finding-linked pair get no advice at all.
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_omission_advice.py [-v]"""
 import json, os, sys, unittest
 

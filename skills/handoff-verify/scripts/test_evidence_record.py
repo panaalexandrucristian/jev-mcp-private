@@ -2,6 +2,7 @@
 """Offline test of the recording of the real call of a re-verification (stdlib only, no Jev call, no network, never reads the real .handoff-verify/): after the call, the authorized entry of the candidate registry moves to `recorded`
 and carries the REAL reference of the call, copied from the session log (never invented); only the call made with exactly the authorized bytes can be recorded, once, under an exclusive lock; a recorded entry is never changed,
 dropped or recorded again with another call; a registry that cannot prove its history records nothing. The registry is DERIVED from the session, never chosen.
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_evidence_record.py [-v]"""
 import json, os, subprocess, sys, tempfile, textwrap, threading, unittest
 from unittest import mock

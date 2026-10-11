@@ -3,6 +3,7 @@
 (an exclusive lock plus an atomic replace), once per request; the authorization fixes the exact input hash (the hash of the exact tool input, as the recorded call will carry) and the version of the note; changed
 bytes never get the same authorization silently; a crash never gives the allowance back; a registry that is missing, unreadable, foreign or unbound refuses a new allowance. The registry is DERIVED from the session,
 never chosen. Recording the real call and the audit come later.
+The positive responses are COMPATIBLE SYNTHETIC bodies (they carry same_subject / subject_at, which the inspected server does not emit; test_contract_fixtures pins the realistic bodies).
 usage: python3 -B test_evidence_authorize.py [-v]"""
 import json, os, subprocess, sys, tempfile, textwrap, threading, unittest
 from unittest import mock
@@ -96,9 +97,10 @@ class Reserve(Reg):
 
 class Session(unittest.TestCase):
     """A session log with a recorded cwd (so that its registry can be derived), one failed verify call and a prepared registry."""
+    ROW = E.SHORT
     def setUp(self):
         self.t = tempfile.TemporaryDirectory(); self.d = os.path.realpath(self.t.name)
-        rec, self.call = T.call([E.SHORT])
+        rec, self.call = T.call([self.ROW])
         for r in rec: r["cwd"] = self.d
         self.log = os.path.join(self.d, "s.jsonl")
         with open(self.log, "w", encoding="utf-8") as f: f.write("".join(json.dumps(r) + "\n" for r in rec))
@@ -106,7 +108,7 @@ class Session(unittest.TestCase):
         self.req = advice.session_advice([self.call], version_ref=VREF)[0]["advice"]["evidence_request"]
         self.new = self.write("run.log", C.NEW_PASSAGE + "\n")
         self.props = [dict(kind="local_file", path=self.new)]
-        self.payload = dict(claims=[E.SHORT[0]], evidence=[T.EVIDENCE, C.NEW_PASSAGE])
+        self.payload = dict(claims=[self.ROW[0]], evidence=[T.EVIDENCE, C.NEW_PASSAGE])
     def tearDown(self): self.t.cleanup()
     def write(self, name, text):
         p = os.path.join(self.d, "files", name); os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -182,6 +184,40 @@ class Authorize(Session):
         self.assertEqual(evidence.check_authorization(self.req, dict(self.payload, claims=["x"]), self.log), (False, "input_changed"))
         doc = audit.load_registry(self.reg)[0]; doc["evidence_history"][0].update(state="recorded", recorded_ref=dict(tool_use_id="c2", result_index=None, key=None)); audit.save_registry(self.reg, doc)
         self.assertEqual(evidence.check_authorization(self.req, self.payload, self.log), (False, "already_used"))
+
+COMPOUND = ("Commit 54edd39 is plugin 0.7.8 and all 69 unit tests pass on it.", "verified", 0.9, "auto", 0.9)      # joins two facts: the advice says to split it in the same single re-verification
+PARTS = ["Commit 54edd39 is plugin 0.7.8", "all 69 unit tests pass on it."]
+
+class Split(Session):
+    ROW = COMPOUND
+    def test_the_advice_says_to_split_and_the_authorization_accepts_exactly_the_parts(self):
+        self.assertTrue(advice.advise(jevref.results_of(self.call)[0][0], self.call)["split"])
+        r = self.authorize(payload=dict(self.payload, claims=PARTS)); self.assertEqual((r["authorized"], r["status"]), (True, "reserved"), r)
+        self.assertEqual(self.history()[0]["target"]["jev_ref"]["key"], COMPOUND[0])               # the request is still the one of the ORIGINAL result: the split spends the same allowance
+        again = self.authorize(payload=dict(self.payload, claims=PARTS)); self.assertEqual((again["authorized"], again["status"]), (True, "already_authorized"))
+
+    def test_the_split_and_the_original_claim_are_one_allowance_not_two(self):
+        self.assertTrue(self.authorize(payload=dict(self.payload, claims=PARTS))["authorized"])
+        r = self.authorize(); self.assertEqual((r["authorized"], r["status"]), (False, "input_changed")); self.assertEqual(len(self.history()), 1)
+
+    def test_punctuation_and_spacing_of_a_part_do_not_matter(self):
+        r = self.authorize(payload=dict(self.payload, claims=["Commit  54edd39 is plugin 0.7.8.", "ALL 69 unit tests pass on it"])); self.assertTrue(r["authorized"], r)
+
+    def refused(self, claims, why="claim_missing_in_payload"):
+        r = self.authorize(payload=dict(self.payload, claims=claims)); self.assertEqual((r["authorized"], r["reason"]), (False, why), r); self.assertEqual(self.history(), [])
+
+    def test_a_split_that_drops_a_part_or_adds_another_claim_is_refused(self):
+        self.refused([PARTS[0]])                                            # an obligation dropped
+        self.refused([PARTS[0], PARTS[1], "A third, new claim about the release."])
+        self.refused([PARTS[0], "All tests pass."])                        # not a part of the claim
+        self.refused([PARTS[0], PARTS[0]])                                  # a part twice is another part missing
+
+    def test_the_original_claim_next_to_its_parts_is_accepted_as_the_original(self):
+        r = self.authorize(payload=dict(self.payload, claims=[COMPOUND[0]])); self.assertTrue(r["authorized"], r)
+
+class NotCompound(Session):
+    def test_a_claim_that_does_not_join_facts_cannot_be_split(self):
+        r = self.authorize(payload=dict(self.payload, claims=["The unit tests", "pass today"])); self.assertEqual((r["authorized"], r["reason"]), (False, "claim_missing_in_payload"))
 
 class Cli(Session):
     def run_cli(self, *args, rc=0):
