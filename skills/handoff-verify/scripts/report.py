@@ -46,6 +46,7 @@ def _version_ref(binding):
 def attach_advice(checks, bindings, calls, findings, ctx=None):
     """Informative only (never read back, never changes a status): every bound verify/gate check that is not resolved gets `advice` = advice.advise of its REAL result
     (what to try in the single re-verification that retry_decision allows). The two checks of an omission pair get none (their `unsupported` half is expected). A declared `advice` is dropped.
+    The two halves of an omission pair that no finding links (R04) get the stage-aware advice of advice.omission_advise instead of the generic one.
     With the audit context `ctx` (the writer), the advice also carries `evidence_request` (advice.evidence_request), bound to the version the writer demonstrated for the check and to the authorizations of the registry
     of the session; a history that cannot be read is a lost history, which refuses a new allowance."""
     pair = {f.get("check_id") for f in findings if isinstance(f, dict) and f.get("type") == "lost_detail" and isinstance(f.get("check_id"), str)}
@@ -56,11 +57,16 @@ def attach_advice(checks, bindings, calls, findings, ctx=None):
         c.pop("advice", None)
         if not b.get("bound") or b.get("resolved") or b.get("tool") not in ("verify", "gate") or jevref.check_id(c) in pair: continue
         call = by_id.get(b["tool_use_id"]); e = next((x for x in jevref.results_of(call)[0] if x["index"] == b["result_index"]), None) if call else None
-        a = advice.advise(e, call) if e else None
+        ok = bool(b.get("omission_material")) and audit.O.material_matches(b.get("call_evidence_raw") or [], b["omission_material"])      # the call's evidence IS the complete canonical material of the version
+        v = b.get("version"); reg = False                                   # the bare claim is a detail registered as a candidate of this very evaluation (what the ABSENCE call of an omission asks)
+        if ctx is not None and isinstance(v, dict) and v.get("ok") and isinstance(b.get("claim_key"), str):
+            k, dsha = audit.key_of(v), audit.detail_sha(b["claim_key"]); reg = any(x["detail_sha256"] == dsha and audit.applicable(x, k) for x in ctx.candidates())
+        stage = advice.stage_of(b.get("claim_key"), b.get("tool"), ok, reg)  # R04: the two halves of an omission pair have their own generator (the generic advice is wrong for them)
+        a = (advice.omission_advise(stage, e, call, ok) if stage else advice.advise(e, call)) if e else None
         if a:
-            if ctx is not None:
+            if ctx is not None and a["code"] != "absence_awaits_source":     # a first SOURCE call is not a re-verification: no request
                 if history is False: hist, why = ctx.evidence_history(); history = None if why else hist
-                a["evidence_request"] = advice.evidence_request(e, call, a, history, _version_ref(b))
+                a["evidence_request"] = advice.evidence_request(e, call, a, history, _version_ref(b), stage)
             c["advice"] = a
 
 def retry_decision(error_kind, attempts_identical, low_confidence=False, new_evidence=False, reverifications=0):

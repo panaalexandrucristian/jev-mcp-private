@@ -486,10 +486,9 @@ class Context:
             return (None, why) if merged is None else (merged, reason)
         return self.cached(("registry", plan["source"], tuple(x for x, _ in self.representations(plan))), make)
 
-    def evidence_history(self):
-        """-> (evidence_history entries, reason | None): the authorizations of the re-verifications as the registries of ALL the demonstrated representations of the session hold them (united by request_id, as `registry_state` does).
-        A representation without a registry adds nothing; none at all, one that cannot be read, or one that belongs to another session is a reason and authorizes nothing (the readable ones still count). The writer treats any
-        reason as a lost history (a new allowance is refused)."""
+    def session_registry(self):
+        """-> (registry document | None, reason | None): the candidate registries of ALL the demonstrated representations of the session, united (`merge_registries`). A representation without a registry adds nothing; none at all, one that cannot be
+        read, or one that belongs to another session is a reason (the readable ones still count). Read-only; not the audit's own `registry_state` (that one needs the plan of the expected chunks)."""
         def make():
             reps = []
             for f in ([self.source] if self.source else []) + list(self.also):
@@ -506,10 +505,21 @@ class Context:
                 if doc is None: why = w; continue
                 if doc.get("source") not in (None, src): why = "the candidate registry belongs to another source session"; continue
                 docs.append(doc)
-            if not docs: return [], why or "no candidate registry was established for this source session: no authorization of a re-verification can be shown"
+            if not docs: return None, why or "no candidate registry was established for this source session"
             merged, w = merge_registries(docs, reps[0][0])
-            return ([], w) if merged is None else (merged["evidence_history"], why)
-        return self.cached("evidence_history", make)
+            return (None, w) if merged is None else (merged, why)
+        return self.cached("session_registry", make)
+
+    def evidence_history(self):
+        """-> (evidence_history entries, reason | None): the authorizations of the re-verifications as the registries of the session hold them. No readable registry authorizes nothing: [] and the reason. The writer treats any reason as a
+        lost history (a new allowance is refused)."""
+        doc, why = self.session_registry()
+        return ([] if doc is None else doc["evidence_history"]), why
+
+    def candidates(self):
+        """-> the registered candidates (details of possible omissions) of the session; [] when no registry is readable."""
+        doc, _ = self.session_registry()
+        return [] if doc is None else doc["candidates"]
 
     def reverification_state(self):
         """-> dict(unauthorized: [unauthorized_repeats...], reason). The registry is read only when a repeat exists (a report without one never touches it)."""

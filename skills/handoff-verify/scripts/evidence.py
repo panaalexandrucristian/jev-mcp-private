@@ -13,7 +13,7 @@ no binary or oversized file, no path that holds a secret); the shared sanitizing
 A transcript_record is an EXACT quote (case-sensitive, inside one block) of the session itself; it is eligible only in the shared source window of the evaluated write (omissions.window_for / eligible_blocks_indexed: before the write,
 never the note's own Write or Edit, never a Jev call, never verification material) and only when the request is bound to a version_ref. That the note's path was not written in several streams is re-derived when the
 re-verification is authorized, not here. Material is NEW only when its normalized text is not already inside one evidence entry the original call received (case, spacing and identifiers do not make it new), and one passage counts once. An answer typed in
-the chat is never evidence. AUTHORIZING (`authorize`): the exact tool input the agent will send (a payload {claims, evidence, ...}) is checked and the single re-verification is reserved in the candidate registry of the session BEFORE the call
+the chat is never evidence. THE TWO HALVES OF AN OMISSION PAIR (R04) have their own rules, by `target.stage`: `absence` takes the complete canonical material and nothing else (nothing is collected, the request is blocked); `source` takes\nONE other eligible record of the session as a transcript_record (never a file, never a corrected claim, no question to the user) and its payload is the canonical SOURCE claim with that WHOLE record as the only evidence. AUTHORIZING (`authorize`): the exact tool input the agent will send (a payload {claims, evidence, ...}) is checked and the single re-verification is reserved in the candidate registry of the session BEFORE the call
 (audit.reserve_evidence: exclusive lock + atomic replace, never given back); the authorization fixes the input hash (the hash the recorded call will carry) and the version of the note. The payload must carry the claim
 (the original one, or exactly the corrected one), keep every evidence entry of the original call, add every new item, and hold nothing the sanitizing policy would change; changed bytes are refused, the same bytes
 are the same authorization, not a second allowance. `check` is the preflight right before the call. The registry is DERIVED from the session (audit.registry_path_of), never chosen. This module cannot call Jev:
@@ -115,23 +115,29 @@ def _transcript(source, version_ref):
         return (O.eligible_blocks_indexed(recs, None, w["limit"], w["excluded"]), D.content_fingerprint(source)[2], w), None
     except (OSError, ValueError, KeyError, TypeError): return None, "transcript_unreadable"
 
-def _record_item(blocks, sha, w, version_ref, uuid, quote):
-    """-> an eligible item for the first eligible block that holds the quote EXACTLY (and, when a uuid is given, belongs to that record), or (None, reason)."""
+def _record_item(blocks, sha, w, version_ref, uuid, quote, whole=False):
+    """-> an eligible item for the first eligible block that holds the quote EXACTLY (and, when a uuid is given, belongs to that record), or (None, reason). `whole` (the SOURCE stage of an omission pair): the item also carries the
+    WHOLE text of that block as `passage`, which must itself be clean under the sanitizing policy (it is sent as the only evidence)."""
     hit = next(((t, p) for t, p in blocks if quote in t and (uuid is None or p.get("uuid") == uuid)), None)
     if hit is None: return None, ("quote_not_in_record" if uuid is not None and any(quote in t for t, _ in blocks) else "not_in_eligible_source")
     clean, info = S.sanitize_material(quote)
     if info["changed"] or info["redaction_dependent"]: return None, "redaction_dependent"
+    if whole:
+        info = S.sanitize_material(hit[0])[1]
+        if info["changed"] or info["redaction_dependent"]: return None, "redaction_dependent"
     p = hit[1]
-    return dict(kind="transcript_record", uuid=p.get("uuid"), record=p.get("record"), line=p.get("line"), block=p.get("block"), block_kind=p.get("kind"), quote=quote, source_sha256=sha,
+    return dict(dict(kind="transcript_record", uuid=p.get("uuid"), record=p.get("record"), line=p.get("line"), block=p.get("block"), block_kind=p.get("kind"), quote=quote, source_sha256=sha,
                 window=dict(write_tool_use_id=version_ref["write_tool_use_id"], evaluated_against=version_ref["evaluated_against"], run=version_ref.get("run"), limit=w["limit"]),
-                raw_sha256=sha256(quote), sanitized_sha256=sha256(clean), eligible=True), None
+                raw_sha256=sha256(quote), sanitized_sha256=sha256(clean), eligible=True), **({"passage": hit[0]} if whole else {})), None
 
 def collect(request, call, proposals, source=None):
     """Check the PROPOSALS for one request against the evidence its original `call` received; `source` = the session transcript (path or selector) the transcript_record proposals are read from.
     -> {items (eligible and NEW), rejected [{kind, path, reason}], searched [admitted paths and the transcript], corrected_claim | None}."""
     originals = J.call_evidence(call)
-    claim = ((request.get("target") or {}).get("jev_ref") or {}).get("key"); version_ref = (request.get("target") or {}).get("version_ref")
+    claim = ((request.get("target") or {}).get("jev_ref") or {}).get("key"); version_ref = (request.get("target") or {}).get("version_ref"); stage = (request.get("target") or {}).get("stage")
     items, rejected, searched, seen, corrected, tx = [], [], [], set(), None, []
+    if stage == "absence":      # the ABSENCE half takes the complete canonical material and nothing else: nothing is read, nothing is collected
+        return dict(items=[], rejected=[_rejected(p.get("kind") if isinstance(p, dict) and isinstance(p.get("kind"), str) and not _unsafe(p["kind"]) else None, None, "stage_takes_no_new_evidence") for p in proposals], searched=[], corrected_claim=None)
 
     def keep(kind, shown, it):
         n = J._norm(it["quote"])
@@ -141,6 +147,7 @@ def collect(request, call, proposals, source=None):
     for p in proposals:
         if not isinstance(p, dict): rejected.append(_rejected(None, None, "malformed_proposal")); continue
         kind = p.get("kind")
+        if stage == "source" and kind in ("local_file", "local_dir"): rejected.append(_rejected(kind, None, "source_stage_takes_transcript_records_only")); continue      # a path is not a record of the session
         if kind in ("local_file", "local_dir"):
             real, why = admit_path(p.get("path"))
             if real is None: rejected.append(_rejected(kind, None if why in ("path_redaction_dependent", "not_absolute", "remote_url") else p.get("path"), why)); continue
@@ -158,10 +165,11 @@ def collect(request, call, proposals, source=None):
             if not tx: tx.append(_transcript(source, version_ref))
             ctx, why = tx[0]
             if ctx is None: rejected.append(_rejected(kind, None, why)); continue
-            it, why = _record_item(*ctx, version_ref, uuid, quote)
+            it, why = _record_item(*ctx, version_ref, uuid, quote, whole=stage == "source")
             if it is None: rejected.append(_rejected(kind, None, why)); continue
             if source not in searched: searched.append(source)
             keep(kind, None, it)
+        elif kind == "corrected_claim" and stage == "source": rejected.append(_rejected(kind, None, "source_stage_takes_no_corrected_claim"))      # the claim of the pair is canonical: another detail is another pair, ABSENCE-first
         elif kind == "corrected_claim":
             text = p.get("text")
             if not isinstance(text, str) or not text.strip(): rejected.append(_rejected(kind, None, "malformed_proposal")); continue
@@ -180,6 +188,10 @@ def advance(request, collected, headless=False, asked=False):
     r = dict(request)
     if r["state"] not in ("collect_local", "ask_user"): return r
     left = r["rounds_limit"] - r["rounds_used"]
+    if (r.get("target") or {}).get("stage") == "source" and r["remedy"] == "semantic_evidence":      # only another record of the session can serve: a path of the user cannot be one, so there is no question
+        if collected.get("items"): r.update(state="ready", question_ro=None, stop_reason=None, retry_remaining=left)
+        else: r.update(state="blocked", question_ro=None, stop_reason="no_other_eligible_record", retry_remaining=0)
+        return r
     if r["remedy"] == "claim_correction":      # a wrong fact is answered by a corrected claim, never by files, and the user is not asked for a path
         if collected.get("corrected_claim"): r.update(state="ready", question_ro=None, stop_reason=None, retry_remaining=left)
         return r
@@ -218,6 +230,12 @@ def check_payload(request, call, collected, payload):
     if not isinstance(payload, dict): return "payload_not_object"
     claims = _claim_texts(payload)
     if claims is None: return "claims_malformed"
+    if request["target"].get("stage") == "source":      # the pair needs the evidence of the SOURCE call to be EXACTLY one eligible record (jevref.validate_finding): not the old passage kept, not neighbours joined
+        import omissions as O
+        if len(claims) != 1 or J._norm(claims[0]) != J._norm(request["target"]["jev_ref"]["key"]): return "source_claim_not_canonical"
+        raw = O.evidence_raw(payload)
+        if not any(O.passage_matches(raw, i["passage"]) for i in collected.get("items", []) if isinstance(i.get("passage"), str)): return "source_evidence_not_one_eligible_record"
+        return "payload_redaction_dependent" if any(_unsafe(t) for t in _strings(payload)) else None
     want = (collected.get("corrected_claim") or {}).get("text") if request["remedy"] == "claim_correction" else request["target"]["jev_ref"]["key"]
     if want not in claims: return "claim_missing_in_payload"
     sent = [J._norm(t) for t in J.call_evidence(dict(input=payload))]

@@ -12,13 +12,18 @@ The advice never changes a status and never relaxes report.retry_decision: at mo
 Each advice of the CLI also carries `evidence_request`: what is missing before that single re-verification (remedy, state, sources, rounds used). It only DESCRIBES the request; collecting, asking, authorizing and
 recording are other steps, and `advise` (the report path) does not carry it. The identity of a request is the call result it refers to plus the stage and the version, never the check id or the bytes of an input.
 
+The two halves of an omission pair (R04) have their own generator, `omission_advise`, because the generic advice is wrong for them: the ABSENCE half takes the complete canonical material and nothing else, and the SOURCE half takes exactly one
+eligible record. A qualified `unsupported` ABSENCE is the EXPECTED half (next: the SOURCE call, a first call and no request); one that does not qualify takes no new evidence (blocked); an unqualified SOURCE may be re-asked once with another record of
+the session. The log alone recognizes a SOURCE call (its canonical prefix); only the report writer recognizes an ABSENCE call (the canonical material, or a registered candidate), so the CLI keeps the generic advice for it.
+
 CLI: advice.py --session ID|PATH.jsonl|opencode:ID|opencode-db:/ABS/DB#ID [--cwd DIR] [--registry PATH] [--version-ref-file FILE.json]   -> JSON with every verify/gate result that did not pass and its advice.
 --registry reads the evidence_history of a candidate registry (read-only); an unreadable or malformed one refuses a new allowance (state blocked, stop_reason history_unavailable)."""
 import argparse, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import audit as A, jevref as J
 
-CODES = ("protocol_fields_absent", "evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "aux_condition_failed", "result_mismatch", "no_result")
+CODES = ("protocol_fields_absent", "evidence_off_subject", "fix_fact", "recheck_fact", "remove_unsupported_detail", "add_source_passage", "add_direct_evidence", "aux_condition_failed", "result_mismatch", "no_result",
+         "absence_awaits_source", "absence_material_unchanged", "absence_material_not_canonical", "source_not_qualified")      # the last four: the two halves of an omission pair (omission_advise)
 HINTS = {
     "protocol_fields_absent": "The recorded response does not contain %s, which the strict conditions need (same_subject on each result, subject_at at the top level of the response): this response cannot pass whatever the evidence, so more evidence will not help. Do not spend the single re-verification on it; the check stays UNRESOLVED. A future run needs a server whose recorded verify/gate responses carry these fields (an ABSENCE check of an omission pair does not need them).",
     "evidence_off_subject": "Jev judged the evidence to be about another subject (same_subject below subject_at): give the exact passage about this claim's subject.",
@@ -30,6 +35,10 @@ HINTS = {
     "aux_condition_failed": "Jev did not let the verdict stand on its own: the action is review, or same_subject/subject_at is missing. Give evidence about exactly this claim; a server that returns no same_subject/subject_at cannot pass the strict conditions.",
     "result_mismatch": "The result does not carry the claim that was sent (%s): no advice can be read from it; the check stays unresolved. Re-verify only with a corrected call that carries this claim.",
     "no_result": "No usable result: only a transport or invalid_response error allows one identical retry; otherwise the check stays unresolved.",
+    "absence_awaits_source": "The ABSENCE half of an omission came back unsupported above the threshold with action auto: the note does not state the detail, which is the expected result of this half. If the SOURCE call has not been made yet, make it now (omissions.py prepare prints the claim and the passage): it is a first call, not a re-verification, and the retry advice for an unsupported claim does not apply to this half.",
+    "absence_material_unchanged": "The ABSENCE result does not qualify (a real unsupported needs confidence above 0.95 and action explicitly auto). Its evidence is the complete canonical material of the note and nothing may be added to it (no neighbours, no free text, no other file): the same claim with the same material is not new evidence, so there is no re-verification and the omission stays UNRESOLVED. It needs no SOURCE call.",
+    "absence_material_not_canonical": "The ABSENCE call did not use the complete canonical material that omissions.py prepare prints, so it proves nothing about the note, and the result does not qualify. A documentary correction cannot make the real call valid; the omission stays UNRESOLVED and needs no SOURCE call.",
+    "source_not_qualified": "The SOURCE result does not qualify (verified above 0.95 with the strict auxiliary conditions). The single re-verification may use another eligible record of the session that states the same detail: give the exact quote and send the WHOLE passage of that record as the only evidence, never neighbouring records joined together, never a file and never an answer typed in the chat.",
 }
 CAPABILITY_NOTE = ("What the recorded verify/gate responses of this session show, per tool and envelope shape: the state (absent / null / invalid / finite) of same_subject on each result and of subject_at at the top level. Every response is judged on its own fields: "
                    "strict acceptance needs both finite at those locations, a response without them cannot be accepted whatever the evidence, and a later response that carries them is judged normally. Future runs need a server whose recorded responses carry these fields; "
@@ -106,6 +115,33 @@ def _evidence_advice(entry, call):
     else: code = "add_direct_evidence"
     return dict(code=code, hint=HINTS[code])
 
+def stage_of(claim, tool, material_ok=False, registered=False):
+    """The R04 stage of a verify check, from facts only: `source` when the claim starts with the canonical SOURCE prefix, `absence` when the claim starts with the (R03) ABSENCE prefix, the call's evidence is exactly the complete canonical
+    material of the note version (`material_ok`), or the bare claim is a detail registered as a candidate of that evaluation (`registered`; both are known to the report writer only); None otherwise. The claim decides first. A gate call is never
+    one of the two halves."""
+    if tool != "verify" or not isinstance(claim, str): return None
+    import omissions as O
+    c = O.wsnorm(claim)
+    if c.startswith(O.SOURCE_PREFIX.strip()): return "source"
+    return "absence" if material_ok or registered or c.startswith(O.ABSENCE_PREFIX.strip()) else None
+
+def qualified_absence(entry, call):
+    """The absence half of a valid pair: a real `unsupported` above the threshold with action EXPLICITLY auto (same_subject is not required for this half, and only for it), on an error-free jev_verify call."""
+    return (call.get("tool") == "verify" and not call.get("is_error") and str(entry.get("verdict")).lower() == "unsupported" and J.strict_pass(entry.get("confidence")) and entry.get("action") == "auto")
+
+def omission_advise(stage, entry, call, material_ok=True):
+    """The distinct generator for the two halves of an omission pair (R04); -> {code, hint, stage, fields, causes[, evidence_retry]} or None when the result needs nothing. A qualified unsupported ABSENCE is the EXPECTED half: the
+    next step is the SOURCE call (not a re-verification). An ABSENCE that does not qualify takes no new evidence (its evidence is the complete canonical material), and an unqualified SOURCE may be re-asked once with another eligible
+    record. Pure; it never changes a status, and the pair exception (the checks of a finding-linked pair get no advice) is applied by the report writer before this is reached."""
+    fields = field_states(entry, call); causes = causes_of(entry, call, fields)
+    if stage == "absence":
+        code = "absence_awaits_source" if qualified_absence(entry, call) else ("absence_material_unchanged" if material_ok else "absence_material_not_canonical")
+        return dict(code=code, hint=HINTS[code], stage=stage, evidence_retry=False, fields=fields, causes=causes)
+    if stage == "source":
+        if passed(entry, call): return None
+        return dict(code="source_not_qualified", hint=HINTS["source_not_qualified"], stage=stage, fields=fields, causes=causes)
+    raise ValueError("unknown omission stage %r" % (stage,))
+
 ROUNDS_LIMIT = 1                      # one re-verification per request (the user's rule per_check_only), never a wave
 SOURCES = ("session_transcript", "admitted_local_file")   # where new evidence may come from: never an answer typed in the chat
 # primary advice code -> (remedy, allowed sources, missing artifacts). Only codes that advice.py itself produces; the identity, material and audit families belong to the later steps.
@@ -120,6 +156,9 @@ REMEDY = {
     "result_mismatch": ("claim_correction", (), ("corrected_call_with_claim",)),
     "protocol_fields_absent": ("protocol_blocker", (), ()),
     "no_result": ("transport_retry", (), ()),
+    "absence_material_unchanged": ("protocol_blocker", (), ()),        # the ABSENCE half takes the complete canonical material and nothing else: no new evidence exists
+    "absence_material_not_canonical": ("protocol_blocker", (), ()),
+    "source_not_qualified": ("semantic_evidence", ("session_transcript",), ("another_eligible_record_stating_the_detail",)),     # one other eligible record of the session, never a file
 }
 
 def _jev_ref(entry, call):
@@ -127,17 +166,17 @@ def _jev_ref(entry, call):
     if entry is not None and type(entry.get("index")) is int and isinstance(entry.get("key"), str): return dict(tool_use_id=call["tool_use_id"], result_index=entry["index"], key=entry["key"])
     return dict(tool_use_id=call["tool_use_id"], result_index=None, key=None)
 
-def evidence_request(entry, call, adv, history=(), version_ref=None):
+def evidence_request(entry, call, adv, history=(), version_ref=None, stage=None):
     """-> the evidence_request of one result that did not pass (`adv` = advise(entry, call), or the call-level no_result advice with entry None). Pure: reads nothing, calls nothing.
     state: collect_local (the first thing to do is look for the missing material locally), blocked (no evidence can help, or the history is lost) or exhausted (the single re-verification of this request is already
     authorized or recorded in `history`). `history` = the evidence_history of the registry; None = lost or unreadable, which refuses a new allowance. The request id comes from the target only."""
     if A.key_from_dict(version_ref) is None: raise ValueError("version_ref is not a version identity")
     code, causes = adv["code"], adv.get("causes", [])
     remedy, sources, missing = REMEDY[code]
-    stop = {"protocol_fields_absent": "protocol_fields_absent", "no_result": "no_usable_result"}.get(code)
+    stop = {"protocol_fields_absent": "protocol_fields_absent", "no_result": "no_usable_result", "absence_material_unchanged": "absence_material_unchanged", "absence_material_not_canonical": "absence_material_not_canonical"}.get(code)
     if stop is None and remedy == "semantic_evidence" and "subject_fields_null_or_invalid" in causes:      # more text cannot repair a response whose subject fields are null or invalid
         remedy, sources, missing, stop = "protocol_blocker", (), (), "subject_fields_null_or_invalid"
-    target = dict(jev_ref=_jev_ref(entry, call), version_ref=version_ref, stage=call["tool"])
+    target = dict(jev_ref=_jev_ref(entry, call), version_ref=version_ref, stage=stage or call["tool"])      # `absence` / `source` for the two halves of an omission pair (omission_advise), else the tool
     rid = A.evidence_request_id(target)
     called = target["jev_ref"]["tool_use_id"]      # a result of a call that is itself the RECORDED re-verification of another request is exhausted: asking again under the id of the re-verification would reset the allowance
     chained = history is not None and any(isinstance(h, dict) and h.get("state") == "recorded" and isinstance(h.get("recorded_ref"), dict) and h["recorded_ref"].get("tool_use_id") == called for h in history)
@@ -160,8 +199,9 @@ def session_advice(calls, history=(), version_ref=None):
             a = dict(code="no_result", hint=HINTS["no_result"])
             out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=None, claim=None, verdict=None, confidence=None, advice=dict(a, evidence_request=evidence_request(None, c, a, history, version_ref)))); continue
         for e in ents:
-            a = advise(e, c)
-            if a: out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=e["index"], claim=e["key"], verdict=e["verdict"], confidence=e["confidence"], advice=dict(a, evidence_request=evidence_request(e, c, a, history, version_ref))))
+            stage = "source" if stage_of(e["key"], c["tool"]) == "source" else None      # the log alone can tell a SOURCE call (canonical prefix); only the report can tell an ABSENCE call (it knows the canonical material)
+            a = omission_advise(stage, e, c, False) if stage else advise(e, c)
+            if a: out.append(dict(tool_use_id=c["tool_use_id"], tool=c["tool"], result_index=e["index"], claim=e["key"], verdict=e["verdict"], confidence=e["confidence"], advice=dict(a, evidence_request=evidence_request(e, c, a, history, version_ref, stage))))
     return out
 
 def load_history(registry_path):
