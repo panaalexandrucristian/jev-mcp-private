@@ -54,6 +54,8 @@ describe("SKILL.md", () => {
     assert.match(skillText, /Pass the SIMPLE name/);
     assert.match(skillText, /Read\(file_path=<absolute path>, offset=S, limit=E-S\+1\)/);
     assert.match(skillText, /rg -n -g '\*\.kt' 'fun \.\*\\b<name>\\\(' <project> \| head -n 80/);
+    assert.match(skillText, /`\| tail -n \+81 \| head -n 80` and `\| tail -n \+161 \| head -n 80` \(3 pages at most/);
+    assert.match(skillText, /A bare name needs no search first: run class-graph with it straight away/);
     for (const rule of ["- Exit 1:", "- Exit 2:", "label the range provisional", "Named functions only", "A scan, not a Kotlin parser"]) assert.ok(skillText.includes(rule), rule);
   });
 
