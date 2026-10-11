@@ -180,7 +180,7 @@ export function realConfig({ pluginDirs, model = MODEL }) {
  * Runs one planned or reserve session. arm "ON": plugin as shipped. arm "OFF": the same plugin with JEV_LOGIC_TEST_DEBUG=off.
  * Returns the verdict (also written to runs/<id>/verdict.json).
  */
-export async function runReal({ root, id, kind, scenario, arm, run, prompt, pluginDir, timeoutMs = 600000, model = MODEL }) {
+export async function runReal({ root, id, kind, scenario, arm, run, prompt, pluginDir, timeoutMs = Number(process.env.LTD_OC_SESSION_TIMEOUT_MS) || 600000, model = MODEL }) {
   const version = openCodeVersion();
   if (!confinementProven(root, version)) throw new Error("no valid confinement proof for this permission set and OpenCode version: run the probe first");
   if (!existsSync(join(root, "cred-template"))) throw new Error("credentials not prepared");
