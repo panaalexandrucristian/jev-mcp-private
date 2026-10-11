@@ -127,6 +127,7 @@ describe("report", () => {
     assert.match(md, /no effect is claimed/);
     assert.match(md, /every ON session had the directive in its first model request: true/);
     assert.match(md, /no OFF session had it: true/);
+    assert.match(md, /in every model request of the session \(plugin 0\.10\.4 and later\): false/, "1 of 3 requests is not every request");
     assert.match(md, /read×2 write×1/);
     assert.deepEqual(PLAN.map((p) => p.arm), ["ON", "OFF", "OFF", "ON"]);
   });

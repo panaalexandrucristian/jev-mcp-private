@@ -90,7 +90,8 @@ export function toMarkdown(verdicts) {
     lines.push(`| ${a} | ${list.length} | ${n(list, (v) => v.probe.firstHasDirective)} | ${n(list, (v) => v.session.skillLoaded)} | ${n(list, (v) => v.session.record.present)} | ${n(list, (v) => v.oracle.success)} |`);
   }
   const outside = verdicts.filter((v) => v.oracle.outOfScope?.length);
-  lines.push("", `Gates: every ON session had the directive in its first model request: ${arm("ON").length > 0 && arm("ON").every((v) => v.probe.firstHasDirective)}; no OFF session had it: ${arm("OFF").every((v) => v.probe.withDirective === 0)}; sessions that changed files outside the allowed edits: ${outside.length}.`);
+  const everyRequest = arm("ON").length > 0 && arm("ON").every((v) => v.probe.modelRequests > 0 && v.probe.withDirective === v.probe.modelRequests);
+  lines.push("", `Gates: every ON session had the directive in its first model request: ${arm("ON").length > 0 && arm("ON").every((v) => v.probe.firstHasDirective)}; in every model request of the session (plugin 0.10.4 and later): ${everyRequest}; no OFF session had it: ${arm("OFF").every((v) => v.probe.withDirective === 0)}; sessions that changed files outside the allowed edits: ${outside.length}.`);
   return `${lines.join("\n")}\n`;
 }
 

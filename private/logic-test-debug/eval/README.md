@@ -91,3 +91,22 @@ Each ON session made 6 model requests of the main agent and the directive was in
 What it shows: on OpenCode 2.0.22 with a real model the directive, as delivered, makes the model load the skill (2 of 2, against 0 of 2 without it), as in Claude Code. It does **not** show the record: 0 of 2 with the directive, the same as without. A possible reason, not tested: the instruction to finish with the record is in the first request only. In the Claude Code campaigns the record appeared in 15 of 40 code sessions with the old text, so 0 of 2 here is not evidence of a difference. The task is at the ceiling for this model in both arms (136 of 136), so correctness says nothing.
 
 How to run a real-model session on OpenCode 2.0.22, learned the hard way: the run must not start at once. A fresh server learns the GitHub Copilot models a few seconds after boot; a `run --standalone` started at once gets «Model unavailable», or a default endpoint (`api.githubcopilot.com/v1/chat/completions`) that answers HTTP 404. `real.mjs` therefore starts `opencode serve` with its own password first, polls `opencode models --server` until the model is listed, and only then calls `opencode run --server`. The model catalogue is copied into the session database from the user's own (read-only), and the credential comes through `auth export | auth import`.
+
+### Second round with plugin 0.10.4 (design fixed before its first session, 2026-10-11)
+
+**Question.** Does the record appear, and does the skill still load, when the directive is in every model request of the turn (plugin 0.10.4) instead of the first only (0.10.3, first round above)?
+
+**Design.** The same as the first round in everything but the plugin: four planned sessions in the order ON, OFF, OFF, ON, `github-copilot/claude-haiku-5.5`, the `conditions` task, the same permission set, the same gates, a root of its own (`logic-test-debug-opencode-real2`) with its own confinement proof, ledger and caps (4 planned, 6 in all), the plugin as a clean checkout of the commit under test. One gate is added: every ON session has the directive in every one of its model requests. The OFF arm is unchanged by the plugin change; it is run again so that both arms of a round come from the same hour and the same server. Counts only; with two sessions per arm no test is run. The first round and this one are not pooled: the plugins differ.
+
+**Estimate before the run, from the first round (measured):** 4 sessions, about 20 main-agent model requests, about 5,000 output tokens, 14 to 19 s per session, about 0.006 USD by OpenCode's price list; the directive adds about 80 tokens to each request of an ON session.
+
+**Result of the second round (2026-10-11, plugin 0.10.4 at `bd703c6`; `~/Dev/jev-test-runs/logic-test-debug-opencode-real2/report.md`).** Confinement probe passed again (16 of 16; the probe plugin agreed). Counts, two sessions per arm, no test run:
+
+| | sessions | directive in every model request | skill loaded | record written | oracle 136/136 |
+|---|---|---|---|---|---|
+| ON | 2 | 2 (6 of 6 and 6 of 6) | 2 | **2** | 2 |
+| OFF | 2 | 0 (0 of 3 and 0 of 4) | 0 | 0 | 2 |
+
+All gates held: the directive was in every model request of both ON sessions and in none of the OFF ones; no refused attempt; no file outside the allowed edits; no shell call. The two records read as intended: Scope, Method (a combination strength and its reason, marked INFERENCE) and Result, and both say the tests could not be run. Time 11 to 22 s per session; 19 main-agent model requests in all; about 0.009 USD by OpenCode's price list; the ON sessions used more reasoning tokens (about 580 each; none in the OFF ones). No failed attempt this round.
+
+Reading: against the first round (same model, same task, directive in the first request only: record 0 of 2) the record appeared in 2 of 2 once the directive was in every request. That is consistent with the explanation given after the first round, but it is two sessions against two, the rounds were run on different days with different plugins, and with two sessions per arm the smallest possible two-sided Fisher p is 0.33, so it is an observation and not a test. The sessions also wrote tests of their own design (an exhaustive 6 × 16 check), which the OFF sessions mostly did not: descriptive only, not scored. What it still cannot show: other models, harder tasks, the terminal interface, the Claude Code side (unchanged), or whether the skill makes the code better (the task is at the ceiling).
