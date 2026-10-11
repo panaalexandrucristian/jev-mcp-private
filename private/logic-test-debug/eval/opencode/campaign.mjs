@@ -1,7 +1,8 @@
 // OpenCode check with a real model. Commands (all take the run root as the first argument):
 //   confine <root> <pluginDir>   prove the confinement with the stand-in provider (no model); writes confinement.json
 //   credentials <root>           import the GitHub Copilot credential into a template folder (removed by `cleanup`)
-//   run <root> <pluginDir> [ids] the four planned sessions, one after the other: ON, OFF, OFF, ON (or only the ids given, e.g. s1)
+//   run <root> <pluginDir> [ids] [scenario]  the four planned sessions, one after the other: ON, OFF, OFF, ON (or only the ids given,
+//                                e.g. s1; `-` for all); the scenario is conditions (default), combos or trace
 //   report <root>                counts of what the stored sessions show, as markdown
 //   cleanup <root>               remove the credential template
 // The design (question, model, task, arms, order, what is counted, what would stop it) is in eval/README.md and was fixed before the
@@ -20,7 +21,6 @@ export const PLAN = [
   { id: "s3", arm: "OFF", run: 2 },
   { id: "s4", arm: "ON", run: 2 },
 ];
-const SCENARIO = "conditions";
 
 async function confine(root, pluginDir) {
   mkdirSync(root, { recursive: true });
@@ -54,15 +54,15 @@ async function confine(root, pluginDir) {
   }
 }
 
-async function runAll(root, pluginDir, only = null) {
+async function runAll(root, pluginDir, only = null, scenario = "conditions") {
   for (const step of PLAN.filter((p) => !only || only.includes(p.id))) {
-    const verdict = await runReal({ root, id: step.id, kind: "planned", scenario: SCENARIO, arm: step.arm, run: step.run, prompt: promptFor(SCENARIO, step.run), pluginDir });
+    const verdict = await runReal({ root, id: step.id, kind: "planned", scenario, arm: step.arm, run: step.run, prompt: promptFor(scenario, step.run), pluginDir });
     if (verdict.voided) {
       console.log(`${step.id} VOIDED: no model request was made (see ledger.tsv); stopping, nothing else is started`);
       process.exitCode = 1;
       return;
     }
-    console.log(JSON.stringify({ id: step.id, arm: step.arm, complete: verdict.complete, seconds: verdict.seconds, skillLoaded: verdict.session.skillLoaded, record: verdict.session.record.present, directive: `${verdict.probe.withDirective}/${verdict.probe.modelRequests}`, oracle: `${verdict.oracle.passed}/${verdict.oracle.total}`, success: verdict.oracle.success }));
+    console.log(JSON.stringify({ id: step.id, arm: step.arm, complete: verdict.complete, seconds: verdict.seconds, skillLoaded: verdict.session.skillLoaded, record: verdict.session.record.present, directive: `${verdict.probe.withDirective}/${verdict.probe.modelRequests}`, oracle: `${verdict.oracle.passed}/${verdict.oracle.total}`, score: verdict.oracle.score, success: verdict.oracle.success }));
     if (verdict.oracle.outOfScope?.length || verdict.session.rejected.length) console.log(`  note: refused attempts ${JSON.stringify(verdict.session.rejected)}, files outside scope ${JSON.stringify(verdict.oracle.outOfScope)}`);
   }
 }
@@ -75,7 +75,7 @@ export function loadVerdicts(root) {
 
 /** Markdown with counts only; nothing is tested at n = 2 per arm. Pure over the verdicts. */
 export function toMarkdown(verdicts) {
-  const lines = ["# logic-test-debug on OpenCode, real model: report", "", `Sessions: ${verdicts.length} (planned: ${PLAN.length}). Model ${verdicts[0]?.model ?? MODEL}, OpenCode ${verdicts[0]?.version ?? "?"}, task: ${SCENARIO}. Counts only; with 2 sessions per arm no test is run and no effect is claimed.`, ""];
+  const lines = ["# logic-test-debug on OpenCode, real model: report", "", `Sessions: ${verdicts.length} (planned: ${PLAN.length}). Model ${verdicts[0]?.model ?? MODEL}, OpenCode ${verdicts[0]?.version ?? "?"}, task: ${verdicts[0]?.scenario ?? "?"}. Counts only; with 2 sessions per arm no test is run and no effect is claimed.`, ""];
   lines.push("| id | arm | complete | s | model requests | with directive | skill loaded | record | tools | oracle | success | refused |");
   lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const v of verdicts) {
@@ -89,6 +89,15 @@ export function toMarkdown(verdicts) {
     const list = arm(a);
     lines.push(`| ${a} | ${list.length} | ${n(list, (v) => v.probe.firstHasDirective)} | ${n(list, (v) => v.session.skillLoaded)} | ${n(list, (v) => v.session.record.present)} | ${n(list, (v) => v.oracle.success)} |`);
   }
+  if (verdicts.some((v) => v.scenario === "combos")) {
+    lines.push("", "Scores of the task `combos` (faulty versions the agent's tests catch, of 11, counted only when both clean versions pass):", "", "| id | arm | clean versions pass | caught of 11 | score | oracle skipped |", "|---|---|---|---|---|---|");
+    for (const v of verdicts) lines.push(`| ${v.id} | ${v.arm} | ${v.oracle.clean ? `${v.oracle.clean.correct}, ${v.oracle.clean.equivalent}` : "-"} | ${v.oracle.killed ? v.oracle.killed.length : "-"} | ${v.oracle.score ?? "-"} | ${v.oracle.skipped === true} |`);
+  }
+  const withBehaviour = verdicts.filter((v) => v.behaviour);
+  if (withBehaviour.length > 0) {
+    lines.push("", "Behaviour measures (descriptive, not scored): the test file edited, loops in it, the answer mentions combinations or pairs, the answer names INFERENCE.", "", "| id | arm | edited tests | loops in tests | mentions combinations | mentions INFERENCE |", "|---|---|---|---|---|---|");
+    for (const v of withBehaviour) lines.push(`| ${v.id} | ${v.arm} | ${v.behaviour.editedTests} | ${v.behaviour.testLoops ?? "-"} | ${v.behaviour.mentionsCombination} | ${v.behaviour.mentionsInference} |`);
+  }
   const outside = verdicts.filter((v) => v.oracle.outOfScope?.length);
   const everyRequest = arm("ON").length > 0 && arm("ON").every((v) => v.probe.modelRequests > 0 && v.probe.withDirective === v.probe.modelRequests);
   lines.push("", `Gates: every ON session had the directive in its first model request: ${arm("ON").length > 0 && arm("ON").every((v) => v.probe.firstHasDirective)}; in every model request of the session (plugin 0.10.4 and later): ${everyRequest}; no OFF session had it: ${arm("OFF").every((v) => v.probe.withDirective === 0)}; sessions that changed files outside the allowed edits: ${outside.length}.`);
@@ -101,7 +110,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   else if (command === "credentials") {
     prepareCredentials(root);
     console.log("credential template ready");
-  } else if (command === "run") await runAll(root, pluginDir, process.argv[5] ? process.argv[5].split(",") : null);
+  } else if (command === "run") await runAll(root, pluginDir, process.argv[5] && process.argv[5] !== "-" ? process.argv[5].split(",") : null, process.argv[6] ?? "conditions");
   else if (command === "report") {
     const md = toMarkdown(loadVerdicts(root));
     writeFileSync(join(root, "report.md"), md);

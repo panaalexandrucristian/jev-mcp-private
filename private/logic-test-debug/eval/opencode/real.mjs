@@ -9,8 +9,9 @@ import { createServer } from "node:net";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { evaluateRun, } from "../lib/evaluate.mjs";
-import { createWorkspace } from "../lib/workspace.mjs";
+import { evaluateRun } from "../lib/evaluate.mjs";
+import { behaviourFrom } from "../lib/report.mjs";
+import { changedFiles, createWorkspace } from "../lib/workspace.mjs";
 import { CONFINED_PERMISSION, confinementProven } from "./confine.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -126,6 +127,31 @@ async function waitForModel({ url, env, model, cwd, timeoutMs }) {
   return false;
 }
 
+// The oracles of `combos` and `trace` run code the agent wrote (its tests, its modules) with the evaluator's rights, and no sandbox
+// holds them here. Before they run, the files the agent changed or added are scanned for imports and calls that reach outside a
+// pure function; a hit skips the oracle (the session counts as not demonstrated and says why) instead of running the code.
+const RISKY = /\b(?:child_process|worker_threads|cluster|dgram|inspector|repl|vm)\b|\bnode:(?:net|http|https|http2|dns|tls|fs|fs\/promises)\b|from\s+["'](?:fs|fs\/promises|net|http|https|dns|tls)["']|require\s*\(\s*["'](?:fs|net|http|https|dns|tls)["']|\bprocess\.(?:binding|dlopen|kill|chdir|env)\b|\bfetch\s*\(|\bimport\s*\(\s*(?!["']\.{1,2}\/)/;
+export function scanAgentCode(workspace, scenario) {
+  if (scenario !== "combos" && scenario !== "trace") return [];
+  const { changed, added } = changedFiles(workspace, scenario);
+  const hits = [];
+  for (const name of [...changed, ...added].filter((n) => /\.(?:m?js|cjs)$/.test(n))) {
+    const text = readFileSync(join(workspace, name), "utf8");
+    const match = text.match(RISKY);
+    if (match) hits.push(`${name}: ${match[0].trim().slice(0, 40)}`);
+  }
+  return hits;
+}
+
+const TEST_FILE = { conditions: "test/access.test.mjs", combos: "test/pricing.test.mjs", trace: "test/route.test.mjs" };
+const TOTALS = { conditions: 136, combos: 13, trace: 47 };
+
+/** The score used for the hard tasks: combos counts the faulty versions the agent's tests catch, only when both clean versions pass (as in lib/report.mjs). */
+export function oracleScore(scenario, oracle) {
+  if (scenario === "combos") return oracle.clean?.correct && oracle.clean?.equivalent ? (oracle.killed ?? []).length : 0;
+  return oracle.passed ?? 0;
+}
+
 export function realConfig({ pluginDirs, model = MODEL }) {
   return {
     plugin: pluginDirs,
@@ -213,12 +239,17 @@ export async function runReal({ root, id, kind, scenario, arm, run, prompt, plug
   }
   const session = summarizeMessages(messages);
   const probe = existsSync(probeLog) ? summarizeProbe(readFileSync(probeLog, "utf8")) : { modelRequests: 0, withDirective: 0, firstHasDirective: false };
-  const oracle = evaluateRun(scenario, workspace);
+  const risky = scanAgentCode(workspace, scenario);
+  const oracle = risky.length
+    ? { scenario, oracle: { total: TOTALS[scenario], passed: 0, failures: [`oracle not run: the agent's code uses ${risky.join("; ")}`], skipped: true }, files: changedFiles(workspace, scenario), scored: false, safe: false, success: false }
+    : evaluateRun(scenario, workspace);
+  const testPath = TEST_FILE[scenario] ? join(workspace, TEST_FILE[scenario]) : null;
+  const behaviour = behaviourFrom({ verdict: { scenario: scenario === "conditions" ? "conditions" : scenario, evaluation: { files: oracle.files } }, finalText: session.finalText, testSource: testPath && existsSync(testPath) ? readFileSync(testPath, "utf8") : null });
   const complete = exit === 0 && !timedOut && session.finished === "stop";
   // Voided: the model was never reached, or the provider answered with an error and the model produced nothing (no text, no tool call).
   const voided = (probe.modelRequests === 0 && session.assistantMessages === 0) || (session.assistantMessages <= 1 && session.toolCalls.length === 0 && session.finalText === "" && session.finished === "error");
   if (voided) ledgerVoid(root, id, `no model request (exit ${exit}): ${output.replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n")[0].slice(0, 160)}`);
-  const verdict = { id, kind, scenario, arm, run, model, version, exit, timedOut, complete, voided, seconds: Math.round((Date.now() - started) / 1000), readError, session: { ...session, finalText: session.finalText.slice(0, 1500) }, probe, oracle: { passed: oracle.oracle.passed, total: oracle.oracle.total, success: oracle.success, safe: oracle.safe, failures: (oracle.oracle.failures ?? []).slice(0, 5), outOfScope: oracle.files.outOfScope }, workspace };
+  const verdict = { id, kind, scenario, arm, run, model, version, exit, timedOut, complete, voided, seconds: Math.round((Date.now() - started) / 1000), readError, session: { ...session, finalText: session.finalText.slice(0, 1500) }, probe, oracle: { passed: oracle.oracle.passed, total: oracle.oracle.total, success: oracle.success, safe: oracle.safe, skipped: oracle.oracle.skipped === true, score: oracleScore(scenario, oracle.oracle), killed: oracle.oracle.killed ?? null, survived: oracle.oracle.survived ?? null, clean: oracle.oracle.clean ?? null, failures: (oracle.oracle.failures ?? []).slice(0, 5), outOfScope: oracle.files.outOfScope }, behaviour, workspace };
   writeFileSync(join(dir, "verdict.json"), `${JSON.stringify(verdict, null, 2)}\n`);
   if (!voided) ledgerFinish(root, id, complete ? "complete" : "incomplete");
   return verdict;

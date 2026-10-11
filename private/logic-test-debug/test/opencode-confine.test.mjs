@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { CONFINED_PERMISSION, confineScript, confinementProven, judgeConfine, permissionFingerprint, prepareSentinels, writeProof } from "../eval/opencode/confine.mjs";
-import { ledgerStart, ledgerVoid, summarizeMessages, summarizeProbe } from "../eval/opencode/real.mjs";
+import { ledgerStart, ledgerVoid, oracleScore, scanAgentCode, summarizeMessages, summarizeProbe } from "../eval/opencode/real.mjs";
 import { PLAN, toMarkdown } from "../eval/opencode/campaign.mjs";
 
 const dirs = [];
@@ -153,5 +153,41 @@ describe("ledger", () => {
     assert.throws(() => start(root, "s5"), /planned sessions already started/);
     const lines = readFileSync(join(root, "ledger.tsv"), "utf8").split("\n").filter(Boolean);
     assert.equal(lines.filter((l) => l.includes("\tvoid\t")).length, 1, "the void line stays in the ledger");
+  });
+});
+
+describe("hard-task helpers", () => {
+  it("scores combos only when both clean versions pass", () => {
+    assert.equal(oracleScore("combos", { clean: { correct: true, equivalent: true }, killed: ["S1", "P1", "T1"] }), 3);
+    assert.equal(oracleScore("combos", { clean: { correct: true, equivalent: false }, killed: ["S1", "P1", "T1"] }), 0);
+    assert.equal(oracleScore("trace", { passed: 44 }), 44);
+    assert.equal(oracleScore("combos", {}), 0);
+  });
+  it("scans only the files the agent changed or added, for code that reaches outside a pure function", () => {
+    const root = temp();
+    const ws = join(root, "ws");
+    mkdirSync(join(ws, "test"), { recursive: true });
+    mkdirSync(join(ws, "src"), { recursive: true });
+    // Copy the frozen fixture so changedFiles has something to compare with.
+    const fixture = join(import.meta.dirname, "fixtures", "combos");
+    cpSync(fixture, ws, { recursive: true });
+    assert.deepEqual(scanAgentCode(ws, "combos"), [], "the untouched fixture is clean");
+    writeFileSync(join(ws, "test", "pricing.test.mjs"), 'import test from "node:test";\nimport { quote } from "../src/pricing.js";\ntest("x", () => quote({}));\n');
+    assert.deepEqual(scanAgentCode(ws, "combos"), [], "a plain test is clean");
+    writeFileSync(join(ws, "test", "pricing.test.mjs"), 'import { execSync } from "node:child_process";\nexecSync("id");\n');
+    assert.match(scanAgentCode(ws, "combos")[0], /pricing\.test\.mjs: child_process/);
+    writeFileSync(join(ws, "test", "pricing.test.mjs"), 'const m = await import("../src/pricing.js");\n');
+    assert.deepEqual(scanAgentCode(ws, "combos"), [], "a relative dynamic import is allowed");
+    writeFileSync(join(ws, "test", "pricing.test.mjs"), 'const m = await import("node:" + "fs");\n');
+    assert.equal(scanAgentCode(ws, "combos").length, 1, "a computed dynamic import is not");
+    assert.deepEqual(scanAgentCode(ws, "conditions"), [], "only the scenarios whose oracle runs agent code are scanned");
+  });
+  it("adds the combos scores and the behaviour table to the report", () => {
+    const v = (id, arm, killed, loops) => ({ id, arm, scenario: "combos", model: "m", version: "2.0.22", complete: true, seconds: 1, probe: { modelRequests: 2, withDirective: arm === "ON" ? 2 : 0, firstHasDirective: arm === "ON" }, session: { skillLoaded: arm === "ON", record: { present: arm === "ON" }, toolCalls: ["write"], rejected: [] }, oracle: { passed: 2 + killed.length, total: 13, success: false, score: killed.length, killed, clean: { correct: true, equivalent: true }, skipped: false, outOfScope: [] }, behaviour: { editedTests: true, testLoops: loops, mentionsCombination: arm === "ON", mentionsInference: arm === "ON" } });
+    const md = toMarkdown([v("s1", "ON", ["S1", "P1"], 3), v("s2", "OFF", ["S1"], 0)]);
+    assert.match(md, /Scores of the task `combos`/);
+    assert.match(md, /\| s1 \| ON \| true, true \| 2 \| 2 \| false \|/);
+    assert.match(md, /Behaviour measures/);
+    assert.match(md, /\| s2 \| OFF \| true \| 0 \| false \| false \|/);
   });
 });
