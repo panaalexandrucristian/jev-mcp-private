@@ -12,9 +12,9 @@ export const makeDir = (prefix) => { const dir = real(mkdtempSync(`/tmp/${prefix
 const KEEP_ENV = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM"];
 export const BASH_ALLOW = ["android", "adb", "node", "sleep", "cat", "head", "tail", "grep", "rg", "jq", "python3", "sed", "awk", "wc", "echo", "ls", "find", "sort", "uniq", "cut", "tr", "xargs", "printf", "cd", "test", "for", "while", "do", "done", "if", "then", "fi", "true"].map((c) => `Bash(${c}:*)`);
 
-/** Runs `claude -p`; returns the numbers every round-4 arm reports. `extraPath` is put in front of PATH (the stand-in `bin`). */
-export function runSession({ dir, prompt, model = "sonnet", cap = 0.15, tools = "Bash,Read", allowedTools = [], extraPath = null, timeoutMs = 6 * 60 * 1000, rawFile = null }) {
-  const settings = { sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, filesystem: { denyRead: ["~/", real("/tmp"), real(tmpdir())], allowRead: [nodeHome, dir], allowWrite: [join(dir, "t")] } } };
+/** Runs `claude -p`; returns the numbers every round-4 arm reports. `extraPath` is put in front of PATH (the stand-in `bin`); `extraRead` = more folders the sandbox may read (C11b: the installed scripts folder). */
+export function runSession({ dir, prompt, model = "sonnet", cap = 0.15, tools = "Bash,Read", allowedTools = [], extraPath = null, extraRead = [], timeoutMs = 6 * 60 * 1000, rawFile = null }) {
+  const settings = { sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, filesystem: { denyRead: ["~/", real("/tmp"), real(tmpdir())], allowRead: [nodeHome, dir, ...extraRead], allowWrite: [join(dir, "t")] } } };
   const args = ["-p", prompt, "--model", model, "--restricted", "--add-dir", dir, "--tools", tools, "--allowedTools", ...allowedTools, "--permission-mode", "dontAsk", "--strict-mcp-config", "--mcp-config", join(dir, "empty-mcp.json"), "--settings", JSON.stringify(settings), "--output-format", "stream-json", "--verbose", "--session-id", randomUUID(), "--max-budget-usd", String(cap)];
   const env = {}; for (const k of KEEP_ENV) if (process.env[k] !== undefined) env[k] = process.env[k];
   if (extraPath) env.PATH = `${extraPath}:${env.PATH}`;
