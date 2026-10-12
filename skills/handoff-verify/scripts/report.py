@@ -305,6 +305,18 @@ def _write_all(fd, data):
         if n <= 0: raise OSError("short write")
         view = view[n:]
 
+def backup_only(path, expected_sha256, approved, now=None):
+    """The backup half of apply_patch and nothing else (orchestrate.py edit-preflight): only after explicit per-file approval, and only while the file still has the verified hash, create the exclusive, non-overwriting backup `<path>.bak-<UTC>` (-N on a collision) holding
+    the verified bytes and their metadata. The note is NOT replaced: the writer makes the change with a recorded Edit. No approval or a hash mismatch changes nothing and creates no backup; the hash is checked again after the backup (a change in between is refused, the backup stays)."""
+    if approved is not True: raise PermissionError("backup not approved for %s" % path)
+    real = os.path.realpath(path)
+    with open(real, "rb") as f: original = f.read()
+    if hashlib.sha256(original).hexdigest() != expected_sha256: raise RuntimeError("file changed since verification: hash mismatch")
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    bak = _exclusive_backup("%s.bak-%s" % (path, now.strftime("%Y%m%dT%H%M%SZ")), original, real)
+    if sha256_file(real) != expected_sha256: raise RuntimeError("file changed during the backup: hash mismatch")
+    return bak
+
 def apply_patch(path, expected_sha256, new_content, approved, now=None):
     """Apply a patch to ONE file only after explicit per-file approval, with hash check and a non-overwriting backup <file>.bak-<UTC> (-N on a collision, created exclusively, holding the verified bytes and their metadata).
     The new content is written as explicit UTF-8 bytes to a uniquely created temporary file next to the CANONICAL target (os.path.realpath(path): same filesystem; a symlink alias stays an alias), flushed, fsynced and closed with

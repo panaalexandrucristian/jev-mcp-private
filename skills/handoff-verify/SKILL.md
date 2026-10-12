@@ -30,7 +30,7 @@ If the user asked you to *verify* an existing handoff, run the procedure on the 
 7. **Delivery gate**: `versions.py status` on the final report; quote its `delivery_state`, `audited_status` and `audit`; `verified_version` is not PASS ("When triggered by a handoff request", "Mandatory audit"). Patches only with per-file approval ("Hard rules").
 
 ## Loading the reference files
-Follow the checklist above in order, and open each reference file below (paths are relative to this skill's directory, not to the project) before the actions it governs; no other file holds a rule of this skill.
+Follow the checklist in order; open each file below (path relative to this skill's directory) before its actions; no other file holds a rule. Context over 500,000 tokens or on request: "Orchestrated run".
 R0: Apply every rule in the required references exactly as a rule in this file; read each required file in full before its first governed action, continuing after truncated output.
 R1: Open reference/prepare.md before the first preparation command, inventory decision, or optional-kit action.
 R2: Open reference/opencode-sessions.md before using an opencode: or opencode-db: selector, or preparing verification of an OpenCode session.
@@ -40,9 +40,9 @@ R5: Open reference/report.md before any Jev call or writing any verification rep
 R6: Reuse a reference only while its complete content remains available in this run; otherwise reopen it before the next governed action.
 R7: If a required reference cannot be read completely, stop verification and report UNRESOLVED naming the file; never continue from memory, another copy, or the baseline fixture.
 R8: Before any re-verification, run advice.py, collect eligible new evidence locally, and obtain an evidence.py authorization bound to the exact prepared input. Never reset an exhausted allowance through another id, split claim, run, or report.
-Where the names quoted in this skill live:
+Where quoted names live:
 - This file: "When triggered by a handoff request", "Current-run checklist", "Hard rules", "The nine categories", "Statuses", "Command flags", "Limits"
-- reference/prepare.md (R1): "Step 0", "Source window", "Explicit targets and provenance", "Work locations", "Optional kit"
+- reference/prepare.md (R1): "Step 0", "Source window", "Explicit targets and provenance", "Work locations", "Optional kit", "Orchestrated run"
 - reference/opencode-sessions.md (R2): "OpenCode sessions"
 - reference/jev-and-audit.md (R3): "Jev tool contracts", "Mandatory audit", "Retry advice", "Re-verification evidence", "Engine"
 - reference/candidates.md (R4): "Omissions (R04)", "Omission halves and re-verification", "Scope filter (R05)"

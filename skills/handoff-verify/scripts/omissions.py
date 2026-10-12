@@ -19,7 +19,7 @@ ABSENCE_PREFIX = "The complete supplied handoff material neither states nor impl
 EVALUATED = ("prefix", "session_end")
 WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 BLOCK_SEP = "\n\u0000\n"   # joins the eligible records; a quote can never span two records
-SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py", "checks.py", "ledger.py", "audit.py")   # the skill's own scripts (verification activity)
+SKILL_SCRIPTS = ("omissions.py", "versions.py", "jevref.py", "report.py", "discover.py", "kit.py", "prepare.py", "slice.py", "refs.py", "sanitize.py", "scope.py", "advice.py", "checks.py", "ledger.py", "audit.py", "orchestrate.py")   # the skill's own scripts (verification activity)
 SKILL_REFERENCES = ("prepare.md", "opencode-sessions.md", "jev-and-audit.md", "candidates.md", "report.md")   # the five reference files of the split skill, named by SKILL.md's loading rules (never every file under reference/)
 JEV_PREFIX = ("mcp__jev__", "mcp__plugin_jev_jev__")   # direct MCP config, or the server shipped by the jev Claude Code plugin
 

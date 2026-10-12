@@ -66,6 +66,7 @@ SITES = {
     ("advice.py", "gate_summary", "main"): ("non-applicable", "an observation printed next to the advice (jevref.gate_summary: 'holds' is an observation, no version binding, no change of any report status); it is not a status function and the audit has nothing to say about it (test_contract_fixtures.VerdictContractPerTool.test_a_gate_with_a_non_contract_verdict_does_not_hold)"),
     ("jevref.py", "verdict_contract", "bind"): ("regression", ["test_contract_fixtures.VerdictContractPerTool.test_supported_and_unknown_never_resolve_for_verify_and_gate", "test_contract_fixtures.VerdictContractPerTool.test_compare_relations_and_classify_labels_keep_their_own_contracts"]),
     ("ctxplan.py", "apply_patch", "apply"): ("regression", ["test_ctxplan.Apply.test_with_approval_a_proven_single_file_reflow_is_written_with_a_backup"]),      # the context optimizer writes ONE proven reflow of ONE file through the same approval, hash and backup path
+    ("orchestrate.py", "write_report", "cmd_finalize"): ("regression", ["test_orchestrate.FullCycle.test_report_approval_backup_recorded_edit_old_report_rejected_and_a_fresh_pass"]),      # the thin orchestrator writes the report through the same binder; the fixture runs it in this process
     ("report.py", "apply_patch", "<definition>"): ("regression", ["test_apply_patch.Refusals.test_a_missing_or_non_true_approval_changes_nothing_and_makes_no_backup", "test_apply_patch.Failures.test_a_replace_failure_leaves_the_original_and_no_temporary_file"]),
 }
 NOTE = {"omissions.py": "bind: the AST binder of the shell classifier (unrelated to jevref.bind)"}
@@ -86,7 +87,7 @@ OUTSIDE = {
 }
 FIXTURE_CALLERS_PASS = {      # tests that expect a PASS: the audit data is DERIVED from the fixture's real source, never an exemption
     "test_audit.py": "audit_fixtures", "test_checks.py": "audit_fixtures", "test_contract_diagnostics.py": "audit_fixtures", "test_gate_envelope.py": "audit_fixtures", "test_mixed_order.py": "audit_fixtures", "test_opencode_adapter.py": "audit_fixtures",
-    "test_run_binding.py": "audit_fixtures", "test_scope_filter.py": "audit_fixtures", "test_doc_end_to_end.py": "audit.py", "test_audit_fixes.py": "audit_fixtures", "test_audit_copies.py": "audit_fixtures"}
+    "test_run_binding.py": "audit_fixtures", "test_scope_filter.py": "audit_fixtures", "test_doc_end_to_end.py": "audit.py", "test_orchestrate.py": "audit.py", "test_audit_fixes.py": "audit_fixtures", "test_audit_copies.py": "audit_fixtures"}
 FIXTURE_CALLERS_NON_PASS = {  # tests that call a writer / the gate and assert a non-PASS status, a delivery state or the Markdown only
     "test_base_freshness.py": "asserts `status != PASS` and the delivery gate", "test_common_filter.py": "asserts FAIL/UNRESOLVED of omission pairs", "test_identity_matrix.py": "the matrix: declared fields of the outputs (statuses are UNRESOLVED or FAIL, or only checked to be a status)",
     "test_identity_places.py": "identity places; no PASS expectation", "test_opencode_diagnostics.py": "asserts `status != PASS`", "test_provenance.py": "asserts UNRESOLVED", "test_retry_advice.py": "advice codes; the status is not asserted as PASS",
