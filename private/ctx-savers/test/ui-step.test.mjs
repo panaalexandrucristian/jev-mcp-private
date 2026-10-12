@@ -76,6 +76,21 @@ describe("tap decision: label class x found x region", () => {
   });
 });
 
+describe("one target seen as two elements", () => {
+  it("a container and its label with centers 1 px apart are one target (the real Rewards tab: [871,320] and [870,319])", () => {
+    const tab = screen(el("Rewards", 871, 320, { text: undefined, "content-desc": "Rewards" }), el("Rewards", 870, 319), el("Home", 107, 2340));
+    const device = fakeDevice({ before: tab, afterTap: [OTHER] });
+    const result = go(device, { tap: "Rewards", region: "top" });
+    assert.deepEqual([result.action.x, result.action.y], [871, 320]);
+    assert.equal(device.inputs().length, 1);
+  });
+  it("two elements 40 px apart or more are still ambiguous", () => {
+    const device = fakeDevice({ before: screen(el("Deals", 200, 200), el("Deals", 200, 241)), afterTap: [OTHER] });
+    assert.throws(() => go(device, { tap: "Deals", region: "top" }), (error) => error instanceof Stop && /ambiguous/.test(error.message));
+    assert.equal(device.inputs().length, 0);
+  });
+});
+
 describe("settling before printing", () => {
   it("prints the screen that is stable (two equal reads in a row), not the transition frames", () => {
     const device = fakeDevice({ before: MAIN, afterTap: [TRANSITION_1, TRANSITION_2, OTHER, OTHER, OTHER] });
@@ -110,6 +125,24 @@ describe("settling before printing", () => {
     assert.ok(result.reads <= 4, `reads ${result.reads}`);
     assert.match(result.text, /^ui-step: tapped "Cart" at 971,2343; settled/);
     assert.match(result.text, /ui-digest: \d+ of \d+ elements/);
+  });
+});
+
+describe("open mode (the CLI default; --safe turns the whitelist and the stop texts on)", () => {
+  it("taps unlisted and state-changing labels when they are found, and still refuses labels that are missing or ambiguous", () => {
+    for (const [label, region, xy] of [["Settings", null, [540, 1700]], ["Add to cart", "bottom", null], ["Checkout", null, [540, 2200]], ["Profile", null, null]]) {
+      const device = fakeDevice({ before: MAIN, afterTap: [OTHER] });
+      if (xy) { go(device, { tap: label, region, safe: false }); assert.deepEqual(device.inputs()[0].slice(-2), xy.map(String)); }
+      else assert.throws(() => go(device, { tap: label, region, safe: false }), (error) => error instanceof Stop && /no element/.test(error.message));
+    }
+    assert.throws(() => go(fakeDevice({ before: MAIN }), { tap: "Deals", safe: false }), (error) => error instanceof Stop && /ambiguous/.test(error.message));
+  });
+  it("prints a login, verify or error screen instead of stopping, but still stops when the screen has no app elements", () => {
+    const verify = screen(el("Your email needs to be verified.", 540, 476), el("Remind me next time", 540, 2301));
+    const result = go(fakeDevice({ before: MAIN, afterTap: [verify] }), { tap: "Home", region: "bottom", safe: false });
+    assert.match(result.text, /Your email needs to be verified\./);
+    const empty = [{ type: "SYSTEM", content: [{ class: "android.widget.TextView", text: "9:26", center: "[63,70]" }] }];
+    assert.throws(() => go(fakeDevice({ before: MAIN, afterTap: [empty] }), { tap: "Home", region: "bottom", safe: false }), (error) => error instanceof Stop && /no app elements/.test(error.message));
   });
 });
 
@@ -162,7 +195,7 @@ describe("the real CLI against the stand-in (recorded screens)", { skip: !exists
   const dir = mkdtempSync(join(tmpdir(), "ui-step-"));
   const stand = makeStandIn(ASSETS, dir);
   const script = fileURLToPath(new URL("../ui-step.mjs", import.meta.url));
-  const cli = (...args) => spawnSync("node", [script, ...args], { encoding: "utf8", env: { ...process.env, PATH: `${stand.bin}:${process.env.PATH}` } });
+  const cli = (...args) => spawnSync("node", [script, "--safe", ...args], { encoding: "utf8", env: { ...process.env, PATH: `${stand.bin}:${process.env.PATH}` } });
   const screenNow = () => JSON.parse(readFileSync(stand.state, "utf8")).screen;
   it("moves through the bottom tabs and prints the digest of each new screen", () => {
     let r = cli("--tap", "myDG Wallet", "--region", "bottom", "--settle", "0", "--timeout", "3");
@@ -182,6 +215,11 @@ describe("the real CLI against the stand-in (recorded screens)", { skip: !exists
     assert.equal(screenNow(), before);
     assert.equal(cli("--tap", "Cart", "--back").status, 2);
     assert.equal(cli("--tap", "Cart", "--region", "middle").status, 2);
+  });
+  it("without --safe the CLI taps a label that is not on the whitelist (Start shopping on the cart screen)", () => {
+    const r = spawnSync("node", [script, "--tap", "Start shopping", "--settle", "0", "--timeout", "3"], { encoding: "utf8", env: { ...process.env, PATH: `${stand.bin}:${process.env.PATH}` } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /tapped "Start shopping" at \d+,\d+; settled/);
   });
   it("--shot writes a shrunk JPEG of the new screen", () => {
     const out = join(dir, "t", "shot.jpg");

@@ -1,0 +1,106 @@
+{
+  "id": "C10-real",
+  "measuredAt": "2026-10-12T05:00:56.593Z",
+  "note": "ui-step on the real emulator-5554, read-only walk",
+  "stopped": null,
+  "rows": [
+    {
+      "step": "home",
+      "exit": 0,
+      "settled": true,
+      "reads": 4,
+      "ms": 8758,
+      "anchor": true,
+      "head": "ui-step: tapped \"Home\" at 107,2340; settled (4 layout reads)",
+      "stderr": ""
+    },
+    {
+      "step": "home-swipe",
+      "exit": 0,
+      "settled": true,
+      "reads": 2,
+      "ms": 5474,
+      "anchor": true,
+      "head": "ui-step: {\"swipe\":\"down once\"}; settled (2 layout reads)",
+      "stderr": ""
+    },
+    {
+      "step": "wallet",
+      "exit": 0,
+      "settled": true,
+      "reads": 3,
+      "ms": 8654,
+      "anchor": true,
+      "head": "ui-step: tapped \"myDG Wallet\" at 540,2343; settled (3 layout reads)",
+      "stderr": ""
+    },
+    {
+      "step": "list",
+      "exit": 0,
+      "settled": true,
+      "reads": 3,
+      "ms": 5197,
+      "anchor": true,
+      "head": "ui-step: tapped \"List\" at 755,2343; settled (3 layout reads)",
+      "stderr": ""
+    },
+    {
+      "step": "cart",
+      "exit": 0,
+      "settled": true,
+      "reads": 3,
+      "ms": 5643,
+      "anchor": true,
+      "head": "ui-step: tapped \"Cart\" at 971,2343; settled (3 layout reads)",
+      "stderr": ""
+    },
+    {
+      "step": "deals",
+      "exit": 0,
+      "settled": true,
+      "reads": 3,
+      "ms": 9228,
+      "anchor": true,
+      "head": "ui-step: tapped \"Deals\" at 323,2343; settled (3 layout reads)",
+      "stderr": ""
+    },
+    {
+      "step": "rewards",
+      "exit": 0,
+      "settled": true,
+      "reads": 3,
+      "ms": 6061,
+      "anchor": true,
+      "head": "ui-step: tapped \"Rewards\" at 871,320; settled (3 layout reads)",
+      "stderr": ""
+    }
+  ],
+  "refusals": [
+    {
+      "label": "Add to cart",
+      "exit": 3,
+      "stderr": "ui-step: STOP: label \"Add to cart\" is on the forbidden list"
+    },
+    {
+      "label": "Settings",
+      "exit": 3,
+      "stderr": "ui-step: STOP: label \"Settings\" is not on the whitelist"
+    },
+    {
+      "label": "Send verification email",
+      "exit": 3,
+      "stderr": "ui-step: STOP: label \"Send verification email\" is on the forbidden list"
+    },
+    {
+      "screenUnchanged": true
+    }
+  ],
+  "gates": {
+    "a_steps_ok": true,
+    "b_refusals": true,
+    "c_endsOnRewards": true,
+    "d_shot": true
+  },
+  "meanMs": 7002,
+  "vpnAtEnd": "200"
+}
