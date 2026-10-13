@@ -835,7 +835,76 @@ def _expand_vars(items, cmd):
         out.append((it[0], before, after, ws, io))
     return out
 
+_SUBST_VAR = "$-"      # stands for the unknown output of a command substitution: not a variable name, so no command can assign it, `_VAR` never matches it and a path built from it holds a `$` and cannot be resolved
+
+def _has_heredoc(text):
+    """True when `text` holds a here-document operator (`<<` or `<<-`, not the here-string `<<<`) outside quotes and not escaped. Quote and escape handling is the same as in `_flatten_subst`; a `<<` inside a substitution counts (the safe side)."""
+    i, q = 0, None
+    while i < len(text):
+        ch = text[i]
+        if q == "'":
+            if ch == "'": q = None
+        elif ch == "\\": i += 2; continue
+        elif ch == "'" and q is None: q = "'"
+        elif ch == '"': q = None if q == '"' else '"'
+        elif ch == "<" and q is None and text[i + 1:i + 2] == "<":
+            if text[i + 2:i + 3] != "<": return True
+            i += 3; continue
+        i += 1
+    return False
+
+def _close_paren(text, i):
+    """Index of the `)` that closes the `(` at `i`, respecting quotes, escapes and nested parentheses, or None."""
+    depth, q = 0, None
+    while i < len(text):
+        ch = text[i]
+        if q:
+            if ch == "\\" and q == '"': i += 2; continue
+            if ch == q: q = None
+        elif ch == "\\": i += 2; continue
+        elif ch in "'\"": q = ch
+        elif ch == "(": depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0: return i
+        i += 1
+    return None
+
+def _flatten_subst(text):
+    """The text with every command substitution outside single quotes (`$( ... )`, `$(( ... ))`, backticks; also inside double quotes) replaced by `${__subst__}` -> (new text, number replaced), or None when one is not closed. The tokeniser
+    cuts `python3 $(pwd)/scripts/audit.py` into `python3 $`, a group and `/scripts/audit.py`: no segment runs a skill script, and the old answer was `no`. With the substitution as one unresolvable word the path is `unknown`, as a shell variable is."""
+    out, i, q, n = [], 0, None, 0
+    while i < len(text):
+        ch = text[i]
+        if q == "'":
+            if ch == "'": q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < len(text): out.append(text[i:i + 2]); i += 2; continue
+        if ch == "'" and q is None: q = "'"; out.append(ch); i += 1; continue
+        if ch == '"': q = None if q == '"' else '"'; out.append(ch); i += 1; continue
+        if ch == "$" and text[i + 1:i + 2] == "(":
+            j = _close_paren(text, i + 1)
+            if j is None: return None
+            out.append(_SUBST_VAR); n += 1; i = j + 1; continue
+        if ch == "`":
+            j = i + 1
+            while j < len(text) and text[j] != "`": j += 2 if text[j] == "\\" else 1
+            if j >= len(text): return None
+            out.append(_SUBST_VAR); n += 1; i = j + 1; continue
+        out.append(ch); i += 1
+    return "".join(out), n
+
 def _bash_class(cmd, cwd):
+    """`_bash_class_text` of the command, and, unless that is already `yes`, of the same command with its command substitutions replaced by one unresolvable word (`_flatten_subst`): the more severe answer wins (`yes`, then `unknown`, then `no`). A command with a real here-document (`_has_heredoc`) is left to the first
+    answer (the text after it is data and is not rewritten); a quoted `<<` or a here-string is not one. An unclosed substitution that mentions the skill is `unknown`."""
+    best = _bash_class_text(cmd, cwd)
+    if best == "yes" or ("$(" not in cmd and "`" not in cmd) or _has_heredoc(cmd): return best
+    flat = _flatten_subst(cmd)
+    if flat is None: return "unknown" if _mentions_skill(cmd) else best
+    if not flat[1]: return best
+    return "unknown" if _bash_class_text(flat[0], cwd) in ("yes", "unknown") else best
+
+def _bash_class_text(cmd, cwd):
     """The shell command is split into simple commands (shlex, no execution) and the operators between them. What a command RUNS (an interpreter on a script / module / import, a shell, `source`, the script as the
     command word) or READS (cat, head, grep, ...) decides: a skill path that is only named (echo, printf, git, cp, a redirect target) is not activity. `cd X` moves the following command only through `&&` (a `;` or a newline runs the next command
     also when the cd failed: the directory is then not demonstrated); behind `||`, `&` or `|`, or as a conditional command, the directory is not demonstrated (`unknown`) or unchanged, and a group `( ... )` ends with its parenthesis.
