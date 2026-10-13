@@ -81,12 +81,14 @@ class Content(Base):
             open(self.f, "w", encoding="utf-8").write(ORIG)
 
     def test_non_ascii_content_is_exact_utf8_whatever_the_locale(self):
-        code = ("import sys; sys.path.insert(0, %r); import report, datetime\n"
-                "b = report.apply_patch(%r, %r, 'ăîșțâ — € 日本語\\n', True, datetime.datetime(2026,1,2,3,4,5,tzinfo=datetime.timezone.utc)); print(b)\n") % (HERE, self.f, sha(ORIG))
+        text = "ăîșțâ — € 日本語\n"
+        code = ("import sys; sys.path.insert(0, %a); import report, datetime\n"
+                "b = report.apply_patch(%a, %a, %a, True, datetime.datetime(2026,1,2,3,4,5,tzinfo=datetime.timezone.utc)); print(b)\n") % (HERE, self.f, sha(ORIG), text)   # %a: the command line stays pure ASCII, because on Linux a C-locale interpreter cannot decode non-ASCII argv bytes ("Unable to decode the command from the command line") before any code runs
+        self.assertTrue(code.isascii())   # the child must be able to read its own command line under LC_ALL=C on every platform
         env = dict(os.environ, LC_ALL="C", PYTHONUTF8="0", PYTHONDONTWRITEBYTECODE="1"); env.pop("LANG", None); env.pop("PYTHONIOENCODING", None)
         p = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, env=env)
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
-        self.assertEqual(read(self.f), "ăîșțâ — € 日本語\n".encode("utf-8")); self.assertEqual(read(p.stdout.decode().strip()), ORIG.encode())
+        self.assertEqual(read(self.f), text.encode("utf-8")); self.assertEqual(read(p.stdout.decode().strip()), ORIG.encode())
 
 class Failures(Base):
     def assert_intact(self):
