@@ -775,6 +775,66 @@ def _seg_class(words, here):
         if ("/" in a or a in SKILL_SCRIPTS) and _path_class(a, here) != "no": out = "unknown"   # an unrecognised command that names a skill script: not demonstrable either way
     return out
 
+_VAR = re.compile(r"\$(?:(\w+)|\{(\w+)\})")
+_UNSAFE_VALUE = re.compile(r"[\s$`~*?\[\]{}!\\\"']")      # a value that is not one plain word: spaces, another expansion, a glob, a tilde, a quote: nothing is demonstrated
+_MUTATORS = frozenset(("eval", "source", ".", "read", "export", "declare", "typeset", "local", "unset", "getopts", "mapfile", "readarray", "set", "shift", "let", "for", "while", "until", "select", "function", "trap"))      # a later command that can change a variable in a way the words do not show
+
+def _dollar_safe(cmd):
+    """False when a `$` sits inside single quotes or is escaped: the shell does not expand it, and the tokeniser has already lost the quotes."""
+    q, i = None, 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if q == "'":
+            if ch == "'": q = None
+            elif ch == "$": return False
+        elif ch == "\\":
+            if cmd[i + 1:i + 2] == "$": return False
+            i += 1
+        elif q == '"':
+            if ch == '"': q = None
+        elif ch in "'\"": q = ch
+        i += 1
+    return True
+
+def _expand(word, table):
+    """`word` with every `$NAME` / `${NAME}` replaced by its demonstrated value (the word itself when it holds no `$`); None when a `$` is left that no value explains. The values hold no `$`, so what is left is unexplained."""
+    if "$" not in word: return word
+    out = _VAR.sub(lambda m: table.get(m.group(1) or m.group(2), m.group(0)), word)
+    return None if "$" in out else out
+
+def _expand_vars(items, cmd):
+    """A script path built from a shell variable is expanded ONLY when the same command assigns the variable earlier, on the straight line of the command, a value that is one plain absolute word, possibly built from variables assigned the same way (`S=/x; SK=$S/handoff-verify`).
+    The assignment must be a plain `NAME=value` statement that certainly ran: at the top level (not in a group), joined by `;` or a newline (by `&&` only while every statement before it is also an assignment), not behind `||`, not in a pipeline or in the background, no redirect.
+    Words are expanded in order, with the value in force at that point, so the last assignment wins. The words are then exactly what the literal command would have been, and every consumer classifies them as it classifies the literal path. Nothing else is ever expanded: another variable,
+    a relative or computed value (`$(..)`, backticks, `~`, a glob, `${V:-x}`, spaces), a `$` inside single quotes or escaped (the whole command is then left as it is), an assignment that may not have run (the name is withdrawn, so a later use stays `$`), `NAME+=`, `${NAME:=..}`, an
+    environment prefix of the same command (the shell expands that command's words with the OLD value) and any later builtin that can change variables without showing it (`export`, `read`, `eval`, `source`, a loop, a function; the table is emptied there). Those stay as they are (`$` in the
+    word: `unknown` when it names a skill script)."""
+    if not _dollar_safe(cmd): return items
+    table, out, depth, straight = {}, [], 0, True
+    for it in items:
+        if it[0] == "push": depth += 1; out.append(it); continue
+        if it[0] == "pop": depth = max(0, depth - 1); out.append(it); continue
+        _, before, after, words, io = it
+        pure = bool(words) and not io["outs"] and not io["ins"] and all(_ASSIGN.match(w) for w in words)
+        if pure:
+            ran = depth == 0 and after in (None, ";", "&&") and (before in (None, ";") or (before == "&&" and straight)); ws = []
+            for w in words:
+                name, val = w.split("=", 1); e = _expand(val, table) if ran else None
+                if e is None or not e.startswith("/") or _UNSAFE_VALUE.search(e): table.pop(name, None); ws.append(w)
+                else: table[name] = e; ws.append(name + "=" + e)
+            out.append((it[0], before, after, ws, io)); continue
+        straight = False
+        ws = []
+        for w in words:
+            e = _expand(w, table); ws.append(w if e is None else e)
+            m = re.match(r"(\w+)\+=", w)
+            if m: table.pop(m.group(1), None)
+            for n in [n for n in table if "${" + n + ":" in w or "${" + n + "=" in w]: table.pop(n, None)
+        head = _split_cmd(words)
+        if head is not None and (os.path.basename(head[1]) in _MUTATORS or head[1].endswith("()")): table.clear()
+        out.append((it[0], before, after, ws, io))
+    return out
+
 def _bash_class(cmd, cwd):
     """The shell command is split into simple commands (shlex, no execution) and the operators between them. What a command RUNS (an interpreter on a script / module / import, a shell, `source`, the script as the
     command word) or READS (cat, head, grep, ...) decides: a skill path that is only named (echo, printf, git, cp, a redirect target) is not activity. `cd X` moves the following command only through `&&` (a `;` or a newline runs the next command
@@ -784,7 +844,7 @@ def _bash_class(cmd, cwd):
     a skill script, a relative script name without a recorded directory, or an unrecognised command naming a skill script is `unknown`; anything else is `no`."""
     try: items = _shell_items(cmd)
     except ValueError: return "unknown" if _mentions_skill(cmd) else "no"
-    best = "no"
+    items = _expand_vars(items, cmd); best = "no"
     for words, here, _, _, _, _ in _walk(items, cwd):
         c = _seg_class(words, here)
         if c == "yes": return "yes"

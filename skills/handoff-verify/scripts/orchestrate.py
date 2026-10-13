@@ -23,7 +23,7 @@ WINDOW, GUARD = 1000000, 500000      # the context window and the guard the user
 DOC_TEMPLATE = dict(variant=dict(name="orchestrated"), environment=dict(model="unknown"), kit=dict(status="not run by orchestrate.py", exit=None, skips=[]), cost=dict(tokens="unavailable", usd="unavailable", wall_s="unavailable"), patch=dict(proposed=False, approved=False),
                     findings=[], unresolved=[], scope_exclusions=[], status="UNRESOLVED")      # the report properties the schema requires besides the identities, the checks and the audit: "unknown" / "unavailable" / "not run" defaults, no claim about the work; the writer edits them (findings, unresolved, scope_exclusions after the scope filter, kit, environment, patch); the status is recomputed whatever is claimed
 
-HINT_WINDOW = "an earlier command of this session names a skill script through a shell variable or a path that cannot be resolved, so the verification run it belongs to is not demonstrated; that history cannot be changed, so this session cannot certify a later version. Write every skill-script path literally and absolute"
+HINT_WINDOW = "an earlier command of this session names a skill script through a path that cannot be resolved (a shell variable the same command does not first assign a literal absolute path, `$(...)`, a relative path), so the verification run it belongs to is not demonstrated; that history cannot be changed, so this session cannot certify a later version. Write every skill-script path literally and absolute"
 
 def out(obj, code): print(json.dumps(obj, indent=1, ensure_ascii=False)); return code
 

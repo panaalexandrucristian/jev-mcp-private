@@ -30,7 +30,7 @@
   {"id": "context-optimizer", "bytes": 5389, "sha256": "5555627dc59bfd277c18f419c93c806da47913661fda11f51b88d4f5aab96a82"},
   {"id": "on-demand-lines", "bytes": 319, "sha256": "adac99e0ac3c1b32dff7ff0708bee8a2020c34e6bae2290f277f87728a8ba4d9"},
   {"id": "subagent-review", "bytes": 9351, "sha256": "517543be1e2faa0ec14d233960433ea926bb2e317352b115aa71102cf32af61b"},
-  {"id": "orchestrate", "bytes": 2984, "sha256": "d39588f8e47f6cb76a0e72f06d9dd4ec8bc3929b98d8a72f9a7e00a3fa1bd851"}],
+  {"id": "orchestrate", "bytes": 3060, "sha256": "8a2042bbee6ad4c58ccc8fc7e2dd7f2b80f87623bc24ef229b21f33cbb65900a"}],
  "files": {
   "SKILL.md": ["head", "triggered", "checklist", "loading", "hard-rules", "categories", "statuses", "flags", "limits", "on-demand-lines"],
   "reference/prepare.md": ["preparation", "source-reads", "kit", "orchestrate"],

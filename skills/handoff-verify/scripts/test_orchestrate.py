@@ -100,8 +100,11 @@ class AmbiguousWindow(Base):
         """A verified note, a skill run that names a script by `command`, then a recorded Edit: -> the session."""
         t = self.session("s", [self.good_call()]); t.tool("b1", "Bash", dict(command=command), "ok"); self.record(t, edit=True); return t
 
-    def test_a_script_named_through_a_shell_variable_blocks_the_later_version_and_the_refusal_says_why(self):
-        t = self.edited("SK=/x/skills/handoff-verify; python3 -B $SK/scripts/audit.py template --source s")
+    def test_a_variable_assigned_a_literal_absolute_path_in_the_same_command_is_a_recognised_run(self):
+        t = self.edited("SK=/x/skills/handoff-verify; python3 -B $SK/scripts/audit.py template --source s"); code, o = self.prep(t, "st"); self.assertEqual(code, 0, o); self.assertEqual(o["version"]["op"], "Edit")
+
+    def test_a_script_named_through_a_variable_nobody_assigned_blocks_the_later_version_and_the_refusal_says_why(self):
+        t = self.edited("python3 -B $SK/scripts/audit.py template --source s")
         code, o = self.prep(t, "st"); self.assertEqual(code, 3); self.assertTrue([r for r in o["reasons"] if "source window ambiguous" in r], o); self.assertTrue([r for r in o["reasons"] if "literally and absolute" in r], o)
         self.assertFalse(os.path.exists(os.path.join(self.d, "st", "state.json")))      # nothing is certified from a half-prepared state
 
@@ -302,7 +305,7 @@ class Documentation(unittest.TestCase):
         for sh in shapes:
             argv = sh.replace("python3 -B <skill-dir>/scripts/orchestrate.py ", "")
             argv = re.sub(r"<[^>]+>", "X", argv).split(); a = orchestrate.build_parser().parse_args(argv); self.assertIn(a.cmd, ("prepare", "package", "finalize", "edit-preflight"), sh)
-        for must in ("strictly above 500,000 of 1,000,000", "never estimate", "turns x context", "are not reduced", "literal absolute path", "no later version of the note can be verified", "EVERY chunk", "AND `verified_version`", "never `apply_patch`", "new Jev calls after the Edit", "never carried over", "no new allowance", "makes no model request, Jev call or network call", "grants no approval"):
+        for must in ("strictly above 500,000 of 1,000,000", "never estimate", "turns x context", "are not reduced", "first assigns it a literal absolute path", "no later version of the note can be verified", "EVERY chunk", "AND `verified_version`", "never `apply_patch`", "new Jev calls after the Edit", "never carried over", "no new allowance", "makes no model request, Jev call or network call", "grants no approval"):
             self.assertIn(must, sec, must)
         self.assertLessEqual(len(root.encode("utf-8")), 22000)
 
