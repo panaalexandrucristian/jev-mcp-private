@@ -16,6 +16,8 @@ A record is replaced by ONE marker line with a short preview, and its full text 
   (2) it is a tool call that only READS (Read, Grep, Glob, ToolSearch, a Bash made only of read-only commands: ls, cat, grep, sed -n, git log/status/diff, ...) and is longer than its marker, or
   (3) blob mode only: it is the text of a skill that the harness injected (a user record that is isMeta in the session .jsonl, whose uuid the caller passes in `meta_uuids`, and that starts with `Base directory for this skill: `);
       its marker preview names the skill. Without `meta_uuids` (this command line) the rule is off; a message the user typed is never moved by it.
+  (4) blob mode only: it is a notification of a background task (agent, command, monitor): a user record that the harness wrote (origin kind task-notification in the session .jsonl, whose uuid the caller passes in
+      `notice_uuids`) that starts with `<task-notification>` and is longer than the tool_result limit; its marker preview shows the text of its <summary>. Without `notice_uuids` the rule is off.
 A command that may change state (rm, git commit/push, redirects into files, sed -i, service restarts, API calls ...) is never moved by rule (2); neither is a message of the user.
 expand() puts every blob back. Nothing is summarised, translated or cut: the marker only points at the full text, and `check` proves expand(compact(x)) == x."""
 import glob, hashlib, itertools, json, os, re, sys, tempfile
@@ -31,6 +33,9 @@ DEFAULT_LIMITS = {"tool_use": 800, "tool_result": 300, "assistant_text": None, "
 DEFAULT_PREVIEW = 100
 SKILL_PREFIX = "Base directory for this skill: "
 SKILL_REC = re.compile(r"^\[([0-9a-f-]{36}) user\] " + re.escape(SKILL_PREFIX))
+NOTE_PREFIX = "<task-notification>"
+NOTE_REC = re.compile(r"^\[([0-9a-f-]{36}) user\] " + re.escape(NOTE_PREFIX))
+NOTE_SUMMARY = re.compile(r"<summary>(.*?)</summary>", re.S)
 SEP = "----- transcript (compact) -----\n"
 FILE_NAMES = ("HANDOFF.md", "CONTEXT.md")   # read_out takes the first one that exists
 HEADER = ("This is a session transcript made smaller for a new session. A line `%sRnnnn|chars|preview%s` stands for ONE record that was longer than the limit of its kind (%s)%s: "
@@ -168,10 +173,21 @@ def cut_record(r, preview):
     return r[:keep].replace("\n", "⏎") + CUT_NOTE % (len(r.rstrip("\n")) - keep) + ("\n" if r.endswith("\n") else "")
 
 
-def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset()):
+def moved_notice(r, notice_uuids, limits, blobs=True):
+    """True when record `r` is a background-task notification that goes to a blob: blob mode, a user record whose uuid is in `notice_uuids`, starting NOTE_PREFIX right after the header, longer than the tool_result limit.
+    compact_text and the caller that decides whether the introduction needs its clause use this one test, so they cannot disagree."""
+    lim = limits.get("tool_result"); m = NOTE_REC.match(r) if (blobs and notice_uuids and lim is not None) else None
+    return bool(m) and m.group(1) in notice_uuids and kind_of(r) == "user_text" and len(r) > lim
+
+
+def count_moved_notices(text, notice_uuids, limits, blobs=True):
+    return sum(moved_notice(r, notice_uuids, limits, blobs) for r in split_records(text)[1])
+
+
+def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset(), notice_uuids=frozenset()):
     """-> (compact text without header, {blob name: full record text}, marker pair or None). A record that is too long for its kind, or (readonly) a tool call that only reads, is replaced by a marker line pointing at blobs/Rnnnn.txt
     (blobs=True; raises ValueError when no marker pair is free) or is cut to its first characters (blobs=False: the rest is not kept). `stats["readonly"]` counts the records moved only by the read-only rule; `stats["skill"]` the injected skill texts
-    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker)."""
+    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker); `stats["notice"]` the notifications of background tasks (see moved_notice)."""
     pair = pick_pair(text) if blobs else None
     head, recs = split_records(text); out, blob_map = [head], {}
     for r in recs:
@@ -180,16 +196,21 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
         by_rule = readonly and k == "tool_use" and len(r) > preview + 25 and is_readonly_call(r)   # shorter than its marker: moving it would save nothing
         sk = SKILL_REC.match(r) if (blobs and meta_uuids and k == "user_text") else None
         by_skill = bool(sk) and sk.group(1) in meta_uuids and len(r) > preview + 25
-        if not (by_length or by_rule or by_skill): out.append(r); continue
+        by_notice = moved_notice(r, notice_uuids, limits, blobs)
+        if not (by_length or by_rule or by_skill or by_notice): out.append(r); continue
         if not blobs:
             c = cut_record(r, preview); out.append(c)
             if c != r and stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
             continue
         if stats is not None and by_skill: stats["skill"] = stats.get("skill", 0) + 1
+        elif stats is not None and by_notice: stats["notice"] = stats.get("notice", 0) + 1
         elif stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
         name = "R%04d" % len(blob_map); blob_map[name] = r
         p = UUID.sub(r"[\1] ", r, count=1)[:preview]   # the uuid is no use in a preview
         if by_skill: p = "[user] skill: " + r.split("\n", 1)[0][sk.end():][-80:]   # the default preview would stop inside the path, before the skill name
+        if by_notice:
+            sm = NOTE_SUMMARY.search(r)
+            if sm and sm.group(1).strip(): p = "[user] task: " + sm.group(1)[:80]   # the default preview would show only the tag and the task id
         p = p.replace("\n", "⏎").replace(pair[1], "·")
         out.append("%s%s|%d|%s%s%s" % (pair[0], name, len(r), p, pair[1], "\n" if r.endswith("\n") else ""))
     return "".join(out), blob_map, pair
@@ -235,9 +256,9 @@ def read_out(out_dir):
 def sha(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 
-def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset()):
+def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset()):
     text = read_chunks(chunk_dir); stats = {}
-    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids)
+    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids)
     if blobs: write_out(out_dir, compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name)
     else:
         os.makedirs(out_dir, exist_ok=True)
@@ -245,8 +266,8 @@ def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", na
     return text, compact, blob_map, stats.get("readonly", 0)
 
 
-def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset()):
-    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids)
+def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset()):
+    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids, notice_uuids)
     size = len(open(os.path.join(out_dir, name), encoding="utf-8", newline="").read()); label = describe(limits) + (" + read-only rule" if readonly else "")
     if blobs:
         c2, b2, p2 = read_out(out_dir); ok = sha(expand_text(c2, b2, p2)) == sha(text)
@@ -363,6 +384,43 @@ def selftest():
     c, b, pr = compact_text(rec, nlim, PV, False, None, True, frozenset([uid])); n += 1
     mk = c.rstrip("\n"); assert mk.startswith(pr[0] + "R0000|%d|[user] skill: " % len(rec)) and mk.endswith("skills/handoff-verify·" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1] and expand_text(c, b, pr) == rec
     assert "d" * 100 not in mk and len(mk.split("|", 2)[2]) <= len("[user] skill: ") + 80 + 1
+    # (7) the notification of a background task: five conditions joined by AND, so all 2^5 = 32 combinations (t=5): role x prefix at the start or later x uuid in notice_uuids or not x length 300 or 301 x blob mode or cut mode
+    #     (limit of tool_result 300, read-only rule off); it moves only for user + start + in the set + 301 + blob mode, and then expand gives the text back
+    NL = {"tool_use": None, "tool_result": 300, "assistant_text": None, "user_text": None}
+    def note_rec(role, start, size, summary="Agent \"Read the paper\" finished"):
+        head = "[%s %s] " % (uid, role); body = ("" if start else "xx ") + NOTE_PREFIX + "\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>%s</summary>\n<result>" % summary
+        return head + body + "y" * (size - len(head) - len(body) - len("</result>\n")) + "</result>\n"
+    note_moved = 0
+    for role, start, inset, size, blobs in itertools.product(("user", "assistant"), (True, False), (True, False), (300, 301), (True, False)):
+        rec = note_rec(role, start, size); assert len(rec) == size
+        text = "[%s user] first\n" % uid + rec + "[%s user] last\n" % uid; stats = {}
+        c, b, pr = compact_text(text, NL, PV, False, stats, blobs, frozenset(), frozenset([uid]) if inset else frozenset()); n += 1
+        expect = role == "user" and start and inset and size == 301 and blobs; note_moved += expect
+        assert (c == text) == (not expect) and len(b) == (1 if expect else 0) and stats.get("notice", 0) == (1 if expect else 0) and stats.get("readonly", 0) == 0 and stats.get("skill", 0) == 0, (role, start, inset, size, blobs)
+        assert count_moved_notices(text, frozenset([uid]) if inset else frozenset(), NL, blobs) == (1 if expect else 0)   # the caller that decides about the clause counts the same records
+        if blobs: assert expand_text(c, b, pr) == text and (not expect or list(b.values()) == [rec])
+        else: assert b == {} and verify_cut(text, c, PV)[0]
+    assert note_moved == 1
+    rec = note_rec("user", True, 400); text = "[%s user] first\n" % uid + rec
+    for lims in ({**NL, "tool_result": None}, {k: None for k in KINDS}):   # no tool_result limit: the rule is off
+        c, b, pr = compact_text(text, lims, PV, False, None, True, frozenset(), frozenset([uid])); n += 1; assert c == text and b == {}
+    c, b, pr = compact_text(text, NL, PV, False, None, True); n += 1; assert c == text and b == {}   # no notice_uuids: the rule is off
+    tr_rec = "[%s user] [tool_result] %s\n%s\n" % (uid, NOTE_PREFIX, "y" * 400)   # a tool result holding the tag is not a notification
+    c, b, pr = compact_text(tr_rec, NL, PV, False, None, True, frozenset(), frozenset([uid])); n += 1; assert expand_text(c, b, pr) == tr_rec and "[tool_result]" in c.split("|", 2)[2] and len(b) == 1   # moved by its own length rule, not by this one
+    st = {}; compact_text(tr_rec, NL, PV, False, st, True, frozenset(), frozenset([uid])); n += 1; assert st.get("notice", 0) == 0
+    hand = "[%s user] typed by the user\n" % uid + note_rec("user", True, 400).replace(uid, "1" * 8 + uid[8:], 1)   # only the uuid in the set moves; the typed record with the same text stays
+    c, b, pr = compact_text(hand, NL, PV, False, None, True, frozenset(), frozenset([uid])); n += 1; assert b == {} and c == hand
+    c, b, pr = compact_text(hand, NL, PV, False, None, True, frozenset(), frozenset(["1" * 8 + uid[8:]])); n += 1; assert len(b) == 1 and "typed by the user" in c and expand_text(c, b, pr) == hand
+    def note_marker(summary):   # -> the marker line of a 400-character notification with this summary line (None: the tag is left out)
+        r = note_rec("user", True, 400, summary) if summary is not None else "[%s user] %s\n<task-id>a1</task-id>\n%s\n" % (uid, NOTE_PREFIX, "y" * 400)
+        c, b, pr = compact_text(r, NL, PV, False, None, True, frozenset(), frozenset([uid])); assert expand_text(c, b, pr) == r and len(b) == 1
+        return c.rstrip("\n"), pr, r
+    mk, pr, r = note_marker("Agent \"Read the paper\" finished"); n += 1
+    assert mk == pr[0] + 'R0000|%d|[user] task: Agent "Read the paper" finished' % len(r) + pr[1]
+    mk, pr, r = note_marker("s" * 200); n += 1; assert mk.endswith("[user] task: " + "s" * 80 + pr[1]) and "s" * 81 not in mk   # cut at exactly 80
+    mk, pr, r = note_marker("a" + PAIRS[0][1] + "b\nline two"); n += 1; assert mk.endswith("[user] task: a·b⏎line two" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1]   # the closer is escaped and a line break shown
+    mk, pr, r = note_marker(None); n += 1; assert mk.startswith(pr[0] + "R0000|%d|[user] <task-notification>" % len(r)) and "task:" not in mk   # no summary: the default preview
+    mk, pr, r = note_marker("  "); n += 1; assert "task:" not in mk   # an empty summary is no summary
     big = "".join(record(k, 400, False, True) for k in KINDS)
     c, b_, pr = compact_text(big, {k: 40 for k in KINDS}, 20, False, None, False); n += 1   # a limit on a text kind would cut a message: the check must refuse that
     assert verify_cut(big, c, 20)[0] is False
@@ -371,7 +429,7 @@ def selftest():
     assert verify_cut(big, c.replace("caractere omise", "caractere omise "), 20)[0] is False   # a tampered note fails the check
     assert verify_cut(big, c.replace("[…", "[ …"), 20)[0] is False; n += 2
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
-          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview" % (n, len(reading) + len(mutating)))
+          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none" % (n, len(reading) + len(mutating)))
 
 
 if __name__ == "__main__":

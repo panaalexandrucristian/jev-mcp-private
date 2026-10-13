@@ -56,6 +56,7 @@ WHAT_BLOBS = ("Transcriptul compact al sesiunii precedente. Mesajele mele și al
 WHAT_CUT = ("Transcriptul compact al sesiunii precedente. Mesajele mele și ale asistentului sunt întregi. Un apel sau un rezultat de unealtă foarte lung, ori un apel care doar citește, a fost scurtat la primele caractere "
             "și se termină cu `[…N caractere omise]`; textul omis nu este în acest fișier.")
 SKILL_CLAUSE = "Un marcaj stă și pentru textul unei abilități (skill) încărcate de sistem, nu scris de mine; textul întreg este în `blobs/Rnnnn.txt`."
+NOTICE_CLAUSE = "Un marcaj stă și pentru o notificare a unei sarcini de fundal (agent, comandă, monitor), nu scrisă de mine; textul întreg este în `blobs/Rnnnn.txt`."
 MISSING_BLOBS = "deschide blob-ul indicat de linia-marcaj, `blobs/Rnnnn.txt` (doar cel de care ai nevoie)."
 MISSING_CUT = "caută-l în transcriptul complet al sesiunii sursă (JSONL, mare): `{src}`."
 TEMP_NOTE = {   # (kept, cut) -> text; no absolute path of the handoff itself
@@ -78,11 +79,11 @@ def reading_plan(lines, budget=READ_BUDGET, prefix=8, max_lines=400):
     return chunks
 
 
-def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False):
+def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False):
     """The introduction with every instruction. It names no absolute path of the handoff itself (only the source transcript, which is durable)."""
     plan = ", ".join("%d:%d" % c for c in chunks)
     return INTRO.format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, temp=TEMP_NOTE[(bool(kept), bool(cut))],
-                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "")), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
+                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "")), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
 
 
 HANDOFF_PATH = re.compile(r"/handoff-[0-9a-f]{8}-\d{8}-[^/\s\"]+(?:\.md|/HANDOFF\.md)$")
@@ -116,6 +117,22 @@ def skill_meta_uuids(sess):
         c = (o.get("message") or {}).get("content")
         if isinstance(c, list): c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
         if isinstance(c, str) and c.startswith(cc.SKILL_PREFIX): out.add(o["uuid"])
+    return frozenset(out)
+
+
+def notice_uuids_of(sess):
+    """The uuids of the records the harness wrote when a background task (agent, command, monitor) finished: type user, origin.kind task-notification, content (a string, or the first text block of a list) starting
+    with the tag. Lines that do not parse are skipped. Only these may be moved to a blob by this rule; a message the user typed, a message of another session or a skill text is never in the set."""
+    out = set()
+    for line in open(sess, encoding="utf-8", errors="replace"):
+        try: o = json.loads(line)
+        except Exception: continue
+        if not isinstance(o, dict) or o.get("type") != "user" or not isinstance(o.get("uuid"), str): continue
+        origin = o.get("origin")
+        if not isinstance(origin, dict) or origin.get("kind") != "task-notification": continue
+        c = (o.get("message") or {}).get("content")
+        if isinstance(c, list): c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
+        if isinstance(c, str) and c.startswith(cc.NOTE_PREFIX): out.add(o["uuid"])
     return frozenset(out)
 
 
@@ -226,22 +243,24 @@ def main():
     try:
         run([sys.executable, "-B", os.path.join(HERE, "prepare_all.py"), sess, "--cwd", work, "--out", os.path.join(work, "out")] + (["--with-subagents"] if "--with-subagents" in a else []))
         meta = frozenset() if cut else skill_meta_uuids(sess); skills = bool(meta)
+        notes = frozenset() if cut else notice_uuids_of(sess)
+        notices = cc.count_moved_notices(cc.read_chunks(os.path.join(work, "out")), notes, cc.DEFAULT_LIMITS, not cut) > 0   # the clause only when the compaction will really move one
         ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base)
         ro = "--no-readonly" not in a
         def compact(intro, dest):   # -> (printed check line, passed)
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta)
+                ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta, notes)
             return buf.getvalue().strip(), ok
-        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills)
+        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices)
         chunks, lines = ((1, 1),), 0
         for attempt in range(3):   # the plan changes only numbers inside one line, so the line count settles at once; the loop is a safeguard
             scratch = os.path.join(work, "draft%d" % attempt); line, ok = compact(draft, scratch)
             text_lines = open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8").read().split("\n")
             new_chunks = tuple(reading_plan(text_lines)); new_lines = len(text_lines)
             if (new_chunks, new_lines) == (chunks, lines): break
-            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills)
+            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices)
         dest = os.path.join(work, "res") if cut else folder
         line, ok = compact(draft, dest)
         print(line)
@@ -348,8 +367,31 @@ def selftest():
         assert (SKILL_CLAUSE in intro) == (skills and not cut) and len(SKILL_CLAUSE) <= 150, (cut, kept, skills)
         plain = build_intro(cut, "abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)))   # the clause stays on the line of WHAT_BLOBS: same number of lines
         assert intro == (plain.replace(WHAT_BLOBS, WHAT_BLOBS + " " + SKILL_CLAUSE) if skills and not cut else plain) and intro.count("\n") == plain.count("\n"), (cut, kept, skills)
+    # notice_uuids_of: only a record the harness wrote for a finished background task (type user, origin.kind task-notification, content starting with the tag); the same words typed by the user, or from another session, are not collected
+    T = cc.NOTE_PREFIX + "\n<summary>x</summary>"
+    def nrec(type_, uuid, content, origin="task-notification", **kw):   # origin: a kind (str) is wrapped as {"kind": ...}; a dict is used as it is; None leaves it out; raw=... puts a non-dict origin
+        o = dict({"type": type_, "message": {"content": content}}, **kw)
+        if uuid is not None: o["uuid"] = uuid
+        if "raw" in kw: o["origin"] = o.pop("raw")
+        elif origin is not None: o["origin"] = origin if isinstance(origin, dict) else {"kind": origin}
+        return json.dumps(o)
+    jl = [nrec("user", "n-str", T), nrec("user", "n-list", [{"type": "text", "text": T}, {"type": "text", "text": "x"}]), nrec("user", "n-human", T, "human"), nrec("user", "n-peer", T, "peer"), nrec("user", "n-none", T, None),
+          nrec("user", "n-strorigin", T, None, raw="task-notification"), nrec("user", "n-dict-nokind", T, {"producer": "x"}), nrec("assistant", "n-assistant", T),
+          nrec("user", "n-noprefix", "hello"), nrec("user", "n-late", [{"type": "text", "text": "hi"}, {"type": "text", "text": T}]), nrec("user", "n-toolres", [{"type": "tool_result", "content": T}]),
+          nrec("user", None, T), nrec("user", "n-skill", P + "/s/a", isMeta=True), nrec("user", "n-meta", T, isMeta=True), "not json {", "[1, 2]"]
+    np_ = os.path.join(d, "notices.jsonl"); open(np_, "w", encoding="utf-8").write("\n".join(jl) + "\n")
+    assert notice_uuids_of(np_) == frozenset(["n-str", "n-list", "n-meta"]), notice_uuids_of(np_); n += 1
+    # the introduction: the notification clause only in blob mode and only when notifications were moved; it is short; it follows the skill clause on the same line (16 combinations: cut x kept x skills x notices)
+    assert len(NOTICE_CLAUSE) <= 150 and "peer" not in NOTICE_CLAUSE.lower() and "rezumat" not in NOTICE_CLAUSE
+    for cut, kept, skills, notices in itertools.product((False, True), (False, True), (False, True), (False, True)):
+        args = ("abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)))
+        intro = build_intro(cut, *args, skills, notices); plain = build_intro(cut, *args); n += 1
+        for needle in ("8 rânduri", "istoric", "offset:limit", "Reguli", "Ce faci după ce l-ai citit", "Mesajele mele și ale asistentului sunt întregi"): assert needle in intro, needle
+        assert (NOTICE_CLAUSE in intro) == (notices and not cut) and intro.count("\n") == plain.count("\n"), (cut, kept, skills, notices)
+        if notices and not cut: assert WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + " " + NOTICE_CLAUSE in intro
+        else: assert intro == build_intro(cut, *args, skills)
     print("make_context selftest OK: %d cases (relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
-          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
+          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 
 if "--selftest" in sys.argv: selftest()

@@ -113,6 +113,44 @@ describe("make_context.py on an invented transcript", () => {
     assert.equal(intro(cutText).includes("abilități (skill)"), false);
   });
 
+  it("moves the notification of a background task (origin task-notification) to a blob, shows its summary in the marker and says so; typed text, a peer message, a compaction summary, a short notification and --cut stay as they were", () => {
+    const sid = "66666666-6666-4666-8666-666666666666", tag = "<task-notification>";
+    const longNote = `${tag}\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent "Read the paper" finished</summary>\n<result>${"finding line\n".repeat(60)}</result>\n</task-notification>`;
+    const shortNote = `${tag}\n<task-id>b2</task-id>\n<summary>Background command "wait" completed (exit code 0)</summary>\n</task-notification>`;
+    const peer = `Another Claude session sent a message:\n<cross-session-message from="x">${"peer line\n".repeat(60)}</cross-session-message>`;
+    const compacted = `This session is being continued from a previous conversation that ran out of context. ${"summary line\n".repeat(60)}`;
+    assert.ok(longNote.length > 300 && shortNote.length <= 300);
+    const records = transcript(sid);
+    let parent = records[records.length - 1].uuid;
+    const more = (n, content, extra) => { const r = { ...base, sessionId: sid, type: "user", uuid: uid(n), parentUuid: parent, timestamp: "2026-01-01T11:00:00.000Z", message: { role: "user", content }, ...extra }; parent = r.uuid; return r; };
+    const note = { origin: { kind: "task-notification", producer: "session-task" }, promptSource: "system", turnOrigin: "task_notification" };
+    const all = [...records, more(910, longNote, note), more(911, shortNote, note), more(912, longNote), more(913, peer, { isMeta: true, origin: { kind: "peer" }, promptSource: "system", turnOrigin: "peer" }), more(914, compacted, { isCompactSummary: true })];
+    const sessionFile = write(join(root, "s6.jsonl"), all);
+    const out = join(root, "handoff-6666eeee-20260105-note");
+    const r = py([sessionFile, out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    const t = readFileSync(join(out, "HANDOFF.md"), "utf8"), blobs = readdirSync(join(out, "blobs")).map((f) => readFileSync(join(out, "blobs", f), "utf8"));
+    assert.equal(blobs.filter((b) => b.includes("finding line")).length, 1, "the notification is in exactly one blob (the typed copy of the same words stays inline)");
+    assert.equal(t.split("finding line").length - 1, 60, "and the typed copy is inline: 60 lines, no more");
+    assert.ok(t.includes('[user] task: Agent "Read the paper" finished'), "the marker shows the summary");
+    assert.ok(t.includes(shortNote), "a notification of 300 characters or fewer stays inline");
+    assert.ok(t.includes("peer line") && t.includes("summary line"), "a peer message and a compaction summary stay inline");
+    assert.equal(blobs.some((b) => b.includes("peer line") || b.includes("summary line")), false);
+    assert.ok(intro(t).includes("notificare a unei sarcini de fundal"), "the introduction has the clause");
+    const cutOut = join(root, "cut", "note.md");
+    assert.equal(py([sessionFile, cutOut, "--cut"]).status, 0);
+    const cutText = readFileSync(cutOut, "utf8");
+    assert.equal(cutText.split("finding line").length - 1, 120, "--cut keeps both notification texts whole");
+    assert.equal(intro(cutText).includes("sarcini de fundal"), false);
+    const only = write(join(root, "s7.jsonl"), [...records, more(920, shortNote, note)]);
+    const out2 = join(root, "handoff-7777eeee-20260105-short");
+    assert.equal(py([only, out2]).status, 0);
+    const t2 = readFileSync(join(out2, "HANDOFF.md"), "utf8");
+    assert.ok(t2.includes(shortNote) && !t2.includes("[user] task:"), "a session whose only notification is short has no marker");
+    assert.equal(intro(t2).includes("sarcini de fundal"), false, "and no clause");
+  });
+
   it("--cut writes one file whose cuts are true prefixes and keeps the messages", () => {
     const r = py([join(root, "s1.jsonl"), join(root, "cut", "x.md"), "--cut"]);
     assert.equal(r.status, 0, r.stderr + r.stdout);
