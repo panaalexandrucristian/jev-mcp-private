@@ -37,6 +37,12 @@ describe("SKILL.md", () => {
   });
 });
 
+describe("the skill text rule", () => {
+  it("is described in SKILL.md: blob mode only, isMeta, named marker, whole with --cut", () => {
+    for (const part of ["Base directory for this skill: ", "`isMeta`", "not typed by the user", "names the skill", "with `--cut` it stays whole"]) assert.ok(body.includes(part), part);
+  });
+});
+
 describe("the package", () => {
   it("has the three programs and no path of one machine inside", () => {
     for (const f of ["make_context.py", "compact_context.py", "prepare_all.py"]) {

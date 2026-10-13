@@ -13,7 +13,9 @@
 CHUNK_DIR is the --out directory of prepare.py / prepare_all.py (it holds transcript/chunk-*.txt); the chunk texts are joined in order. User and assistant text stay whole.
 A record is replaced by ONE marker line with a short preview, and its full text goes to OUT_DIR/blobs/Rnnnn.txt, when
   (1) it is a tool_use or tool_result longer than the limit of its kind, or
-  (2) it is a tool call that only READS (Read, Grep, Glob, ToolSearch, a Bash made only of read-only commands: ls, cat, grep, sed -n, git log/status/diff, ...) and is longer than its marker.
+  (2) it is a tool call that only READS (Read, Grep, Glob, ToolSearch, a Bash made only of read-only commands: ls, cat, grep, sed -n, git log/status/diff, ...) and is longer than its marker, or
+  (3) blob mode only: it is the text of a skill that the harness injected (a user record that is isMeta in the session .jsonl, whose uuid the caller passes in `meta_uuids`, and that starts with `Base directory for this skill: `);
+      its marker preview names the skill. Without `meta_uuids` (this command line) the rule is off; a message the user typed is never moved by it.
 A command that may change state (rm, git commit/push, redirects into files, sed -i, service restarts, API calls ...) is never moved by rule (2); neither is a message of the user.
 expand() puts every blob back. Nothing is summarised, translated or cut: the marker only points at the full text, and `check` proves expand(compact(x)) == x."""
 import glob, hashlib, itertools, json, os, re, sys, tempfile
@@ -27,6 +29,8 @@ PAIRS = (("⟦", "⟧"), ("⟪", "⟫"), ("【", "】"), ("〔", "〕"), ("⌜",
 KINDS = ("tool_use", "tool_result", "assistant_text", "user_text")
 DEFAULT_LIMITS = {"tool_use": 800, "tool_result": 300, "assistant_text": None, "user_text": None}   # None = always kept whole
 DEFAULT_PREVIEW = 100
+SKILL_PREFIX = "Base directory for this skill: "
+SKILL_REC = re.compile(r"^\[([0-9a-f-]{36}) user\] " + re.escape(SKILL_PREFIX))
 SEP = "----- transcript (compact) -----\n"
 FILE_NAMES = ("HANDOFF.md", "CONTEXT.md")   # read_out takes the first one that exists
 HEADER = ("This is a session transcript made smaller for a new session. A line `%sRnnnn|chars|preview%s` stands for ONE record that was longer than the limit of its kind (%s)%s: "
@@ -164,23 +168,29 @@ def cut_record(r, preview):
     return r[:keep].replace("\n", "⏎") + CUT_NOTE % (len(r.rstrip("\n")) - keep) + ("\n" if r.endswith("\n") else "")
 
 
-def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True):
+def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset()):
     """-> (compact text without header, {blob name: full record text}, marker pair or None). A record that is too long for its kind, or (readonly) a tool call that only reads, is replaced by a marker line pointing at blobs/Rnnnn.txt
-    (blobs=True; raises ValueError when no marker pair is free) or is cut to its first characters (blobs=False: the rest is not kept). `stats["readonly"]` counts the records moved only by the read-only rule."""
+    (blobs=True; raises ValueError when no marker pair is free) or is cut to its first characters (blobs=False: the rest is not kept). `stats["readonly"]` counts the records moved only by the read-only rule; `stats["skill"]` the injected skill texts
+    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker)."""
     pair = pick_pair(text) if blobs else None
     head, recs = split_records(text); out, blob_map = [head], {}
     for r in recs:
         k = kind_of(r); lim = limits.get(k)
         by_length = lim is not None and len(r) > lim
         by_rule = readonly and k == "tool_use" and len(r) > preview + 25 and is_readonly_call(r)   # shorter than its marker: moving it would save nothing
-        if not (by_length or by_rule): out.append(r); continue
+        sk = SKILL_REC.match(r) if (blobs and meta_uuids and k == "user_text") else None
+        by_skill = bool(sk) and sk.group(1) in meta_uuids and len(r) > preview + 25
+        if not (by_length or by_rule or by_skill): out.append(r); continue
         if not blobs:
             c = cut_record(r, preview); out.append(c)
             if c != r and stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
             continue
-        if stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
+        if stats is not None and by_skill: stats["skill"] = stats.get("skill", 0) + 1
+        elif stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
         name = "R%04d" % len(blob_map); blob_map[name] = r
-        p = UUID.sub(r"[\1] ", r, count=1)[:preview].replace("\n", "⏎").replace(pair[1], "·")   # the uuid is no use in a preview
+        p = UUID.sub(r"[\1] ", r, count=1)[:preview]   # the uuid is no use in a preview
+        if by_skill: p = "[user] skill: " + r.split("\n", 1)[0][sk.end():][-80:]   # the default preview would stop inside the path, before the skill name
+        p = p.replace("\n", "⏎").replace(pair[1], "·")
         out.append("%s%s|%d|%s%s%s" % (pair[0], name, len(r), p, pair[1], "\n" if r.endswith("\n") else ""))
     return "".join(out), blob_map, pair
 
@@ -225,9 +235,9 @@ def read_out(out_dir):
 def sha(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 
-def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False):
+def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset()):
     text = read_chunks(chunk_dir); stats = {}
-    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs)
+    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids)
     if blobs: write_out(out_dir, compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name)
     else:
         os.makedirs(out_dir, exist_ok=True)
@@ -235,8 +245,8 @@ def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", na
     return text, compact, blob_map, stats.get("readonly", 0)
 
 
-def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False):
-    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs)
+def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset()):
+    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids)
     size = len(open(os.path.join(out_dir, name), encoding="utf-8", newline="").read()); label = describe(limits) + (" + read-only rule" if readonly else "")
     if blobs:
         c2, b2, p2 = read_out(out_dir); ok = sha(expand_text(c2, b2, p2)) == sha(text)
@@ -328,6 +338,31 @@ def selftest():
         assert ok and b == {} and pr is None and ncut == (1 if expect_cut else 0), (cat, size, nl, ok, ncut)
         assert intact == texts and stats.get("readonly", 0) == (1 if expect_cut else 0), (cat, size, nl)
         if expect_cut: assert omitted == len(rec.rstrip("\n")) - keep and c.count("caractere omise") == 1
+    # (6) the injected skill text: five conditions joined by AND, so all 2^5 = 32 combinations (t=5): role x prefix at the start or later x uuid in meta_uuids or not x length preview+25 or +26 x blob mode or cut mode
+    #     (limits off, read-only rule off); it moves only for user + start + in the set + preview+26 + blob mode, and then expand gives the text back
+    def skill_rec(role, start, size):
+        head = "[%s %s] " % (uid, role); body = (SKILL_PREFIX if start else "xx " + SKILL_PREFIX) + "/p/skills/demo\n\n# demo\n"
+        return head + body + "y" * (size - len(head) - len(body) - 1) + "\n"
+    nlim = {k: None for k in KINDS}; moved_cases = 0
+    for role, start, inset, extra, blobs in itertools.product(("user", "assistant"), (True, False), (True, False), (25, 26), (True, False)):
+        rec = skill_rec(role, start, PV + extra); assert len(rec) == PV + extra
+        text = "[%s user] first\n" % uid + rec + "[%s user] last\n" % uid; stats = {}
+        c, b, pr = compact_text(text, nlim, PV, False, stats, blobs, frozenset([uid]) if inset else frozenset()); n += 1
+        expect = role == "user" and start and inset and extra == 26 and blobs; moved_cases += expect
+        assert (c == text) == (not expect) and len(b) == (1 if expect else 0) and stats.get("skill", 0) == (1 if expect else 0) and stats.get("readonly", 0) == 0, (role, start, inset, extra, blobs)
+        if blobs: assert expand_text(c, b, pr) == text and (not expect or list(b.values()) == [rec])
+        else: assert b == {} and verify_cut(text, c, PV)[0]
+    assert moved_cases == 1
+    tr_rec = "[%s user] [tool_result] %s/p/skills/demo\n%s\n" % (uid, SKILL_PREFIX, "y" * 200)   # a tool result holding the phrase is not a skill text
+    c, b, pr = compact_text(tr_rec, nlim, PV, False, None, True, frozenset([uid])); n += 1; assert c == tr_rec and b == {}
+    hand = "[%s user] typed by the user\n[%s user] %s/p/skills/demo\n%s\n" % (uid, "1" * 8 + uid[8:], SKILL_PREFIX, "y" * 300)   # only the uuid in the set moves; the other record with the same text stays
+    c, b, pr = compact_text(hand, nlim, PV, False, None, True, frozenset(["1" * 8 + uid[8:]])); n += 1; assert len(b) == 1 and "typed by the user" in c and expand_text(c, b, pr) == hand
+    c, b, pr = compact_text(hand, nlim, PV, False, None, True); n += 1; assert b == {} and c == hand   # no meta_uuids: the rule is off
+    longname = "/very/long/" + "d" * 120 + "/skills/handoff-verify"   # the preview keeps the END of the first line (the skill name), escapes the closer and has no line break
+    rec = "[%s user] %s%s%s\n\n# skill\n%s\n" % (uid, SKILL_PREFIX, longname, PAIRS[0][1], "y" * 300)
+    c, b, pr = compact_text(rec, nlim, PV, False, None, True, frozenset([uid])); n += 1
+    mk = c.rstrip("\n"); assert mk.startswith(pr[0] + "R0000|%d|[user] skill: " % len(rec)) and mk.endswith("skills/handoff-verify·" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1] and expand_text(c, b, pr) == rec
+    assert "d" * 100 not in mk and len(mk.split("|", 2)[2]) <= len("[user] skill: ") + 80 + 1
     big = "".join(record(k, 400, False, True) for k in KINDS)
     c, b_, pr = compact_text(big, {k: 40 for k in KINDS}, 20, False, None, False); n += 1   # a limit on a text kind would cut a message: the check must refuse that
     assert verify_cut(big, c, 20)[0] is False
@@ -336,7 +371,7 @@ def selftest():
     assert verify_cut(big, c.replace("caractere omise", "caractere omise "), 20)[0] is False   # a tampered note fails the check
     assert verify_cut(big, c.replace("[…", "[ …"), 20)[0] is False; n += 2
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
-          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note" % (n, len(reading) + len(mutating)))
+          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview" % (n, len(reading) + len(mutating)))
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ only as its cut or blobbed Read results. The last line printed is the command th
 import datetime, glob, json, os, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import compact_context as cc
 DURABLE = os.path.expanduser("~/.claude/handoffs")
 INTRO = """# Handoff: continuarea unei sesiuni
 
@@ -53,6 +55,7 @@ WHAT_BLOBS = ("Transcriptul compact al sesiunii precedente. Mesajele mele și al
               "de unealtă mai lung decât limita, ori pentru un apel care doar citește; textul lui întreg este în `blobs/Rnnnn.txt`.")
 WHAT_CUT = ("Transcriptul compact al sesiunii precedente. Mesajele mele și ale asistentului sunt întregi. Un apel sau un rezultat de unealtă foarte lung, ori un apel care doar citește, a fost scurtat la primele caractere "
             "și se termină cu `[…N caractere omise]`; textul omis nu este în acest fișier.")
+SKILL_CLAUSE = "Un marcaj stă și pentru textul unei abilități (skill) încărcate de sistem, nu scris de mine; textul întreg este în `blobs/Rnnnn.txt`."
 MISSING_BLOBS = "deschide blob-ul indicat de linia-marcaj, `blobs/Rnnnn.txt` (doar cel de care ai nevoie)."
 MISSING_CUT = "caută-l în transcriptul complet al sesiunii sursă (JSONL, mare): `{src}`."
 TEMP_NOTE = {   # (kept, cut) -> text; no absolute path of the handoff itself
@@ -75,11 +78,11 @@ def reading_plan(lines, budget=READ_BUDGET, prefix=8, max_lines=400):
     return chunks
 
 
-def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),)):
+def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False):
     """The introduction with every instruction. It names no absolute path of the handoff itself (only the source transcript, which is durable)."""
     plan = ", ".join("%d:%d" % c for c in chunks)
     return INTRO.format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, temp=TEMP_NOTE[(bool(kept), bool(cut))],
-                        what=(WHAT_CUT if cut else WHAT_BLOBS), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
+                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "")), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
 
 
 HANDOFF_PATH = re.compile(r"/handoff-[0-9a-f]{8}-\d{8}-[^/\s\"]+(?:\.md|/HANDOFF\.md)$")
@@ -100,6 +103,20 @@ def find_parents(sess, first_calls=4):
                 if isinstance(fp, str) and HANDOFF_PATH.search(fp) and fp not in found: found.append(fp)
                 if calls >= first_calls: return found
     return found
+
+
+def skill_meta_uuids(sess):
+    """The uuids of the records the harness injected with the text of a skill: type user, isMeta true, content (a string, or the first text block of a list) starting with the skill prefix. Lines that do not parse are skipped.
+    Only these may be moved to a blob; a message the user typed is never in the set."""
+    out = set()
+    for line in open(sess, encoding="utf-8", errors="replace"):
+        try: o = json.loads(line)
+        except Exception: continue
+        if not isinstance(o, dict) or o.get("type") != "user" or o.get("isMeta") is not True or not isinstance(o.get("uuid"), str): continue
+        c = (o.get("message") or {}).get("content")
+        if isinstance(c, list): c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
+        if isinstance(c, str) and c.startswith(cc.SKILL_PREFIX): out.add(o["uuid"])
+    return frozenset(out)
 
 
 def relativize_intro(md_path, orig_dir, orig_file=None):
@@ -208,23 +225,23 @@ def main():
     work = tempfile.mkdtemp(prefix="make_context_")
     try:
         run([sys.executable, "-B", os.path.join(HERE, "prepare_all.py"), sess, "--cwd", work, "--out", os.path.join(work, "out")] + (["--with-subagents"] if "--with-subagents" in a else []))
-        import compact_context as cc
+        meta = frozenset() if cut else skill_meta_uuids(sess); skills = bool(meta)
         ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base)
         ro = "--no-readonly" not in a
         def compact(intro, dest):   # -> (printed check line, passed)
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut)
+                ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta)
             return buf.getvalue().strip(), ok
-        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph)
+        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills)
         chunks, lines = ((1, 1),), 0
         for attempt in range(3):   # the plan changes only numbers inside one line, so the line count settles at once; the loop is a safeguard
             scratch = os.path.join(work, "draft%d" % attempt); line, ok = compact(draft, scratch)
             text_lines = open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8").read().split("\n")
             new_chunks = tuple(reading_plan(text_lines)); new_lines = len(text_lines)
             if (new_chunks, new_lines) == (chunks, lines): break
-            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks)
+            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills)
         dest = os.path.join(work, "res") if cut else folder
         line, ok = compact(draft, dest)
         print(line)
@@ -245,6 +262,7 @@ def main():
 
 
 def selftest():
+    import itertools
     d = tempfile.mkdtemp(); n = 0
     def session(calls):   # a transcript whose assistant makes the given (tool name, file_path) calls
         p = os.path.join(d, "s%d.jsonl" % len(os.listdir(d)))
@@ -315,8 +333,23 @@ def selftest():
         intro = build_intro(cut, "abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280))); n += 1
         for needle in ("1996 de linii", "în 2 bucăți", "1:300, 301:280", "relative la folderul", "Nu repeta nimic", "maximum 8 rânduri", "---"): assert needle in intro, needle
         assert "/tmp/" not in intro.replace("(în /tmp)", "") and ("durabil" in intro) == kept and ("blobs/Rnnnn.txt" in intro) == (not cut) and ("/home/u/.claude/projects/p/s.jsonl" in intro) == cut, (cut, kept)
+    # skill_meta_uuids: only a record the harness injected (isMeta true) that starts with the skill prefix; what a user typed, or an assistant wrote, with the same words is not collected
+    P = cc.SKILL_PREFIX
+    def rec(type_, uuid, content, **kw): return json.dumps(dict({"type": type_, "uuid": uuid, "message": {"content": content}}, **kw))
+    jl = [rec("user", "u-str", P + "/s/a\n\n# a", isMeta=True), rec("user", "u-list", [{"type": "text", "text": P + "/s/b\n"}, {"type": "text", "text": "x"}], isMeta=True),
+             rec("user", "u-typed", P + "/s/c"), rec("user", "u-false", P + "/s/c", isMeta=False), rec("user", "u-noprefix", "hello", isMeta=True), rec("user", "u-second", [{"type": "text", "text": "hi"}, {"type": "text", "text": P + "/s/d"}], isMeta=True),
+             rec("assistant", "a-prefix", P + "/s/e", isMeta=True), rec("user", "u-toolres", [{"type": "tool_result", "content": P + "/s/f"}], isMeta=True), "not json {", "[1, 2]", json.dumps({"type": "user", "isMeta": True, "message": {"content": P + "/s/g"}})]
+    sp = os.path.join(d, "skills.jsonl"); open(sp, "w", encoding="utf-8").write("\n".join(jl) + "\n")
+    assert skill_meta_uuids(sp) == frozenset(["u-str", "u-list"]), skill_meta_uuids(sp); n += 1
+    # the introduction: the skill clause only in blob mode and only with skills; it is short; the contract phrases are there in every case
+    for cut, kept, skills in itertools.product((False, True), (False, True), (False, True)):
+        intro = build_intro(cut, "abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)), skills); n += 1
+        for needle in ("8 rânduri", "istoric", "offset:limit", "Reguli", "Ce faci după ce l-ai citit", "Mesajele mele și ale asistentului sunt întregi"): assert needle in intro, needle
+        assert (SKILL_CLAUSE in intro) == (skills and not cut) and len(SKILL_CLAUSE) <= 150, (cut, kept, skills)
+        plain = build_intro(cut, "abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)))   # the clause stays on the line of WHAT_BLOBS: same number of lines
+        assert intro == (plain.replace(WHAT_BLOBS, WHAT_BLOBS + " " + SKILL_CLAUSE) if skills and not cut else plain) and intro.count("\n") == plain.count("\n"), (cut, kept, skills)
     print("make_context selftest OK: %d cases (relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
-          "the introduction in 4 modes; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
+          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 
 if "--selftest" in sys.argv: selftest()

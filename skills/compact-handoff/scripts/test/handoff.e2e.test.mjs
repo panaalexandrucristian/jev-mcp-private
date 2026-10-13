@@ -84,6 +84,35 @@ describe("make_context.py on an invented transcript", () => {
     assert.ok(head.includes("## Handoff părinte") && head.includes("`parents/handoff-0123abcd-20260101-test/HANDOFF.md`"));
   });
 
+  it("moves the text of a skill that the system injected (isMeta) to a blob and says so; a typed message with the same words and a session without a skill stay as they were", () => {
+    const sid = "55555555-5555-4555-8555-555555555555", prefix = "Base directory for this skill: ";
+    const skillText = `${prefix}/x/skills/demo\n\n# demo\n${"instruction line\n".repeat(150)}\nARGUMENTS: do X`;
+    const typed = `${prefix}/x/skills/typed, but I typed this myself ${"t".repeat(300)}`;
+    const records = transcript(sid, [["Skill", { skill: "demo", args: "do X" }, "Launching skill: demo"]]);
+    const last = records[records.length - 1];
+    const meta = { ...base, sessionId: sid, type: "user", uuid: uid(900), parentUuid: last.uuid, timestamp: "2026-01-01T11:00:00.000Z", isMeta: true, message: { role: "user", content: [{ type: "text", text: skillText }] } };
+    const typedRec = { ...meta, uuid: uid(901), parentUuid: uid(900), isMeta: undefined, message: { role: "user", content: typed } };
+    const out = join(root, "handoff-5555eeee-20260104-skill");
+    const r = py([write(join(root, "s5.jsonl"), [...records, meta, typedRec]), out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    const t = readFileSync(join(out, "HANDOFF.md"), "utf8"), blobs = readdirSync(join(out, "blobs")).map((f) => readFileSync(join(out, "blobs", f), "utf8"));
+    assert.equal(blobs.filter((b) => b.includes("instruction line")).length, 1, "the skill text is in exactly one blob");
+    assert.ok(blobs.some((b) => b.endsWith("ARGUMENTS: do X\n") || b.includes("ARGUMENTS: do X")));
+    assert.equal(t.includes("instruction line"), false, "and not inline");
+    assert.ok(t.includes("[user] skill: /x/skills/demo"), "the marker names the skill");
+    assert.ok(t.includes(typed), "the typed message stays inline, whole");
+    assert.ok(t.includes('"skill": "demo", "args": "do X"'), "the Skill call is still inline with its arguments");
+    assert.ok(intro(t).includes("abilități (skill) încărcate de sistem"), "the introduction has the clause");
+    const plain = readFileSync(join(folder, "HANDOFF.md"), "utf8");
+    assert.equal(intro(plain).includes("abilități (skill)"), false, "a session without a skill record has the old introduction");
+    const cutOut = join(root, "cut", "skill.md");
+    assert.equal(py([join(root, "s5.jsonl"), cutOut, "--cut"]).status, 0);
+    const cutText = readFileSync(cutOut, "utf8");
+    assert.ok(cutText.includes("instruction line") && cutText.includes("ARGUMENTS: do X"), "--cut keeps the skill text whole");
+    assert.equal(intro(cutText).includes("abilități (skill)"), false);
+  });
+
   it("--cut writes one file whose cuts are true prefixes and keeps the messages", () => {
     const r = py([join(root, "s1.jsonl"), join(root, "cut", "x.md"), "--cut"]);
     assert.equal(r.status, 0, r.stderr + r.stdout);
