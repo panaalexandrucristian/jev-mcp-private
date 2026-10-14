@@ -255,7 +255,7 @@ describe("make_context.py on an invented OpenCode session", () => {
   it("refuses several sessions without --session, picks one with it, refuses an unknown id, a legacy-only file, --cut and --with-subagents", () => {
     const two = ocDb(join(root, "oc", "two.sqlite"), { ses_aaaaaaaaaaaaAAAAAAAA: [["user", { text: "first session" }, 5]], ses_bbbbbbbbbbbbBBBBBBBB: [["user", { text: "second session" }, 5]] });
     const refused = py(["--opencode", two, join(root, "oc", "x1")]);
-    assert.notEqual(refused.status, 0); assert.match(refused.stderr, /ses_aaaaaaaaaaaaAAAAAAAA, ses_bbbbbbbbbbbbBBBBBBBB/);
+    assert.notEqual(refused.status, 0); assert.match(refused.stderr, /pick one with --session ID \(newest first\):\nses_bbbbbbbbbbbbBBBBBBBB \| .*\nses_aaaaaaaaaaaaAAAAAAAA \| .*\nshown 2 of 2 sessions\n?$/);   // the newest first, one line each (the later time_created first)
     const out = join(root, "oc", "x2"), picked = py(["--opencode", two, out, "--session", "ses_bbbbbbbbbbbbBBBBBBBB"]);
     assert.equal(picked.status, 0, picked.stderr); assert.ok(readFileSync(join(out, "HANDOFF.md"), "utf8").includes("second session"));
     assert.match(py(["--opencode", two, join(root, "oc", "x3"), "--session", "ses_zzz"]).stderr, /no such session/);

@@ -1,12 +1,12 @@
 ---
 name: compact-handoff
-description: "Make a compact handoff of the CURRENT session so a new session can continue from it: one command writes HANDOFF.md (all the instructions for the new session, then the compact transcript) and blobs/ with the full text of the long tool calls, into /tmp or, with --keep, into ~/.claude/handoffs. Use whenever the user asks to write, prepare, make, update or redo a handoff, handover, CONTINUE-HERE note or notes for the next session (Romanian: \"fă un handoff\", \"handoff la sesiunea asta\", \"scrie handover-ul\", \"pregătește nota pentru sesiunea următoare\", \"mai fă o dată handoff\"). Not for delegating a task to another agent (\"hand off this task to ...\"), explaining the word, README/changelog/release notes or ordinary summaries. Runs in Claude Code and in OpenCode."
+description: "Make a compact handoff of the CURRENT session, or of a NAMED OpenCode session (\"handoff of the OpenCode session X\"), so a new session can continue from it: one command writes HANDOFF.md and blobs/ with the full text of the long tool calls. Use whenever the user asks to write, prepare, make, update or redo a handoff, handover, CONTINUE-HERE note or notes for the next session (Romanian: \"fă un handoff\", \"handoff la sesiunea asta\", \"fă handoff la sesiunea X din OpenCode\", \"scrie handover-ul\", \"pregătește nota pentru sesiunea următoare\", \"mai fă o dată handoff\"). Not for delegating a task to another agent (\"hand off this task to ...\"), explaining the word, README/changelog/release notes or ordinary summaries. Runs in Claude Code and in OpenCode."
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/make_context.py *)
 ---
 
 # compact-handoff
 
-Turns the transcript of the current session into one folder that a new session reads, with a byte-for-byte check. Nothing is summarised by hand and nothing leaves the machine. Reply to the user in Romanian, short and plain.
+Turns the transcript of the current session, or of a named OpenCode session, into one folder that a new session reads, with a byte-for-byte check. Nothing is summarised by hand and nothing leaves the machine. Reply to the user in Romanian, short and plain.
 
 ## Steps
 
@@ -32,6 +32,25 @@ When this skill runs inside an OpenCode session, the two steps above are the sam
 - If `--current` stops with an error about the OpenCode database (it exists but cannot be read), first report that error to the user, in Romanian, short. Only after that run the same `--current` command again with `--no-opencode`, which skips the OpenCode search so that the Claude Code transcripts alone decide.
 - In step 3 give the start command exactly as printed: `opencode --prompt "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."`, with the sizes as before. Also say that the handoff of an OpenCode session leaves out the model's reasoning, that the `recent` text of each compaction and every image are in blobs, and that images are not scanned for secrets.
 - `--cut` and `--with-subagents` do not apply to an OpenCode session. Sessions kept only in OpenCode's legacy tables are not supported.
+
+## A named OpenCode session
+
+When the user asks for the handoff of an OpenCode session named by title, id, folder or "the last one", do not use the marker:
+
+1. **List**:
+
+       python3 ${CLAUDE_SKILL_DIR}/scripts/make_context.py --list-opencode --match "<a distinctive part of the title, id or folder the user gave>"
+
+   Leave out `--match` for "the last one" with no name. The lines are newest first; the last line names the database. If nothing fits, list once more with a shorter `--match` or without it.
+2. **Choose.** Take the line the user's words point to; "the last one" or "where work was done last" is the first line that fits, because the list is newest first. A title ending in `(fork #n)` is a fork: skip forks unless the user asks for one. Only if the user's words still fit more than one line, show those lines (id, date, title) and ask which one.
+3. **Make the handoff**:
+
+       python3 ${CLAUDE_SKILL_DIR}/scripts/make_context.py --opencode ~/.local/share/opencode/opencode.db --session <ID>
+
+   (or the database named on the last line of the list, if it differs)
+4. **Tell the user**, in Romanian, short: the start command exactly as printed (`opencode --prompt "..."`); that the same folder works in Claude Code as `claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."`; the sizes and the OpenCode notes as in "În OpenCode"; that the session may still be running, so the handoff is a snapshot of that moment.
+
+Do NOT use `sqlite3` and do NOT write SQL on the database: use only the commands of this skill.
 
 ## Rules
 

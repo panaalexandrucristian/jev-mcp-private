@@ -2,6 +2,7 @@
 """make_context.py --marker                        (prints a unique marker; use it with --current in the next command)
 make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--opencode-db PATH] [--no-opencode]
 make_context.py --opencode DB.sqlite [OUT] [--session ID] [--keep] [--no-readonly] [--keep-work]      (an OpenCode session; see below)
+make_context.py --list-opencode [--opencode-db PATH] [--limit N] [--match TEXT]      (the sessions of OpenCode's database, newest first; see below)
 
 One command from a session transcript to a start context for a NEW session.
   SESSION  a .jsonl path, or a session id (looked up in ~/.claude/projects/*/<id>.jsonl)
@@ -12,6 +13,9 @@ One command from a session transcript to a start context for a NEW session.
   --opencode DB  an OpenCode session instead of a Claude Code transcript: DB is OpenCode's SQLite file (or a copy with the rows of one session); only the tables session_v2/session_message are read (opened read-only; legacy sessions
            are refused). --session ID picks the session when the file holds several (zero or several without it is an error). The same folder is built (opencode_source.py renders the rows as Claude-shaped records first); the model's
            reasoning (text and encrypted) is not included, the `recent` text of a compaction and every image file go to blobs/ whole. --cut and --with-subagents are refused. The last line printed starts the new session with `opencode --prompt`.
+  --list-opencode  list the sessions of OpenCode's database (the same default file and read-only opening as --current; --opencode-db PATH names another file), newest update first, at most --limit N (default 15), one line each:
+           <id> | <YYYY-MM-DD HH:MM> | <N> msgs | <directory, home as ~> | <title cut at 80 characters>   and a last line  shown N of M sessions[ matching "TEXT"]; database: PATH.  --match TEXT keeps the sessions whose id,
+           title or directory contains TEXT (case-insensitive). Only the number of messages is read, never their content. A missing, unreadable or legacy-only database is an error. No other option goes with it.
   --current also searches OpenCode's database ($XDG_DATA_HOME/opencode/opencode.db, else ~/.local/share/opencode/opencode.db; --opencode-db PATH names another file) for the marker, in sessions with a row from the last 30 minutes,
            and needs exactly ONE session across the Claude transcripts and the OpenCode sessions. A missing database file is skipped; one that exists but cannot be read stops the command with an error that names --no-opencode,
            which skips the OpenCode search (the Claude transcripts alone decide).
@@ -335,15 +339,37 @@ def build_opencode(db, session, rest):
         else: shutil.rmtree(work, ignore_errors=True)
 
 
+def list_opencode(db, limit=None, match=None):
+    """--list-opencode: print the sessions of the database `db` (see the docstring), then the summary line. The same lookup, read-only opening and errors as --current (a missing file is an error here)."""
+    if limit is None: n = oc.LIST_LIMIT
+    else:
+        if not re.fullmatch(r"[0-9]+", limit) or int(limit) < 1: print("--limit needs a whole number of at least 1, not %r" % limit, file=sys.stderr); sys.exit(2)
+        n = int(limit)
+    if not os.path.exists(db): sys.exit("OpenCode database not found: %s" % db)
+    try:
+        conn = oc.connect(db)
+        try: rows, total = oc.list_sessions(conn, match, n)
+        finally: conn.close()
+    except oc.OpenCodeError as e: sys.exit(str(e))
+    home = os.path.expanduser("~")
+    for r in rows: print(oc.session_line(r, home))
+    print(oc.summary_line(len(rows), total, match, os.path.abspath(db)))
+
+
 def main():
     a = sys.argv[1:]
     if a == ["--marker"]: print("handoff-marker-%d-%s" % (int(time.time()), os.urandom(6).hex())); return
-    oc_db = take_option(a, "--opencode-db"); session = take_option(a, "--session"); no_oc = "--no-opencode" in a
+    oc_db = take_option(a, "--opencode-db"); session = take_option(a, "--session"); limit = take_option(a, "--limit"); match = take_option(a, "--match"); no_oc = "--no-opencode" in a
     a = [x for x in a if x != "--no-opencode"]
+    if oc_db is not None: oc_db = os.path.expanduser(oc_db)
+    if "--list-opencode" in a:
+        if a != ["--list-opencode"] or session is not None or no_oc: sys.exit("--list-opencode takes only --opencode-db PATH, --limit N and --match TEXT")
+        return list_opencode(oc_db or oc.default_db(), limit, match)
+    if limit is not None or match is not None: sys.exit("--limit and --match work only with --list-opencode")
     if session is not None and a[:1] != ["--opencode"]: sys.exit("--session works only with --opencode DB")
     if a[:1] == ["--opencode"]:
         if len(a) < 2 or a[1].startswith("--"): print(__doc__); sys.exit(2)
-        return build_opencode(a[1], session, a[2:])
+        return build_opencode(os.path.expanduser(a[1]), session, a[2:])
     if len(a) >= 2 and a[0] == "--current":
         db = oc_db or oc.default_db()
         try: hits, sessions = find_current_all(a[1], db=db, use_opencode=not no_oc)
@@ -428,8 +454,8 @@ def selftest_opencode():
     import itertools, sqlite3
     n = 0; d = tempfile.mkdtemp(); home = os.path.join(d, "home"); xdg = os.path.join(d, "xdg"); os.makedirs(home); os.makedirs(xdg)
     me = os.path.abspath(__file__)
-    def run_main(args, home_=None, xdg_=None):
-        env = dict(os.environ, HOME=home_ or home, XDG_DATA_HOME=xdg_ or xdg, PYTHONDONTWRITEBYTECODE="1")
+    def run_main(args, home_=None, xdg_=None, env_=None):
+        env = dict(os.environ, HOME=home_ or home, XDG_DATA_HOME=xdg_ or xdg, PYTHONDONTWRITEBYTECODE="1", **(env_ or {}))
         return subprocess.run([sys.executable, "-B", me] + args, capture_output=True, text=True, env=env)
     def folder_text(out):
         md = open(os.path.join(out, "HANDOFF.md"), encoding="utf-8").read()
@@ -540,7 +566,102 @@ def selftest_opencode():
     assert find_current_all(mk, projects, 1800, 0, dbm) == ([cl], ["ses_inprocinproc0001"]) and find_current_all(mk, projects, 1800, 0, dbm, False) == ([cl], []) and find_current_all(mk, projects, 1800, 0, None) == ([cl], []); n += 3
     assert find_current_all("handoff-marker-1-000000000000", projects, 1800, 0, dbm) == ([], []); n += 1
     t0 = time.time(); assert find_current_all("handoff-marker-1-000000000000", projects, 1800, 2, dbm) == ([], []) and time.time() - t0 >= 1.5; n += 1   # the wait applies to the combined search
+    n += selftest_list_opencode(d, home, xdg, run_main, folder_text, xdb, hdb, empty_xdg)
     shutil.rmtree(d, ignore_errors=True)
+    return n
+
+
+def selftest_list_opencode(d, home, xdg, run_main, folder_text, xdb, hdb, empty_xdg):
+    """--list-opencode and the list in the error of --opencode, through the command line (TZ=UTC; HOME and XDG_DATA_HOME point into the temporary folder) -> the number of cases."""
+    import sqlite3
+    n = 0; T = 1700000000000; utc = {"TZ": "UTC"}
+    def lst(args, db=None, env_=utc, **kw):
+        return run_main(["--list-opencode"] + (["--opencode-db", db] if db else []) + list(args), env_=env_, **kw)
+    last = lambda db, shown, total, match=None: "shown %d of %d sessions%s; database: %s" % (shown, total, "" if match is None else ' matching "%s"' % match, os.path.abspath(db))
+    rows_ = lambda k: [("user", {"text": "PRIVATE MESSAGE TEXT"}, 5)] * k
+    # 0 sessions: only the last line; 1 session: the exact lines
+    db0 = oc.make_db(os.path.join(d, "l0.sqlite"), {}, meta={}); r = lst([], db0)
+    assert r.returncode == 0 and r.stdout == last(db0, 0, 0) + "\n" and r.stderr == "", (r.stdout, r.stderr); n += 1
+    r = lst(["--match", "x"], db0); assert r.returncode == 0 and r.stdout == last(db0, 0, 0, "x") + "\n"; n += 1
+    t1 = "Council B g1 (openai/gpt-6-astra)"
+    db1 = oc.make_db(os.path.join(d, "l1.sqlite"), {"ses_ec6becfd3ffeAAAAAA": rows_(2)}, meta={"ses_ec6becfd3ffeAAAAAA": {"title": t1, "directory": home + "/proj/x", "time_updated": T}}); r = lst([], db1)
+    assert r.returncode == 0 and r.stdout == "ses_ec6becfd3ffeAAAAAA | 2023-11-14 22:13 | 2 msgs | ~/proj/x | %s\n%s\n" % (t1, last(db1, 1, 1)), r.stdout; n += 1
+    assert "PRIVATE MESSAGE TEXT" not in r.stdout; n += 1
+    r = lst([], db1, env_={"TZ": "JST-9"}); assert r.stdout.startswith("ses_ec6becfd3ffeAAAAAA | 2023-11-15 07:13 | "); n += 1   # local time
+    # the home folder itself, a subfolder, a prefix that is not a path boundary, no directory
+    dbh = oc.make_db(os.path.join(d, "lh.sqlite"), {"ses_h1": rows_(1), "ses_h2": rows_(1), "ses_h3": rows_(1), "ses_h4": rows_(1)}, meta={
+        "ses_h1": {"title": "a", "directory": home, "time_updated": T + 4}, "ses_h2": {"title": "b", "directory": home + "/sub/dir", "time_updated": T + 3},
+        "ses_h3": {"title": "c", "directory": home + "2/sub", "time_updated": T + 2}, "ses_h4": {"title": "d", "directory": "", "time_updated": T + 1}}); r = lst([], dbh)
+    assert r.stdout.split("\n")[:4] == ["ses_h1 | 2023-11-14 22:13 | 1 msgs | ~ | a", "ses_h2 | 2023-11-14 22:13 | 1 msgs | ~/sub/dir | b", "ses_h3 | 2023-11-14 22:13 | 1 msgs | %s2/sub | c" % home, "ses_h4 | 2023-11-14 22:13 | 1 msgs | - | d"], r.stdout; n += 1
+    # more sessions than the limit, --limit, bad limits
+    db20 = oc.make_db(os.path.join(d, "l20.sqlite"), {"ses_%02d" % i: rows_(1) for i in range(20)}, meta={"ses_%02d" % i: {"title": "t%d" % i, "directory": "/w", "time_updated": T + i * 60000} for i in range(20)})
+    r = lst([], db20); L = r.stdout.rstrip("\n").split("\n")
+    assert r.returncode == 0 and len(L) == 16 and L[0].startswith("ses_19 | ") and L[14].startswith("ses_05 | ") and L[15] == last(db20, 15, 20), r.stdout; n += 1
+    r = lst(["--limit", "2"], db20); assert r.stdout.rstrip("\n").split("\n")[1:] == ["ses_18 | 2023-11-14 22:31 | 1 msgs | /w | t18", last(db20, 2, 20)] and r.stdout.startswith("ses_19 | 2023-11-14 22:32 | "); n += 1
+    r = lst(["--limit", "99"], db20); assert len(r.stdout.rstrip("\n").split("\n")) == 21 and r.stdout.rstrip("\n").endswith(last(db20, 20, 20)); n += 1
+    for bad in ("0", "abc", "-1", "1.5", "", "2x", "+3"):
+        r = lst(["--limit", bad], db20); assert r.returncode == 2 and "--limit" in r.stderr and r.stdout == "", (bad, r.returncode, r.stderr); n += 1
+    # --match: id, title, directory (raw and ~), case, diacritics, no hit, applied before the limit
+    dm = oc.make_db(os.path.join(d, "lm.sqlite"), {k: rows_(1) for k in ("ses_Alpha0001", "ses_beta00002", "ses_gamma0003", "ses_delta0004")}, meta={
+        "ses_Alpha0001": {"title": t1, "directory": home + "/work/alpha", "time_updated": T + 3}, "ses_beta00002": {"title": t1 + " (fork #1)", "directory": "/srv/other", "time_updated": T + 2},
+        "ses_gamma0003": {"title": "Șantier în București", "directory": home + "/ședință", "time_updated": T + 1}, "ses_delta0004": {"title": "x", "directory": "/opt/Data", "time_updated": T}})
+    def ids_of(r): return [l.split(" | ")[0] for l in r.stdout.rstrip("\n").split("\n")[:-1]]
+    for m, want in (("alpha0001", ["ses_Alpha0001"]), ("SES_BETA", ["ses_beta00002"]), ("council b g1", ["ses_Alpha0001", "ses_beta00002"]), ("COUNCIL B G1", ["ses_Alpha0001", "ses_beta00002"]), ("(fork #1)", ["ses_beta00002"]),
+                    ("/srv/other", ["ses_beta00002"]), ("~/work", ["ses_Alpha0001"]), (home + "/work", ["ses_Alpha0001"]), ("/opt/data", ["ses_delta0004"]), ("ȘANTIER ÎN", ["ses_gamma0003"]), ("~/ședință", ["ses_gamma0003"]), ("ȘEDINȚĂ", ["ses_gamma0003"]),
+                    ("nothing like this", []), ("", ["ses_Alpha0001", "ses_beta00002", "ses_gamma0003", "ses_delta0004"])):
+        r = lst(["--match", m], dm); assert r.returncode == 0 and ids_of(r) == want and r.stdout.rstrip("\n").endswith(last(dm, len(want), len(want), m)), (m, r.stdout); n += 1
+    r = lst(["--match", "nothing like this"], dm); assert r.stdout == last(dm, 0, 0, "nothing like this") + "\n"; n += 1
+    r = lst(["--match", "council", "--limit", "1"], dm); assert ids_of(r) == ["ses_Alpha0001"] and r.stdout.rstrip("\n").endswith(last(dm, 1, 2, "council")); n += 1
+    # ordering by time_updated, not time_created (make_db creates in dict order); the tie on the same time goes by id
+    do = oc.make_db(os.path.join(d, "lo.sqlite"), {"ses_a1": rows_(1), "ses_a2": rows_(1), "ses_a3": rows_(1)}, meta={"ses_a1": {"title": "1", "time_updated": T + 10}, "ses_a2": {"title": "2", "time_updated": T + 5}, "ses_a3": {"title": "3", "time_updated": T + 10}})
+    assert ids_of(lst([], do)) == ["ses_a1", "ses_a3", "ses_a2"]; n += 1
+    # a title over 80 characters, with a line break, a fork, empty
+    dt = oc.make_db(os.path.join(d, "lt.sqlite"), {"ses_t1": rows_(1), "ses_t2": rows_(1), "ses_t3": rows_(1), "ses_t4": rows_(1)}, meta={"ses_t1": {"title": "B" * 120, "time_updated": T + 4}, "ses_t2": {"title": "two\n\nlines\there", "time_updated": T + 3},
+        "ses_t3": {"title": "Council B g1 (openai/gpt-6-astra) (fork #1)", "time_updated": T + 2}, "ses_t4": {"title": "", "time_updated": T + 1}}); r = lst([], dt); L = r.stdout.split("\n")
+    assert L[0].endswith(" | - | " + "B" * 79 + "…") and len(L[0].split(" | ")[-1]) == 80 and L[1].endswith(" | two lines here") and L[2].endswith(" | Council B g1 (openai/gpt-6-astra) (fork #1)") and L[3].endswith(" | (untitled)") and len(L) == 6, r.stdout; n += 1
+    # a minimal schema: no title, directory or time_updated
+    dmin = oc.make_db(os.path.join(d, "lmin.sqlite"), {"ses_m1": rows_(3)}); r = lst([], dmin)
+    assert r.returncode == 0 and re.fullmatch(r"ses_m1 \| \d{4}-\d\d-\d\d \d\d:\d\d \| 3 msgs \| - \| \(untitled\)\n" + re.escape(last(dmin, 1, 1)) + "\n", r.stdout), r.stdout; n += 1
+    # the message content is never needed: garbage in session_message still lists with the counts
+    dg = oc.make_db(os.path.join(d, "lg.sqlite"), {"ses_g1": rows_(3), "ses_g2": rows_(1)}, meta={"ses_g1": {"title": "g1", "time_updated": T + 1}, "ses_g2": {"title": "g2", "time_updated": T}})
+    c = sqlite3.connect(dg); c.execute("update session_message set data = ?", (b"\xff\x00 not json {{",)); c.commit(); c.close(); r = lst([], dg)
+    assert r.returncode == 0 and r.stdout.split("\n")[0].endswith("3 msgs | - | g1") and r.stdout.split("\n")[1].endswith("1 msgs | - | g2"); n += 1
+    # errors: a missing file, junk, an unreadable file, legacy only (both shapes), nothing usable
+    miss = os.path.join(d, "no-such.sqlite"); r = lst([], miss); assert r.returncode == 1 and r.stdout == "" and "OpenCode database not found: %s" % miss in r.stderr; n += 1
+    junk = os.path.join(d, "junk-list.db"); open(junk, "wb").write(b"not a database " * 200); r = lst([], junk); assert r.returncode == 1 and r.stdout == "" and "cannot be read" in r.stderr; n += 1
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        locked = os.path.join(d, "locked.db"); open(locked, "wb").write(open(db1, "rb").read()); os.chmod(locked, 0)
+        try: r = lst([], locked); assert r.returncode == 1 and "cannot be read" in r.stderr and r.stdout == "", r.stderr; n += 1
+        finally: os.chmod(locked, 0o600)
+    legv = oc.make_db(os.path.join(d, "ll1.sqlite"), {}, legacy=["ses_old1"]); legb = os.path.join(d, "ll2.sqlite"); c = sqlite3.connect(legb); c.execute("create table session(id TEXT)"); c.execute("insert into session values ('ses_old1')"); c.commit(); c.close()
+    for path in (legv, legb):
+        r = lst([], path); assert r.returncode == 1 and r.stdout == "" and "legacy OpenCode sessions are not supported" in r.stderr, (path, r.stderr); n += 1
+        r = lst(["--match", "x"], path); assert r.returncode == 1 and "legacy OpenCode sessions are not supported" in r.stderr; n += 1
+    oth = os.path.join(d, "other.sqlite"); c = sqlite3.connect(oth); c.execute("create table unrelated(x INT)"); c.commit(); c.close()
+    r = lst([], oth); assert r.returncode == 1 and "no session_v2 table in this database" in r.stderr; n += 1
+    # the default database: XDG_DATA_HOME, else ~/.local/share; ~ in the path options; an empty XDG folder is an error
+    r = lst([]); assert r.returncode == 0 and r.stdout.split("\n")[0].startswith("ses_xdgxdgxdgxdg0001 | ") and r.stdout.rstrip("\n").endswith("sessions; database: %s" % xdb), r.stderr + r.stdout; n += 1
+    env_home = dict(os.environ, HOME=home, PYTHONDONTWRITEBYTECODE="1", TZ="UTC"); env_home.pop("XDG_DATA_HOME", None)
+    r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--list-opencode"], capture_output=True, text=True, env=env_home); assert r.returncode == 0 and r.stdout.startswith("ses_homehomehome0001 | ") and r.stdout.rstrip("\n").endswith("database: %s" % hdb), r.stderr; n += 1
+    r = lst([], xdg_=empty_xdg); assert r.returncode == 1 and "OpenCode database not found: %s" % os.path.join(empty_xdg, "opencode", "opencode.db") in r.stderr; n += 1
+    r = run_main(["--list-opencode", "--opencode-db", "~/.local/share/opencode/opencode.db"], env_=utc)
+    assert r.returncode == 0 and r.stdout.startswith("ses_homehomehome0001 | ") and r.stdout.rstrip("\n").endswith("database: %s" % hdb), r.stderr; n += 1   # a quoted ~ is expanded by the script
+    o9 = os.path.join(d, "o9"); r = run_main(["--opencode", "~/.local/share/opencode/opencode.db", "--session", "ses_homehomehome0001", o9]); assert r.returncode == 0 and "roundtrip IDENTICAL" in r.stdout and os.path.exists(os.path.join(o9, "HANDOFF.md")), r.stderr; n += 1
+    # option misuse
+    for args in (["--limit", "3"], ["--match", "x"], ["--opencode", db1, "--match", "x"], ["--opencode", db1, "--limit", "2"], ["--current", "handoff-marker-1-aaaaaaaaaaaa", "--limit", "2"], ["--limit", "3", "--match", "x"]):
+        r = run_main(args); assert r.returncode == 1 and "work only with --list-opencode" in r.stderr and r.stdout == "", (args, r.stderr); n += 1
+    for extra in (["outdir"], ["--session", "ses_h1"], ["--cut"], ["--keep"], ["--no-opencode"], ["--opencode", db1], ["--current", "x"], ["--keep-work"]):
+        r = lst(extra, db1); assert r.returncode == 1 and "--list-opencode takes only" in r.stderr and r.stdout == "", (extra, r.stderr); n += 1
+    r = run_main(["--list-opencode", "--limit"]); assert r.returncode == 1 and "--limit needs a value" in r.stderr; n += 1
+    # part (e): --opencode DB with several sessions and no --session lists the newest, titled
+    both = oc.make_db(os.path.join(d, "both-meta.sqlite"), {"ses_aaaaaaaaaaaaAAAAAAAA": [("user", {"text": "first session"}, 5)], "ses_bbbbbbbbbbbbBBBBBBBB": [("user", {"text": "second session"}, 5)]},
+                      meta={"ses_aaaaaaaaaaaaAAAAAAAA": {"title": "Alpha job", "directory": "/w/a", "time_updated": T + 60000}, "ses_bbbbbbbbbbbbBBBBBBBB": {"title": "Beta job (fork #1)", "directory": "/w/b", "time_updated": T}})
+    r = run_main(["--opencode", both, os.path.join(d, "oe1")], env_=utc); E = r.stderr.rstrip("\n").split("\n")
+    assert r.returncode != 0 and E[0] == "2 sessions in this database; pick one with --session ID (newest first):" and E[1] == "ses_aaaaaaaaaaaaAAAAAAAA | 2023-11-14 22:14 | 1 msgs | /w/a | Alpha job" and E[2] == "ses_bbbbbbbbbbbbBBBBBBBB | 2023-11-14 22:13 | 1 msgs | /w/b | Beta job (fork #1)" \
+        and E[3] == "shown 2 of 2 sessions" and len(E) == 4 and "first session" not in r.stderr, r.stderr; n += 1
+    d20 = oc.make_db(os.path.join(d, "e20.sqlite"), {"ses_%02d" % i: rows_(1) for i in range(20)}, meta={"ses_%02d" % i: {"title": "t%d" % i, "time_updated": T + i} for i in range(20)})
+    r = run_main(["--opencode", d20, os.path.join(d, "oe2")], env_=utc); E = r.stderr.rstrip("\n").split("\n")
+    assert r.returncode != 0 and E[0].startswith("20 sessions in this database") and len(E) == 17 and E[1].startswith("ses_19 | ") and E[15].startswith("ses_05 | ") and E[16] == "shown 15 of 20 sessions"; n += 1
     return n
 
 
@@ -688,7 +809,7 @@ def selftest():
     assert sdk_cases == 32
     assert build_intro(False, "abcd1234", "2026-01-01 10:00", "/x/s.jsonl", False, "", 1996, ((1, 300),), sdks=False) == build_intro(False, "abcd1234", "2026-01-01 10:00", "/x/s.jsonl", False, "", 1996, ((1, 300),)); n += 1   # default: the old introduction
     n += selftest_opencode()
-    print("make_context selftest OK: %d cases (an OpenCode session: the introduction as the Claude one with three substitutions and its four clause combinations, a session with every message type and content kind converted from a database built here, session picking, legacy, a parent handoff, --current over all sources and its fail-closed and skip cases; relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
+    print("make_context selftest OK: %d cases (an OpenCode session: the introduction as the Claude one with three substitutions and its four clause combinations, a session with every message type and content kind converted from a database built here, session picking, legacy, a parent handoff, --current over all sources and its fail-closed and skip cases; --list-opencode and the titled list in the error of --opencode; relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
           "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 

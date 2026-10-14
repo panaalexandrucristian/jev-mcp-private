@@ -16,20 +16,24 @@ describe("SKILL.md", () => {
     assert.match(frontmatter, /^name: compact-handoff$/m);
     assert.ok(description, "a quoted description line exists");
     assert.ok(description.length <= 800, `description is ${description.length} characters`);
-    for (const cue of ["handoff", "CURRENT session", "HANDOFF.md", "blobs/", "fă un handoff", "mai fă o dată handoff", "Not for delegating"]) assert.ok(description.includes(cue), `description mentions: ${cue}`);
+    for (const cue of ["handoff", "CURRENT session", "NAMED OpenCode session", "din OpenCode", "HANDOFF.md", "blobs/", "fă un handoff", "mai fă o dată handoff", "Not for delegating"]) assert.ok(description.includes(cue), `description mentions: ${cue}`);
   });
 
   it("lets the one script run without a permission prompt, by its own directory", () => {
     assert.match(frontmatter, /^allowed-tools: Bash\(python3 \$\{CLAUDE_SKILL_DIR\}\/scripts\/make_context\.py \*\)$/m);
   });
 
-  it("teaches plain commands: the only variable in a command line is CLAUDE_SKILL_DIR, and both steps use the one script", () => {
+  it("teaches plain commands: the only variable in a command line is CLAUDE_SKILL_DIR, no pipe, and every step uses the one script that the allowed-tools pattern covers", () => {
     const commandLines = body.split("\n").filter((line) => /^ {4,}\S/.test(line)).map((line) => line.trim());   // indented code, also inside a numbered list
-    assert.equal(commandLines.length, 2, "two command examples: --marker and --current");
+    assert.equal(commandLines.length, 4, "four command examples: --marker, --current, --list-opencode and --opencode");
     for (const line of commandLines) {
-      assert.match(line, /^python3 \$\{CLAUDE_SKILL_DIR\}\/scripts\/make_context\.py --(marker|current)/);
+      assert.match(line, /^python3 \$\{CLAUDE_SKILL_DIR\}\/scripts\/make_context\.py --(marker|current|list-opencode|opencode)/);
       assert.equal(line.replace(/\$\{CLAUDE_SKILL_DIR\}/g, "").includes("$"), false, `no other variable in: ${line}`);
+      assert.equal(/[|;&`]|\$\(/.test(line), false, `no pipe, chain or substitution in: ${line}`);
     }
+    const prefix = /^allowed-tools: Bash\((.*) \*\)$/m.exec(frontmatter)[1];   // the pattern of the frontmatter, without its trailing *
+    for (const line of commandLines) assert.ok(line.startsWith(prefix + " "), `covered by the allowed-tools pattern: ${line}`);
+    assert.deepEqual(commandLines.map((l) => /make_context\.py (--[a-z-]+)/.exec(l)[1]), ["--marker", "--current", "--list-opencode", "--opencode"]);
   });
 
   it("states the rules that protect the user: no reading the file into the conversation, no deleting handoff folders unasked, no extra verification pass", () => {
@@ -62,6 +66,28 @@ describe("the OpenCode section", () => {
     assert.equal(/\.config\/opencode|\.agents|ln -s|symlink/i.test(section), false, "no install path");
     const steps = /\n## Steps\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
     for (const part of ["1. **Get a marker**", "2. **Make the handoff**", "3. **Tell the user**", 'the start command exactly as printed (`claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."`)', "`--cut` (one `.md` file without blobs"]) assert.ok(steps.includes(part), part);
+  });
+});
+
+describe("the named OpenCode session section", () => {
+  const headings = [...body.matchAll(/^## (.*)$/gm)].map((m) => m[1]);
+  const section = /\n## A named OpenCode session\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
+  it("sits between În OpenCode and Rules, and the description and the first line name it", () => {
+    assert.deepEqual(headings.slice(headings.indexOf("În OpenCode"), headings.indexOf("În OpenCode") + 3), ["În OpenCode", "A named OpenCode session", "Rules"]);
+    assert.ok(body.includes("the transcript of the current session, or of a named OpenCode session,"));
+  });
+
+  it("lists first, chooses by the user's words, makes the handoff with the written-out default database and says what to tell the user", () => {
+    for (const part of ["do not use the marker", "--list-opencode", "--match", "Leave out `--match` for \"the last one\"", "the last line names the database", "last line of the list",
+      "Take the line the user's words point to; \"the last one\" or \"where work was done last\" is the first line that fits, because the list is newest first.",
+      "A title ending in `(fork #n)` is a fork: skip forks unless the user asks for one.", "Only if the user's words still fit more than one line, show those lines (id, date, title) and ask which one.",
+      "--opencode ~/.local/share/opencode/opencode.db --session <ID>", "(or the database named on the last line of the list, if it differs)", "in Romanian", 'opencode --prompt "..."',
+      'claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."', "may still be running", "snapshot"]) assert.ok(section.includes(part), part);
+    assert.ok(section.indexOf("--list-opencode") < section.indexOf("--session <ID>") && section.indexOf("Take the line") < section.indexOf("--session <ID>"), "list, choose, then make");
+  });
+
+  it("forbids sqlite3 and hand-written SQL in one plain sentence", () => {
+    assert.ok(section.includes("Do NOT use `sqlite3` and do NOT write SQL on the database: use only the commands of this skill."));
   });
 });
 

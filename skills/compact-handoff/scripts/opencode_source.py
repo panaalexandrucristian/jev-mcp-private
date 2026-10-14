@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """opencode_source.py: one OpenCode session (SQLite, tables session_v2 + session_message of OpenCode 2.0.x) as the Claude-shaped text that compact_context.py already processes.
-Used by make_context.py (--opencode DB [--session ID], and --current, which also searches the OpenCode database). Stdlib only; the database is opened read-only (file: URI, mode=ro, PRAGMA query_only) and never written.
+Used by make_context.py (--opencode DB [--session ID], --current, which also searches the OpenCode database, and --list-opencode, which lists the sessions: list_sessions / session_line). Stdlib only; the database is opened read-only (file: URI, mode=ro, PRAGMA query_only) and never written.
 
 Every record is  [uuid role] text  with a uuid5 of the OpenCode message id and an index, so REC / kind_of / compact_text / the round trip work unchanged:
   user text and assistant text parts          whole, one record each
@@ -15,6 +15,7 @@ Everything but the file records passes through handoff-verify's sanitize.sanitiz
 
   opencode_source.py --selftest"""
 import collections
+import datetime
 import importlib.util
 import json
 import os
@@ -76,8 +77,8 @@ def legacy_has(conn, sid=None):
         return False
 
 
-def pick_session(conn, session=None, limit=20):
-    """-> the session id to convert. Zero sessions, several without `session`, an unknown id and a legacy-only database or id are errors."""
+def pick_session(conn, session=None, limit=15):
+    """-> the session id to convert. Zero sessions, several without `session`, an unknown id and a legacy-only database or id are errors. The error for several lists the `limit` newest in the format of --list-opencode."""
     ids = session_ids(conn)
     if session is not None:
         if session in ids: return session
@@ -87,8 +88,79 @@ def pick_session(conn, session=None, limit=20):
     if not ids:
         if legacy_has(conn): raise OpenCodeError(LEGACY)
         raise OpenCodeError("no session in session_v2 of this database")
-    shown = ", ".join(ids[:limit]) + (" … and %d more" % (len(ids) - limit) if len(ids) > limit else "")
-    raise OpenCodeError("%d sessions in this database; pick one with --session ID: %s" % (len(ids), shown))
+    rows, total = list_sessions(conn, None, limit)
+    raise OpenCodeError("%d sessions in this database; pick one with --session ID (newest first):\n%s\n%s" % (len(ids), "\n".join(session_line(r) for r in rows), summary_line(len(rows), total)))
+
+
+# ---- the list of sessions (--list-opencode): metadata and a message COUNT only, never the content of a message -----------------------------------------
+LIST_LIMIT = 15
+TITLE_MAX = 80
+
+
+def tilde(path, home=None):
+    """`path` with the home folder shown as ~ (only at a path boundary: /home/u2 is not under /home/u)."""
+    home = os.path.expanduser("~") if home is None else home
+    if not path or not home or home == "~": return path
+    h = home.rstrip("/")
+    if path == home or path == h: return "~"
+    if path.startswith(h + "/"): return "~" + path[len(h):]
+    return path
+
+
+def title_text(title):
+    """Every whitespace run (newlines too) becomes one space; over TITLE_MAX characters -> the first TITLE_MAX-1 and '…'; empty or NULL -> '(untitled)'."""
+    t = " ".join(("" if title is None else str(title)).split())
+    if not t: return "(untitled)"
+    return t if len(t) <= TITLE_MAX else t[:TITLE_MAX - 1] + "…"
+
+
+def time_text(ms):
+    """Local time YYYY-MM-DD HH:MM of a time in milliseconds."""
+    try: return datetime.datetime.fromtimestamp(ms // 1000).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError): return "????-??-?? ??:??"
+
+
+def session_line(row, home=None):
+    """One line:  <id> | <YYYY-MM-DD HH:MM> | <N> msgs | <directory, home as ~, '-' when empty> | <title>   (row as returned by list_sessions)."""
+    d = " ".join(("" if row["directory"] is None else str(row["directory"])).splitlines())   # a line break in a folder name must not split the line
+    return " | ".join((row["id"], time_text(row["time"]), "%d msgs" % row["count"], tilde(d, home) if d else "-", title_text(row["title"])))
+
+
+def summary_line(shown, total, match=None, db=None):
+    """The last line of a list: 'shown N of M sessions[ matching "TEXT"][; database: PATH]' (M = the sessions that matched)."""
+    return "shown %d of %d sessions%s%s" % (shown, total, "" if match is None else ' matching "%s"' % match, "" if db is None else "; database: %s" % db)
+
+
+def list_sessions(conn, match=None, limit=LIST_LIMIT):
+    """-> (rows, matched_total): the `limit` newest sessions of session_v2 (time_updated, else time_created, desc; ties by id) that match, as dicts id/title/directory/time/count, and how many matched in all.
+    `match`: case-insensitive (casefold) substring of the id, the title, the directory or its ~ form; None or '' keeps all. Reads the columns id, title, directory, time_updated, time_created (a missing one counts as NULL) and
+    the NUMBER of rows of session_message per session; message data is never selected. OpenCodeError: no session_v2 (or none and only legacy rows), or the legacy rows only."""
+    tb = tables(conn)
+    if "session_v2" not in tb:
+        raise OpenCodeError(LEGACY if legacy_has(conn) else "no session_v2 table in this database")
+    cols = {r[1] for r in conn.execute("pragma table_info(session_v2)")}
+    col = lambda c: c if c in cols else "NULL"
+    try:
+        raw = conn.execute("select id, %s, %s, coalesce(%s, %s, 0) from session_v2" % (col("title"), col("directory"), col("time_updated"), col("time_created"))).fetchall()
+        counts = {}
+        if "session_message" in tb:
+            try: counts = dict(conn.execute("select session_id, count(*) from session_message group by session_id").fetchall())
+            except sqlite3.Error: counts = {}   # a table of another shape: no counts
+    except sqlite3.Error as e:
+        raise OpenCodeError("the session list of the OpenCode database cannot be read (%s)" % e)
+    if not raw and legacy_has(conn): raise OpenCodeError(LEGACY)
+    def ms(v):
+        try: return int(v)
+        except (TypeError, ValueError, OverflowError): return 0
+    rows = [{"id": str(r[0]), "title": r[1], "directory": r[2], "time": ms(r[3]), "count": counts.get(r[0], 0)} for r in raw]
+    if match:
+        needle = match.casefold()
+        def hit(r):
+            d = "" if r["directory"] is None else str(r["directory"]); t = "" if r["title"] is None else str(r["title"])
+            return any(needle in s.casefold() for s in (r["id"], t, " ".join(t.split()), d, tilde(d)))
+        rows = [r for r in rows if hit(r)]
+    rows.sort(key=lambda r: (-r["time"], r["id"]))
+    return rows[:limit], len(rows)
 
 
 def find_current(marker, db, max_age=1800, now=None):
@@ -302,14 +374,17 @@ def selfcheck(R, expanded, blob_texts):
 
 
 # ---- self test -----------------------------------------------------------------------------------------------------------------------------------
-def make_db(path, sessions, legacy=None, now_ms=None):
-    """A test database: `sessions` = {session id: [(type, data dict, age in seconds)]} (rows in the given order, seq 1, 2, ...); `legacy` = ids to put in a legacy `session` table. Times are in milliseconds."""
+def make_db(path, sessions, legacy=None, now_ms=None, meta=None):
+    """A test database: `sessions` = {session id: [(type, data dict, age in seconds)]} (rows in the given order, seq 1, 2, ...); `legacy` = ids to put in a legacy `session` table. Times are in milliseconds.
+    `meta` = {session id: {title, directory, time_updated, parent_id, fork_session_id}} (a missing key is NULL): only then session_v2 gets those columns; without it the table has id and time_created only."""
     now = int(time.time() * 1000) if now_ms is None else now_ms
     c = sqlite3.connect(path)
-    c.execute("create table session_v2(id TEXT, time_created INT)")
+    c.execute("create table session_v2(id TEXT, time_created INT%s)" % ("" if meta is None else ", title TEXT, directory TEXT, time_updated INT, parent_id TEXT, fork_session_id TEXT"))
     c.execute("create table session_message(id TEXT, session_id TEXT, type TEXT, seq INT, time_created INT, time_updated INT, data TEXT)")
     for i, (sid, rows) in enumerate(sessions.items()):
-        c.execute("insert into session_v2 values (?, ?)", (sid, now - 1000 * 1000 + i))
+        if meta is None: c.execute("insert into session_v2 values (?, ?)", (sid, now - 1000 * 1000 + i))
+        else:
+            m = meta.get(sid, {}); c.execute("insert into session_v2 values (?, ?, ?, ?, ?, ?, ?)", (sid, now - 1000 * 1000 + i) + tuple(m.get(k) for k in ("title", "directory", "time_updated", "parent_id", "fork_session_id")))
         for seq, (typ, data, age) in enumerate(rows, 1):
             c.execute("insert into session_message values (?, ?, ?, ?, ?, ?, ?)", ("msg_%s_%d" % (sid[-6:], seq), sid, typ, seq, now - int(age * 1000), now - int(age * 1000), json.dumps(data, ensure_ascii=False)))
     if legacy:
@@ -422,7 +497,8 @@ def selftest():
             try: pick_session(c2, sess); raise SystemExit("not refused: %r" % sess)
             except OpenCodeError as e: assert want in str(e), str(e); n += 1
         assert pick_session(c2, "ses_bbbbbbbbbbbbBBBBBBBB") == "ses_bbbbbbbbbbbbBBBBBBBB"; n += 1
-        assert "ses_aaaaaaaaaaaaAAAAAAAA, ses_bbbbbbbbbbbbBBBBBBBB" in str(next(e for e in [_catch(lambda: pick_session(c2))])); n += 1
+        msg = str(_catch(lambda: pick_session(c2)))   # the error lists the sessions as lines of --list-opencode, newest first (make_db gives the later session the later time_created)
+        assert msg.startswith("2 sessions in this database; pick one with --session ID (newest first):\n") and msg.index("ses_bbbbbbbbbbbbBBBBBBBB | ") < msg.index("ses_aaaaaaaaaaaaAAAAAAAA | ") and msg.endswith("\nshown 2 of 2 sessions") and "database:" not in msg and "| 1 msgs |" in msg; n += 1
         c2.close()
         empty = make_db(os.path.join(d, "empty.sqlite"), {}); leg = make_db(os.path.join(d, "legacy.sqlite"), {}, legacy=["ses_old1"]); mix = make_db(os.path.join(d, "mix.sqlite"), {"ses_new": [("user", {"text": "n"}, 5)]}, legacy=["ses_old1"])
         for path, sess, want in ((empty, None, "no session in session_v2"), (leg, None, "legacy"), (leg, "ses_old1", "legacy"), (mix, "ses_old1", "legacy"), (leg, "ses_zzz", "no such session")):
@@ -444,9 +520,84 @@ def selftest():
         junk = os.path.join(d, "junk.sqlite"); open(junk, "wb").write(b"this is not a database " * 100)
         try: find_current(mk, junk); raise SystemExit("an unreadable database was not reported")
         except OpenCodeError as e: assert "cannot be read" in str(e) or "cannot be searched" in str(e); n += 1
+        n += selftest_list(d)
     finally:
         shutil.rmtree(d, ignore_errors=True)
-    print("opencode_source selftest OK: %d cases (rendering of every message type and content kind, the sanitizer on texts and inputs but not on the image, the read-only set, the self-check, session picking, legacy, the marker search)" % n)
+    print("opencode_source selftest OK: %d cases (rendering of every message type and content kind, the sanitizer on texts and inputs but not on the image, the read-only set, the self-check, session picking, legacy, the marker search, the session list)" % n)
+
+
+def selftest_list(d):
+    """The pure part of --list-opencode (the command line is tested in make_context.py) -> the number of cases."""
+    n = 0
+    T = 1700000000000   # 2023-11-14 22:13:20 UTC
+    # ~ only at a path boundary
+    for path, home, want in (("/h/u", "/h/u", "~"), ("/h/u/x/y", "/h/u", "~/x/y"), ("/h/u2", "/h/u", "/h/u2"), ("/h/ux/y", "/h/u", "/h/ux/y"), ("/other", "/h/u", "/other"), ("/h/u/x", "/h/u/", "~/x"), ("/x", "/", "~/x"), ("", "/h/u", ""), ("/h/u", "~", "/h/u"), ("/h/u", "", "/h/u")):
+        assert tilde(path, home) == want, (path, home, tilde(path, home)); n += 1
+    # the title: whitespace runs, 80 characters, empty
+    for title, want in (("a  b\n\n c\td", "a b c d"), ("A" * 80, "A" * 80), ("A" * 81, "A" * 79 + "…"), ("A" * 120, "A" * 79 + "…"), ("", "(untitled)"), (None, "(untitled)"), (" \n ", "(untitled)"), ("ș" * 90, "ș" * 79 + "…")):
+        assert title_text(title) == want and len(title_text(title)) <= 80, title; n += 1
+    # the line, in UTC (TZ is read by the C library: tzset), and the listing of a database with metadata
+    keep_tz = os.environ.get("TZ"); keep_home = os.environ.get("HOME"); os.environ["HOME"] = "/h/u"   # list_sessions reads the home folder when it matches the ~ form
+    def set_tz(v):
+        if v is None: os.environ.pop("TZ", None)
+        else: os.environ["TZ"] = v
+        if hasattr(time, "tzset"): time.tzset()
+    try:
+        set_tz("UTC")
+        if hasattr(time, "tzset"):
+            row = {"id": "ses_x1", "title": "Council B g1 (openai/gpt-6-astra)", "directory": "/h/u/proj", "time": T, "count": 2}
+            assert session_line(row, "/h/u") == "ses_x1 | 2023-11-14 22:13 | 2 msgs | ~/proj | Council B g1 (openai/gpt-6-astra)"; n += 1
+            assert session_line(dict(row, directory="", title="", count=0), "/h/u") == "ses_x1 | 2023-11-14 22:13 | 0 msgs | - | (untitled)" and session_line(dict(row, directory=None, title=None), "/h/u").count(" | ") == 4; n += 2
+            assert session_line(dict(row, directory="/a\n/b"), "/h/u") == "ses_x1 | 2023-11-14 22:13 | 2 msgs | /a /b | Council B g1 (openai/gpt-6-astra)"; n += 1   # one line per session
+            set_tz("JST-9"); assert time_text(T) == "2023-11-15 07:13"; n += 1   # local time, not UTC
+        assert time_text(10 ** 30) == "????-??-?? ??:??"; n += 1
+        assert summary_line(2, 5) == "shown 2 of 5 sessions" and summary_line(0, 0, "zz", "/p/db") == 'shown 0 of 0 sessions matching "zz"; database: /p/db' and summary_line(1, 1, None, "/p/db") == "shown 1 of 1 sessions; database: /p/db"; n += 3
+        meta = {"ses_a1": {"title": "Alpha", "directory": "/h/u/a", "time_updated": T + 10}, "ses_a2": {"title": "Beta (fork #1)", "directory": "/srv/B", "time_updated": T + 5}, "ses_a3": {"title": "Gamma", "directory": None, "time_updated": T + 10},
+                "ses_a4": {"title": "Șantier\nBucurești", "directory": "/h/u/ședință", "time_updated": None}}
+        rows_ = [("user", {"text": "SECRET CONTENT"}, 1)]
+        db = make_db(os.path.join(d, "list.sqlite"), {k: rows_ * (i + 1) for i, k in enumerate(meta)}, meta=meta)   # time_created grows with the order of the dict: a4 is the newest by creation
+        conn = connect(db)
+        ids = lambda *a, **k: [r["id"] for r in list_sessions(conn, *a, **k)[0]]
+        assert ids() == ["ses_a4", "ses_a1", "ses_a3", "ses_a2"], ids(); n += 1   # a4: time_updated NULL -> time_created (about now, newer than T); a1 before a3 on the same time (id); a2 last
+        assert [r["count"] for r in list_sessions(conn)[0]] == [4, 1, 3, 2]; n += 1
+        assert list_sessions(conn, None, 2)[1] == 4 and ids(None, 2) == ["ses_a4", "ses_a1"] and ids(None, 1) == ["ses_a4"]; n += 2
+        for m, want in (("ALPHA", ["ses_a1"]), ("ses_a3", ["ses_a3"]), ("fork #1", ["ses_a2"]), ("/srv/b", ["ses_a2"]), ("~/a", ["ses_a1"]), ("/h/u/a", ["ses_a1"]), ("ȘANTIER", ["ses_a4"]), ("șantier bucurești", ["ses_a4"]), ("ședință", ["ses_a4"]), ("nothing", []),
+                        ("", ["ses_a4", "ses_a1", "ses_a3", "ses_a2"]), (None, ["ses_a4", "ses_a1", "ses_a3", "ses_a2"]), ("ses_a", ["ses_a4", "ses_a1", "ses_a3", "ses_a2"])):
+            assert ids(m) == want and list_sessions(conn, m)[1] == len(want), (m, ids(m)); n += 1
+        assert ids("ses_a", 2) == ["ses_a4", "ses_a1"] and list_sessions(conn, "ses_a", 2)[1] == 4; n += 1   # the match is applied before the limit
+        # the content of a message is never read: a denied read of session_message.data changes nothing (and the denial bites)
+        deny = lambda action, a1, a2, dbn, src: 1 if (action == 20 and a1 == "session_message" and a2 == "data") else 0   # SQLITE_READ = 20, SQLITE_DENY = 1
+        conn.set_authorizer(deny)
+        try: conn.execute("select data from session_message").fetchall(); raise SystemExit("the authorizer does not deny the read of data")
+        except sqlite3.DatabaseError: n += 1
+        assert ids() == ["ses_a4", "ses_a1", "ses_a3", "ses_a2"] and [r["count"] for r in list_sessions(conn)[0]] == [4, 1, 3, 2] and ids("alpha") == ["ses_a1"]; n += 1
+        conn.set_authorizer(None); conn.close()
+        # garbage message data: still listed with the right counts
+        c = sqlite3.connect(db); c.execute("update session_message set data = ?", (b"\xff\x00\xfe not json {{",)); c.commit(); c.close()
+        conn = connect(db); assert [r["count"] for r in list_sessions(conn)[0]] == [4, 1, 3, 2]; conn.close(); n += 1
+    finally:
+        set_tz(keep_tz)
+        if keep_home is None: os.environ.pop("HOME", None)
+        else: os.environ["HOME"] = keep_home
+    # a minimal schema (make_db without meta), no session_message table, no rows, legacy, no session_v2
+    mini = make_db(os.path.join(d, "mini.sqlite"), {"ses_m1": [("user", {"text": "x"}, 1)], "ses_m2": []})
+    conn = connect(mini); rows, total = list_sessions(conn)
+    assert total == 2 and [(r["id"], r["count"], r["title"], r["directory"]) for r in rows] == [("ses_m2", 0, None, None), ("ses_m1", 1, None, None)]; n += 1   # time_created only: the later one first
+    assert session_line(rows[0], "/h").endswith(" | 0 msgs | - | (untitled)") and session_line(rows[1], "/h").endswith(" | 1 msgs | - | (untitled)"); n += 2
+    conn.close()
+    raw = lambda name, *stmts: (lambda c: ([c.execute(x) for x in stmts], c.commit(), c.close()))(sqlite3.connect(os.path.join(d, name))) and os.path.join(d, name)
+    nomsg = raw("nomsg.sqlite", "create table session_v2(id TEXT, time_created INT)", "insert into session_v2 values ('ses_n1', 5)")
+    conn = connect(nomsg); assert [(r["id"], r["count"]) for r in list_sessions(conn)[0]] == [("ses_n1", 0)]; conn.close(); n += 1
+    empty = make_db(os.path.join(d, "emptyl.sqlite"), {}, meta={}); leg_empty = make_db(os.path.join(d, "legl.sqlite"), {}, legacy=["ses_old1"])
+    leg_only = raw("legonly.sqlite", "create table session(id TEXT)", "insert into session values ('ses_old1')")
+    other = raw("other.sqlite", "create table unrelated(x INT)"); leg_norows = raw("legnorows.sqlite", "create table session(id TEXT)")
+    conn = connect(empty); assert list_sessions(conn) == ([], 0) and list_sessions(conn, "x") == ([], 0); conn.close(); n += 1
+    for path, want in ((leg_empty, LEGACY), (leg_only, LEGACY), (other, "no session_v2 table in this database"), (leg_norows, "no session_v2 table in this database")):
+        conn = connect(path)
+        try: list_sessions(conn); raise SystemExit("not refused: %s" % path)
+        except OpenCodeError as e: assert str(e) == want, (path, str(e)); n += 1
+        conn.close()
+    return n
 
 
 def _catch(fn):
