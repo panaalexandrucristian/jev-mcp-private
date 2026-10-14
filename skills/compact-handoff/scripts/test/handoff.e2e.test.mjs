@@ -155,6 +155,47 @@ describe("make_context.py on an invented transcript", () => {
     assert.equal(intro(t2).includes("sarcini de fundal"), false, "and no clause");
   });
 
+  it("moves the middle prompts of the SDK (promptSource sdk, neither the first nor the last) to blobs with a '[user] sdk:' marker and says so; the first and the last, typed text, short prompts, 2 prompts and --cut stay as they were", () => {
+    const sid = "88888888-8888-4888-8888-888888888888";
+    const prompt = (tag) => `${tag} relayed instruction line\n${"relayed line\n".repeat(40)}Answer of the user: ${tag}-ANSWER`;
+    assert.ok(prompt("P1").length > 300);
+    const records = transcript(sid);
+    let parent = records[records.length - 1].uuid;
+    const more = (n, content, extra) => { const r = { ...base, sessionId: sid, type: "user", uuid: uid(n), parentUuid: parent, timestamp: "2026-01-01T11:00:00.000Z", message: { role: "user", content }, ...extra }; parent = r.uuid; return r; };
+    const sdk = { promptSource: "sdk" };
+    const typed = prompt("TYPED");
+    const four = [...records, more(930, prompt("FIRST"), sdk), more(931, prompt("MIDDLE-A"), sdk), more(932, typed, { promptSource: "typed" }), more(933, "short sdk prompt", sdk), more(934, [{ type: "text", text: prompt("MIDDLE-B") }], sdk), more(935, prompt("LAST"), sdk)];
+    const sessionFile = write(join(root, "s8.jsonl"), four);
+    const out = join(root, "handoff-8888eeee-20260106-sdk");
+    const r = py([sessionFile, out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    const t = readFileSync(join(out, "HANDOFF.md"), "utf8"), blobs = readdirSync(join(out, "blobs")).map((f) => readFileSync(join(out, "blobs", f), "utf8"));
+    for (const tag of ["MIDDLE-A", "MIDDLE-B"]) {
+      assert.equal(blobs.filter((b) => b.includes(`${tag}-ANSWER`)).length, 1, `${tag} is in exactly one blob`);
+      assert.equal(t.includes(`${tag}-ANSWER`), false, `and not inline`);
+      assert.ok(t.includes(`[user] sdk: ${tag} relayed instruction line relayed line`), `its marker shows the start of ${tag}`);
+    }
+    for (const tag of ["FIRST", "LAST", "TYPED"]) { assert.ok(t.includes(`${tag}-ANSWER`), `${tag} stays inline`); assert.equal(blobs.some((b) => b.includes(`${tag}-ANSWER`)), false); }
+    assert.ok(t.includes("short sdk prompt"), "a short prompt stays inline");
+    assert.equal(t.split("[user] sdk: ").length - 1, 2, "exactly two markers");
+    const head = intro(t);
+    assert.ok(head.includes("Un marcaj stă și pentru un prompt marcat de sesiune ca trimis prin SDK (claude -p); textul întreg este în `blobs/Rnnnn.txt`."), "the introduction has the clause");
+    assert.ok(head.includes("Răspunsurile mele citate într-un astfel de prompt sunt în blob-ul lui; deschide-l când ai nevoie de ele."), "and the sentence about the answers");
+    assert.equal(/nu tastat|doar în/.test(head.split("Un marcaj stă și pentru un prompt")[1].split("\n")[0]), false);
+    const cutOut = join(root, "cut", "sdk.md");
+    assert.equal(py([sessionFile, cutOut, "--cut"]).status, 0);
+    const cutText = readFileSync(cutOut, "utf8");
+    assert.ok(["MIDDLE-A", "MIDDLE-B", "FIRST", "LAST"].every((tag) => cutText.includes(`${tag}-ANSWER`)), "--cut keeps every prompt whole");
+    assert.equal(cutText.includes("[user] sdk: ") || intro(cutText).includes("prin SDK"), false);
+    const two = write(join(root, "s9.jsonl"), [...records, more(940, prompt("ONE"), sdk), more(941, prompt("TWO"), sdk)]);
+    const out2 = join(root, "handoff-9999eeee-20260106-sdk2");
+    assert.equal(py([two, out2]).status, 0);
+    const t2 = readFileSync(join(out2, "HANDOFF.md"), "utf8");
+    assert.ok(t2.includes("ONE-ANSWER") && t2.includes("TWO-ANSWER") && !t2.includes("[user] sdk: "), "two SDK prompts: nothing moves");
+    assert.equal(intro(t2).includes("prin SDK"), false, "and no clause");
+  });
+
   it("--cut writes one file whose cuts are true prefixes and keeps the messages", () => {
     const r = py([join(root, "s1.jsonl"), join(root, "cut", "x.md"), "--cut"]);
     assert.equal(r.status, 0, r.stderr + r.stdout);

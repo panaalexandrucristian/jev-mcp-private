@@ -20,6 +20,8 @@ A record is replaced by ONE marker line with a short preview, and its full text 
       `notice_uuids`) that starts with `<task-notification>` and is longer than the tool_result limit; its marker preview shows the text of its <summary>. Without `notice_uuids` the rule is off.
   (5) blob mode only: the caller names records that always go to a blob (`forced`, {uuid: marker label}; make_context.py uses it for the image files and the `recent` texts of an OpenCode session), and, for a session whose
       tool calls are not Claude's, the uuids of the calls that only read (`readonly_uuids`, decided from the structured input; they count for rule (2)). Without them (this command line) both rules are off.
+  (6) blob mode only: it is a prompt that the session marks as sent through the SDK (a user record with promptSource sdk in the session .jsonl, neither the first nor the last such record, whose uuid the caller passes in
+      `sdk_uuids`) and is longer than the tool_result limit; its marker preview is `[user] sdk: ` and its first 80 characters. Without `sdk_uuids` the rule is off.
 A command that may change state (rm, git commit/push, redirects into files, sed -i, service restarts, API calls ...) is never moved by rule (2); neither is a message of the user.
 expand() puts every blob back. Nothing is summarised, translated or cut: the marker only points at the full text, and `check` proves expand(compact(x)) == x."""
 import glob, hashlib, itertools, json, os, re, sys, tempfile
@@ -38,6 +40,7 @@ SKILL_REC = re.compile(r"^\[([0-9a-f-]{36}) user\] " + re.escape(SKILL_PREFIX))
 NOTE_PREFIX = "<task-notification>"
 NOTE_REC = re.compile(r"^\[([0-9a-f-]{36}) user\] " + re.escape(NOTE_PREFIX))
 NOTE_SUMMARY = re.compile(r"<summary>(.*?)</summary>", re.S)
+SDK_REC = re.compile(r"^\[([0-9a-f-]{36}) user\] ")
 SEP = "----- transcript (compact) -----\n"
 FILE_NAMES = ("HANDOFF.md", "CONTEXT.md")   # read_out takes the first one that exists
 HEADER = ("This is a session transcript made smaller for a new session. A line `%sRnnnn|chars|preview%s` stands for ONE record that was longer than the limit of its kind (%s)%s: "
@@ -186,10 +189,21 @@ def count_moved_notices(text, notice_uuids, limits, blobs=True):
     return sum(moved_notice(r, notice_uuids, limits, blobs) for r in split_records(text)[1])
 
 
-def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None):
+def moved_sdk(r, sdk_uuids, limits, blobs=True):
+    """True when record `r` is a prompt of the SDK (claude -p) that goes to a blob: blob mode, a user text record whose uuid is in `sdk_uuids` (the caller leaves out the first and the last such prompt of the session),
+    longer than the tool_result limit. compact_text and the caller that decides whether the introduction needs its clause use this one test, so they cannot disagree."""
+    lim = limits.get("tool_result"); m = SDK_REC.match(r) if (blobs and sdk_uuids and lim is not None) else None
+    return bool(m) and m.group(1) in sdk_uuids and kind_of(r) == "user_text" and len(r) > lim
+
+
+def count_moved_sdk(text, sdk_uuids, limits, blobs=True):
+    return sum(moved_sdk(r, sdk_uuids, limits, blobs) for r in split_records(text)[1])
+
+
+def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None, sdk_uuids=frozenset()):
     """-> (compact text without header, {blob name: full record text}, marker pair or None). A record that is too long for its kind, or (readonly) a tool call that only reads, is replaced by a marker line pointing at blobs/Rnnnn.txt
     (blobs=True; raises ValueError when no marker pair is free) or is cut to its first characters (blobs=False: the rest is not kept). `stats["readonly"]` counts the records moved only by the read-only rule; `stats["skill"]` the injected skill texts
-    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker); `stats["notice"]` the notifications of background tasks (see moved_notice).
+    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker); `stats["notice"]` the notifications of background tasks (see moved_notice); `stats["sdk"]` the prompts of the SDK (see moved_sdk).
     `readonly_uuids`: tool_use records (by uuid) that the caller knows only read; they are moved by the read-only rule like a Claude call that reads. `forced` {uuid: label}: blob mode only, these records always go to a blob whatever
     their length, and the marker preview is the label (`stats["forced"]` counts them). Both default to nothing, and then the output is exactly what it was without them."""
     pair = pick_pair(text) if blobs else None
@@ -202,13 +216,15 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
         sk = SKILL_REC.match(r) if (blobs and meta_uuids and k == "user_text") else None
         by_skill = bool(sk) and sk.group(1) in meta_uuids and len(r) > preview + 25
         by_notice = moved_notice(r, notice_uuids, limits, blobs)
-        if not (by_length or by_rule or by_skill or by_notice or label is not None): out.append(r); continue
+        by_sdk = moved_sdk(r, sdk_uuids, limits, blobs)
+        if not (by_length or by_rule or by_skill or by_notice or by_sdk or label is not None): out.append(r); continue
         if not blobs:
             c = cut_record(r, preview); out.append(c)
             if c != r and stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
             continue
         if stats is not None and by_skill: stats["skill"] = stats.get("skill", 0) + 1
         elif stats is not None and by_notice: stats["notice"] = stats.get("notice", 0) + 1
+        elif stats is not None and by_sdk: stats["sdk"] = stats.get("sdk", 0) + 1
         elif stats is not None and label is not None: stats["forced"] = stats.get("forced", 0) + 1
         elif stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
         name = "R%04d" % len(blob_map); blob_map[name] = r
@@ -217,7 +233,8 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
         if by_notice:
             sm = NOTE_SUMMARY.search(r)
             if sm and sm.group(1).strip(): p = "[user] task: " + sm.group(1)[:80]   # the default preview would show only the tag and the task id
-        if label is not None and not (by_skill or by_notice): p = label   # a forced record shows its label
+        if by_sdk and not (by_skill or by_notice): p = "[user] sdk: " + re.sub(r"\s+", " ", r[UUID.match(r).end():])[:80]   # the default preview would show only the start of the text, with line breaks
+        if label is not None and not (by_skill or by_notice or by_sdk): p = label   # a forced record shows its label
         p = p.replace("\n", "⏎").replace(pair[1], "·")
         out.append("%s%s|%d|%s%s%s" % (pair[0], name, len(r), p, pair[1], "\n" if r.endswith("\n") else ""))
     return "".join(out), blob_map, pair
@@ -263,9 +280,9 @@ def read_out(out_dir):
 def sha(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 
-def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None):
+def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None, sdk_uuids=frozenset()):
     text = read_chunks(chunk_dir); stats = {}
-    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids, readonly_uuids, forced)
+    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids, readonly_uuids, forced, sdk_uuids)
     if blobs: write_out(out_dir, compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name)
     else:
         os.makedirs(out_dir, exist_ok=True)
@@ -273,9 +290,9 @@ def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", na
     return text, compact, blob_map, stats.get("readonly", 0)
 
 
-def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None, original=None):
+def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None, original=None, sdk_uuids=frozenset()):
     """`original`: the size printed as the original and used for the percentage (default: the length of the prepared text; an OpenCode session names the length of its database rows)."""
-    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids, notice_uuids, readonly_uuids, forced)
+    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids, notice_uuids, readonly_uuids, forced, sdk_uuids)
     orig = len(text) if original is None else original
     size = len(open(os.path.join(out_dir, name), encoding="utf-8", newline="").read()); label = describe(limits) + (" + read-only rule" if readonly else "")
     if blobs:
@@ -430,6 +447,41 @@ def selftest():
     mk, pr, r = note_marker("a" + PAIRS[0][1] + "b\nline two"); n += 1; assert mk.endswith("[user] task: a·b⏎line two" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1]   # the closer is escaped and a line break shown
     mk, pr, r = note_marker(None); n += 1; assert mk.startswith(pr[0] + "R0000|%d|[user] <task-notification>" % len(r)) and "task:" not in mk   # no summary: the default preview
     mk, pr, r = note_marker("  "); n += 1; assert "task:" not in mk   # an empty summary is no summary
+    # (7b) the prompt of the SDK: four conditions joined by AND, so all 2^4 = 16 combinations (t=4): blob or cut mode x uuid in sdk_uuids or not x a user text or a tool result x length 300 or 301 (limit of tool_result 300, read-only rule off);
+    #      it moves only for blob mode + in the set + user text + 301, and then expand gives the text back; a tool result of 301 goes to a blob by its own length rule, never counted as sdk
+    uid2 = "7e1a2b3c-0000-4000-8000-000000000002"; filler = "[%s user] first\n" % uid2 + "[%s user] last\n" % uid2
+    sdk_moved = 0
+    for blobs, inset, kind, size in itertools.product((True, False), (True, False), ("user_text", "tool_result"), (300, 301)):
+        rec = record(kind, size, False, True); assert len(rec) == size
+        text = filler + rec; sset = frozenset([uid]) if inset else frozenset(); stats = {}
+        c, b, pr = compact_text(text, NL, PV, False, stats, blobs, frozenset(), frozenset(), frozenset(), None, sset); n += 1
+        expect = blobs and inset and kind == "user_text" and size == 301; sdk_moved += expect
+        assert stats.get("sdk", 0) == (1 if expect else 0) and stats.get("readonly", 0) == 0 and stats.get("skill", 0) == 0 and stats.get("notice", 0) == 0, (blobs, inset, kind, size)
+        assert count_moved_sdk(text, sset, NL, blobs) == (1 if expect else 0)   # the caller that decides about the clause counts the same records
+        cut_result = kind == "tool_result" and size == 301   # moved or cut by its own length rule
+        assert len(b) == (1 if (expect or (cut_result and blobs)) else 0) and (c == text) == (not (expect or cut_result)), (blobs, inset, kind, size)
+        if blobs: assert expand_text(c, b, pr) == text and (not expect or list(b.values()) == [rec])
+        else: assert b == {}
+        c0, b0, pr0 = compact_text(text, NL, PV, False, None, blobs); n += 1
+        if not inset: assert (c, b) == (c0, b0)   # an empty set gives the output of the call without the keyword
+        if not blobs: assert c == compact_text(text, NL, PV, False, None, False, frozenset(), frozenset(), frozenset(), None, frozenset([uid]))[0]   # cut mode: a set changes nothing
+    assert sdk_moved == 1
+    rec = record("user_text", 400, False, True); text = filler + rec
+    for lims in ({**NL, "tool_result": None}, {k: None for k in KINDS}):   # no tool_result limit: the rule is off
+        c, b, pr = compact_text(text, lims, PV, False, None, True, frozenset(), frozenset(), frozenset(), None, frozenset([uid])); n += 1; assert c == text and b == {}
+    def sdk_marker(body):   # -> (marker line, marker pair, record) of a prompt of the SDK that starts with `body` and is padded with y to 400+ characters
+        r = "[%s user] %s%s\n" % (uid, body, "y" * 400)
+        c, b, pr = compact_text(r, NL, PV, False, None, True, frozenset(), frozenset(), frozenset(), None, frozenset([uid])); assert expand_text(c, b, pr) == r and len(b) == 1
+        return c.rstrip("\n"), pr, r
+    mk, pr, r = sdk_marker("=== TASK ===\n\n   line  two\t\ttabbed "); n += 1   # whitespace is collapsed first, then the first 80 characters are taken
+    assert mk == "%sR0000|%d|[user] sdk: %s%s" % (pr[0], len(r), ("=== TASK === line two tabbed " + "y" * 100)[:80], pr[1]) and "\n" not in mk
+    mk, pr, r = sdk_marker("s" * 200); n += 1; assert mk.endswith("[user] sdk: " + "s" * 80 + pr[1]) and "s" * 81 not in mk   # cut at exactly 80
+    mk, pr, r = sdk_marker("a" + PAIRS[0][1] + "b"); n += 1; assert "[user] sdk: a·b" in mk and mk.count(pr[1]) == 1 and mk.endswith(pr[1])   # the closer is escaped
+    hand = "[%s user] %s%s\n\n# skill\n%s\n" % (uid, SKILL_PREFIX, "/s/demo", "y" * 300)   # a record in both sets is a skill: skill preview, skill counter
+    st = {}; c, b, pr = compact_text(hand, NL, PV, False, st, True, frozenset([uid]), frozenset(), frozenset(), None, frozenset([uid])); n += 1
+    assert st == {"skill": 1} and "[user] skill: /s/demo" in c and "sdk:" not in c and expand_text(c, b, pr) == hand
+    typed = filler + "[%s user] typed\n" % ("1" * 8 + uid[8:]) + record("user_text", 400, False, True)   # only the uuid in the set moves
+    c, b, pr = compact_text(typed, NL, PV, False, None, True, frozenset(), frozenset(), frozenset(), None, frozenset([uid])); n += 1; assert expand_text(c, b, pr) == typed and len(b) == 1 and "typed" in c
     # (8) forced records (a caller names them): role x uuid in `forced` x length around the preview threshold (T-1, T, T+1) x blob or cut mode = 24 combinations, exhaustive (t=4, all four conditions);
     #     it moves only for uuid in the set and blob mode, whatever the role and the length; the marker shows the label (escaped), and expand gives the text back
     for role, inset, size, blobs in itertools.product(("user", "assistant"), (True, False), (T - 1, T, T + 1), (True, False)):
@@ -484,7 +536,7 @@ def selftest():
     assert verify_cut(big, c.replace("caractere omise", "caractere omise "), 20)[0] is False   # a tampered note fails the check
     assert verify_cut(big, c.replace("[…", "[ …"), 20)[0] is False; n += 2
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
-          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none; "
+          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none; prompt of the SDK: blob or cut mode 2 x uuid in sdk_uuids or not 2 x user text or tool result 2 x length 300 or 301 2 = 16 exhaustive (t=4), no tool_result limit, the preview (whitespace, 80 characters, a closer), skill before sdk, only the uuid in the set; "
           "forced records: role 2 x uuid in the set 2 x length around the threshold 3 x blob or cut mode 2 = 24 exhaustive (t=4), the label escaped; read-only uuids: category 4 x uuid in the set 2 x size 4 x rule on or off 2 x blob or cut mode 2 = 128 exhaustive (t=5); "
           "defaults and unrelated uuids give the same output; the printed original" % (n, len(reading) + len(mutating)))
 

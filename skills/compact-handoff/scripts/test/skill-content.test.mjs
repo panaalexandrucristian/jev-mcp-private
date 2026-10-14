@@ -43,6 +43,12 @@ describe("the skill text rule", () => {
   });
 });
 
+describe("the SDK prompt rule", () => {
+  it("is described in SKILL.md: blob mode, promptSource sdk, not the first and not the last, over 300 characters, the marker, --cut unchanged", () => {
+    for (const part of ["`promptSource` `sdk`", "except the first and the last", "longer than 300 characters", "`[user] sdk: …`", "typed, queued, suggestion_accepted and unmarked records"]) assert.ok(body.includes(part), part);
+  });
+});
+
 describe("the OpenCode section", () => {
   const section = /\n## În OpenCode\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
   it("exists, names the option that skips a broken database and says to report the error to the user first", () => {

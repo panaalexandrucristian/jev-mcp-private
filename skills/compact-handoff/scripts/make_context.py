@@ -65,6 +65,8 @@ WHAT_CUT = ("Transcriptul compact al sesiunii precedente. Mesajele mele și ale 
             "și se termină cu `[…N caractere omise]`; textul omis nu este în acest fișier.")
 SKILL_CLAUSE = "Un marcaj stă și pentru textul unei abilități (skill) încărcate de sistem, nu scris de mine; textul întreg este în `blobs/Rnnnn.txt`."
 NOTICE_CLAUSE = "Un marcaj stă și pentru o notificare a unei sarcini de fundal (agent, comandă, monitor), nu scrisă de mine; textul întreg este în `blobs/Rnnnn.txt`."
+SDK_CLAUSE = "Un marcaj stă și pentru un prompt marcat de sesiune ca trimis prin SDK (claude -p); textul întreg este în `blobs/Rnnnn.txt`."
+SDK_ANSWERS = "Răspunsurile mele citate într-un astfel de prompt sunt în blob-ul lui; deschide-l când ai nevoie de ele."
 MISSING_BLOBS = "deschide blob-ul indicat de linia-marcaj, `blobs/Rnnnn.txt` (doar cel de care ai nevoie)."
 MISSING_CUT = "caută-l în transcriptul complet al sesiunii sursă (JSONL, mare): `{src}`."
 TEMP_NOTE = {   # (kept, cut) -> text; no absolute path of the handoff itself
@@ -99,13 +101,13 @@ def reading_plan(lines, budget=READ_BUDGET, prefix=8, max_lines=400):
     return chunks
 
 
-def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False, opencode=None):
+def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False, opencode=None, sdks=False):
     """The introduction with every instruction. It names no absolute path of the handoff itself (only the source transcript, which is durable).
     `opencode`: None for a Claude Code transcript; for an OpenCode session (blob mode) a pair (has compaction `recent` texts in blobs, has image files in blobs), and `sid` is then the full ses_ id."""
     plan = ", ".join("%d:%d" % c for c in chunks)
     oc_clause = "" if opencode is None else OC_EVENTS + (OC_RECENT if opencode[0] else "") + (OC_IMAGES if opencode[1] else "") + "."
     return (INTRO if opencode is None else INTRO_OC).format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, temp=TEMP_NOTE[(bool(kept), bool(cut))],
-                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + oc_clause), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
+                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + (" " + SDK_CLAUSE + " " + SDK_ANSWERS if sdks else "") + oc_clause), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
 
 
 HANDOFF_PATH = re.compile(r"/handoff-[0-9a-f]{8}-\d{8}-[^/\s\"]+(?:\.md|/HANDOFF\.md)$")
@@ -156,6 +158,26 @@ def notice_uuids_of(sess):
         if isinstance(c, list): c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
         if isinstance(c, str) and c.startswith(cc.NOTE_PREFIX): out.add(o["uuid"])
     return frozenset(out)
+
+
+def sdk_uuids_of(sess):
+    """The uuids of the prompts the session marks as sent through the SDK (claude -p), except the first and the last of them (in file order, whatever their length): type user, promptSource sdk (exactly), a string uuid,
+    not a sidechain, not isMeta, not a compaction summary, no origin kind, content a string or a list whose first block is a text, no tool_result block. Lines that do not parse are skipped. Only these may be moved to a blob
+    by this rule; a message typed or queued by the user, an unmarked record, a tool result or a message of another session is never in the set, and a session with one or two such prompts moves nothing."""
+    out = []
+    for line in open(sess, encoding="utf-8", errors="replace"):
+        try: o = json.loads(line)
+        except Exception: continue
+        if not isinstance(o, dict) or o.get("type") != "user" or o.get("promptSource") != "sdk" or not isinstance(o.get("uuid"), str): continue
+        if o.get("isSidechain") is True or o.get("isMeta") is True or o.get("isCompactSummary") is True: continue
+        origin = o.get("origin")
+        if isinstance(origin, dict) and origin.get("kind") is not None: continue
+        c = (o.get("message") or {}).get("content")
+        if isinstance(c, list):
+            if any(isinstance(it, dict) and it.get("type") == "tool_result" for it in c): continue
+            c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
+        if isinstance(c, str): out.append(o["uuid"])
+    return frozenset(out[1:-1])
 
 
 def relativize_intro(md_path, orig_dir, orig_file=None):
@@ -362,23 +384,26 @@ def main():
         run([sys.executable, "-B", os.path.join(HERE, "prepare_all.py"), sess, "--cwd", work, "--out", os.path.join(work, "out")] + (["--with-subagents"] if "--with-subagents" in a else []))
         meta = frozenset() if cut else skill_meta_uuids(sess); skills = bool(meta)
         notes = frozenset() if cut else notice_uuids_of(sess)
-        notices = cc.count_moved_notices(cc.read_chunks(os.path.join(work, "out")), notes, cc.DEFAULT_LIMITS, not cut) > 0   # the clause only when the compaction will really move one
+        sdk = frozenset() if cut else sdk_uuids_of(sess)
+        chunk_text = cc.read_chunks(os.path.join(work, "out"))
+        notices = cc.count_moved_notices(chunk_text, notes, cc.DEFAULT_LIMITS, not cut) > 0   # the clause only when the compaction will really move one
+        sdks = cc.count_moved_sdk(chunk_text, sdk, cc.DEFAULT_LIMITS, not cut) > 0   # the same for the prompts of the SDK
         ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base)
         ro = "--no-readonly" not in a
         def compact(intro, dest):   # -> (printed check line, passed)
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta, notes)
+                ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta, notes, sdk_uuids=sdk)
             return buf.getvalue().strip(), ok
-        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices)
+        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices, sdks=sdks)
         chunks, lines = ((1, 1),), 0
         for attempt in range(3):   # the plan changes only numbers inside one line, so the line count settles at once; the loop is a safeguard
             scratch = os.path.join(work, "draft%d" % attempt); line, ok = compact(draft, scratch)
             text_lines = open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8").read().split("\n")
             new_chunks = tuple(reading_plan(text_lines)); new_lines = len(text_lines)
             if (new_chunks, new_lines) == (chunks, lines): break
-            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices)
+            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices, sdks=sdks)
         dest = os.path.join(work, "res") if cut else folder
         line, ok = compact(draft, dest)
         print(line)
@@ -629,9 +654,42 @@ def selftest():
         assert (NOTICE_CLAUSE in intro) == (notices and not cut) and intro.count("\n") == plain.count("\n"), (cut, kept, skills, notices)
         if notices and not cut: assert WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + " " + NOTICE_CLAUSE in intro
         else: assert intro == build_intro(cut, *args, skills)
+    # sdk_uuids_of: only a record the session marks promptSource sdk (exactly), except the first and the last of them in file order
+    def srec(uuid, content="p", src="sdk", type_="user", **kw):   # src None leaves promptSource out; uuid None leaves the uuid out
+        o = dict({"type": type_, "message": {"content": content}}, **kw)
+        if uuid is not None: o["uuid"] = uuid
+        if src is not None: o["promptSource"] = src
+        return json.dumps(o)
+    def sdk_of(lines, name="sdk.jsonl"):
+        sp_ = os.path.join(d, name); open(sp_, "w", encoding="utf-8").write("\n".join(lines) + "\n"); return sdk_uuids_of(sp_)
+    for count, want in ((0, 0), (1, 0), (2, 0), (3, 1), (5, 3)):   # the first and the last stay out
+        got = sdk_of([srec("s%d" % i) for i in range(count)]); n += 1
+        assert len(got) == want and got == frozenset("s%d" % i for i in range(1, count - 1)), (count, got)
+    noise = [srec("x-typed", src="typed"), srec("x-queued", src="queued"), srec("x-accepted", src="suggestion_accepted"), srec("x-absent", src=None), srec("x-upper", src="SDK"), srec("x-side", isSidechain=True), srec("x-meta", isMeta=True),
+             srec("x-compact", isCompactSummary=True), srec("x-peer", origin={"kind": "peer"}), srec("x-note", origin={"kind": "task-notification"}), srec("x-toolres", [{"type": "tool_result", "content": "r"}]),
+             srec("x-toolres2", [{"type": "text", "text": "t"}, {"type": "tool_result", "content": "r"}]), srec("x-assistant", type_="assistant"), srec(7), srec(None), "not json {", "[1, 2]", "null"]
+    edge = [srec("e-first"), srec("m-str", "text"), srec("m-list", [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]), srec("m-late", [{"type": "image", "source": {}}, {"type": "text", "text": "a"}]),
+            srec("m-originless", origin={"producer": "x"}), srec("m-falsy", isSidechain=False, isMeta=False, isCompactSummary=False), srec("e-last")]
+    got = sdk_of(noise + edge[:1] + noise + edge[1:]); n += 1
+    assert got == frozenset(["m-str", "m-list", "m-late", "m-originless", "m-falsy"]), got   # none of the noise is collected, not even as the first or the last
+    assert sdk_of([srec("e-first", "short")] + [srec("m-%d" % i, "q" * 400) for i in range(2)] + [srec("e-last", "q" * 9000)], "sdk2.jsonl") == frozenset(["m-0", "m-1"]); n += 1   # a short first and a long last still count as first and last
+    assert sdk_of([srec("a"), srec("x-skip", src="typed"), srec("b"), srec("c")], "sdk3.jsonl") == frozenset(["b"]); n += 1   # other records between them do not count
+    # the introduction: the SDK clause and its answers sentence only in blob mode and only when a prompt was moved; short; on the line of WHAT_BLOBS after the notice clause (32 combinations: cut x kept x skills x notices x sdk)
+    assert len(SDK_CLAUSE) <= 150 and len(SDK_ANSWERS) <= 150 and not any(w in t_ for t_ in (SDK_CLAUSE, SDK_ANSWERS) for w in ("nu tastat", "doar", "nu scris de mine"))
+    assert SDK_CLAUSE == "Un marcaj stă și pentru un prompt marcat de sesiune ca trimis prin SDK (claude -p); textul întreg este în `blobs/Rnnnn.txt`."
+    sdk_cases = 0
+    for cut, kept, skills, notices, sdks in itertools.product((False, True), (False, True), (False, True), (False, True), (False, True)):
+        args = ("abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)))
+        intro = build_intro(cut, *args, skills, notices, sdks=sdks); before = build_intro(cut, *args, skills, notices); n += 1; sdk_cases += 1
+        for needle in ("8 rânduri", "istoric", "offset:limit", "Reguli", "Ce faci după ce l-ai citit", "Mesajele mele și ale asistentului sunt întregi"): assert needle in intro, needle
+        assert ((SDK_CLAUSE in intro) and (SDK_ANSWERS in intro)) == (sdks and not cut) and (SDK_CLAUSE in intro) == (SDK_ANSWERS in intro) and intro.count("\n") == before.count("\n"), (cut, kept, skills, notices, sdks)
+        if sdks and not cut: assert WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + " " + SDK_CLAUSE + " " + SDK_ANSWERS in intro and intro.replace(" " + SDK_CLAUSE + " " + SDK_ANSWERS, "") == before
+        else: assert intro == before
+    assert sdk_cases == 32
+    assert build_intro(False, "abcd1234", "2026-01-01 10:00", "/x/s.jsonl", False, "", 1996, ((1, 300),), sdks=False) == build_intro(False, "abcd1234", "2026-01-01 10:00", "/x/s.jsonl", False, "", 1996, ((1, 300),)); n += 1   # default: the old introduction
     n += selftest_opencode()
     print("make_context selftest OK: %d cases (an OpenCode session: the introduction as the Claude one with three substitutions and its four clause combinations, a session with every message type and content kind converted from a database built here, session picking, legacy, a parent handoff, --current over all sources and its fail-closed and skip cases; relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
-          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
+          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 
 if "--selftest" in sys.argv: selftest()
