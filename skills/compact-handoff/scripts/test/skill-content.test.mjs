@@ -43,9 +43,25 @@ describe("the skill text rule", () => {
   });
 });
 
+describe("the OpenCode section", () => {
+  const section = /\n## În OpenCode\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
+  it("exists, names the option that skips a broken database and says to report the error to the user first", () => {
+    assert.ok(section.length > 400, "an OpenCode section exists");
+    for (const part of ["--no-opencode", "first report that error to the user", "Only after that", "Base directory for this skill:", "`${CLAUDE_SKILL_DIR}`", "--marker", "--current", "exactly ONE session",
+      'opencode --prompt "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."', "reasoning", "not scanned for secrets"]) assert.ok(section.includes(part), part);
+  });
+
+  it("adds no command line and no install path, and leaves the Claude Code steps as they were", () => {
+    assert.equal(section.split("\n").some((line) => /^ {4,}\S/.test(line)), false, "no indented command line in the OpenCode section");
+    assert.equal(/\.config\/opencode|\.agents|ln -s|symlink/i.test(section), false, "no install path");
+    const steps = /\n## Steps\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
+    for (const part of ["1. **Get a marker**", "2. **Make the handoff**", "3. **Tell the user**", 'the start command exactly as printed (`claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."`)', "`--cut` (one `.md` file without blobs"]) assert.ok(steps.includes(part), part);
+  });
+});
+
 describe("the package", () => {
-  it("has the three programs and no path of one machine inside", () => {
-    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py"]) {
+  it("has the four programs and no path of one machine inside", () => {
+    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py", "opencode_source.py"]) {
       const p = join(SCRIPTS, f);
       assert.ok(existsSync(p), `${f} exists`);
       assert.equal(/\/Users\/[a-z0-9._-]+\//i.test(readFileSync(p, "utf8")), false, `${f} names no /Users/<name>/ path`);
@@ -55,9 +71,9 @@ describe("the package", () => {
 
   it("keeps its tests next to it and uses no module outside the standard library of Python", () => {
     assert.ok(readdirSync(join(SCRIPTS, "test")).length >= 3);
-    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py"]) {
+    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py", "opencode_source.py"]) {
       const imports = [...readFileSync(join(SCRIPTS, f), "utf8").matchAll(/^(?:import|from) ([a-z_][a-z0-9_]*)/gm)].map((m) => m[1]);
-      for (const m of imports) assert.ok(["datetime", "glob", "json", "os", "re", "shutil", "subprocess", "sys", "tempfile", "time", "io", "contextlib", "hashlib", "itertools", "random", "compact_context", "omissions", "discover", "prepare"].includes(m), `${f} imports ${m}`);
+      for (const m of imports) assert.ok(["datetime", "glob", "json", "os", "re", "shutil", "subprocess", "sys", "tempfile", "time", "io", "contextlib", "hashlib", "itertools", "random", "compact_context", "omissions", "discover", "prepare", "sqlite3", "uuid", "collections", "importlib", "opencode_source"].includes(m), `${f} imports ${m}`);
     }
   });
 });

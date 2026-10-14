@@ -35,7 +35,11 @@ function transcript(sessionId, firstCalls = [], extra = []) {
   return out;
 }
 const write = (path, records) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, records.map((r) => JSON.stringify(r)).join("\n") + "\n"); return path; };
-const py = (args, env = {}) => spawnSync("python3", ["-B", join(SCRIPTS, "make_context.py"), ...args], { encoding: "utf8", timeout: 180_000, env: { ...process.env, ...env, PYTHONDONTWRITEBYTECODE: "1" } });
+const xdg = join(home, ".local", "share");   // the OpenCode database of the tests lives here; XDG_DATA_HOME is set, so the real one is never opened
+const py = (args, env = {}) => spawnSync("python3", ["-B", join(SCRIPTS, "make_context.py"), ...args], { encoding: "utf8", timeout: 180_000, env: { ...process.env, XDG_DATA_HOME: xdg, ...env, PYTHONDONTWRITEBYTECODE: "1" } });
+const ocSid = "ses_0123456789abcdefAAAAAA";
+// a database of OpenCode's shape with one synthetic session (every message type and content kind), made by the program's own test helper
+const ocDb = (path, sessions) => { mkdirSync(dirname(path), { recursive: true }); const r = spawnSync("python3", ["-B", "-c", "import json,sys; sys.path.insert(0, sys.argv[1]); import opencode_source as oc; oc.make_db(sys.argv[2], {k: (oc.synthetic_rows() if v is None else [tuple(x) for x in v]) for k, v in json.loads(sys.argv[3]).items()}, legacy=None)", SCRIPTS, path, JSON.stringify(sessions)], { encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return path; };
 const intro = (text) => text.slice(0, text.indexOf("\n---\n"));
 
 before(() => mkdirSync(home, { recursive: true }));
@@ -171,5 +175,89 @@ describe("make_context.py on an invented transcript", () => {
     const none = py(["--current", "handoff-marker-0-000000000000", join(root, "x")], { HOME: home });
     assert.notEqual(none.status, 0);
     assert.match(none.stderr, /0 transcripts contain the marker/);
+  });
+});
+
+describe("make_context.py on an invented OpenCode session", () => {
+  const db = join(root, "oc", "one.sqlite");
+  const folder = join(root, "oc", "handoff-01234567-20260101-test");
+  let text, blobs;
+
+  it("--opencode DB OUT writes HANDOFF.md and blobs/ with the messages whole, the reasoning left out, the image and the recent text in blobs, and a passed check", () => {
+    ocDb(db, { [ocSid]: null });
+    const r = py(["--opencode", db, folder]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    assert.match(r.stdout, /sanitized records: \d+ of \d+/);
+    assert.match(r.stdout, /start the new session with:\n {2}opencode --prompt "Citește .*HANDOFF\.md și urmează instrucțiunile din el\."/);
+    text = readFileSync(join(folder, "HANDOFF.md"), "utf8");
+    blobs = readdirSync(join(folder, "blobs")).map((f) => readFileSync(join(folder, "blobs", f), "utf8"));
+    for (const part of ["Fă un plan pentru fișierul „raport” – cu diacritice: ăâîșț, 日本語 și emoji 🙂.", "I will look at the files first.", "Final answer text.", "[opencode compaction summary] COMPACTION SUMMARY", "[tool_result ERROR] tool.execution: patch verification failed: no lines", "(exit 1, truncated)"]) assert.ok(text.includes(part), part);
+    assert.equal(text.includes("REASONING SECRET") || blobs.some((b) => b.includes("REASONING SECRET") || b.includes("ENCRYPTEDBLOB")), false, "reasoning and its encrypted content are not included");
+    assert.equal(text.includes("iVBORw0KGgo") || text.includes("data:image"), false, "no image data in HANDOFF.md");
+    assert.ok(blobs.some((b) => b.includes("uri: data:image/png;base64,iVBORw0KGgoaB3dE5fG7hJ9kL1m") && b.includes("name: shots/one.png")), "the image is whole in a blob, not sanitized");
+    assert.ok(blobs.some((b) => b.includes("[opencode compaction recent]") && b.includes("RECENT TEXT")) && !text.includes("RECENT TEXT"), "the recent text is in a blob");
+    assert.equal(/abcd1234efgh5678/.test(text + blobs.join("")), false, "a secret in a text output is redacted");
+  });
+
+  it("puts every instruction in an introduction that a reader that is not Claude Code can follow, with a reading plan that covers the file", () => {
+    const head = intro(text);
+    for (const part of ["Sesiunea sursă: sesiune OpenCode `ses_0123456789abcdefAAAAAA`", "`Read` în Claude Code, `read` în OpenCode", "poate fi refuzată sau trunchiată", "Raționamentul modelului (text și conținut criptat) nu este inclus", "textele `recent` ale compactărilor", "imaginile sunt în `blobs/Rnnnn.txt`, ca date base64, nu text, și nu sunt verificate pentru secrete", "maximum 8 rânduri", "Nu repeta nimic din ele"]) assert.ok(head.includes(part), part);
+    assert.equal(head.includes("unealta Read") || /\/(?:private\/)?tmp\/handoff-|\/Users\//.test(head), false, "no tool of Claude Code only, no absolute path");
+    const lines = text.split("\n").length;
+    const plan = /`offset:limit`: ([0-9:, ]+)\./.exec(head)[1].split(", ").map((c) => c.split(":").map(Number));
+    let next = 1;
+    for (const [offset, limit] of plan) { assert.equal(offset, next); next += limit; }
+    assert.equal(next, lines + 1, "the plan covers every line");
+  });
+
+  it("refuses several sessions without --session, picks one with it, refuses an unknown id, a legacy-only file, --cut and --with-subagents", () => {
+    const two = ocDb(join(root, "oc", "two.sqlite"), { ses_aaaaaaaaaaaaAAAAAAAA: [["user", { text: "first session" }, 5]], ses_bbbbbbbbbbbbBBBBBBBB: [["user", { text: "second session" }, 5]] });
+    const refused = py(["--opencode", two, join(root, "oc", "x1")]);
+    assert.notEqual(refused.status, 0); assert.match(refused.stderr, /ses_aaaaaaaaaaaaAAAAAAAA, ses_bbbbbbbbbbbbBBBBBBBB/);
+    const out = join(root, "oc", "x2"), picked = py(["--opencode", two, out, "--session", "ses_bbbbbbbbbbbbBBBBBBBB"]);
+    assert.equal(picked.status, 0, picked.stderr); assert.ok(readFileSync(join(out, "HANDOFF.md"), "utf8").includes("second session"));
+    assert.match(py(["--opencode", two, join(root, "oc", "x3"), "--session", "ses_zzz"]).stderr, /no such session/);
+    for (const flag of ["--cut", "--with-subagents"]) assert.match(py(["--opencode", db, join(root, "oc", "x4"), flag]).stderr, /not supported/);
+    const legacy = join(root, "oc", "legacy.sqlite");
+    const r = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table session(id text)'); c.execute('create table message(id text)'); c.execute('create table part(id text)'); c.execute(\"insert into session values ('ses_old1')\"); c.commit()", legacy], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(py(["--opencode", legacy, join(root, "oc", "x5")]).stderr, /legacy OpenCode sessions are not supported/);
+  });
+
+  it("--current finds the OpenCode session that holds the marker (default database under XDG_DATA_HOME), and refuses for none, for two, and for one OpenCode plus one Claude Code session", () => {
+    const marker = py(["--marker"]).stdout.trim();
+    const withMarker = (id) => [id, [["user", { text: "please make a handoff" }, 5], ["assistant", { content: [{ type: "tool", name: "shell", state: { status: "completed", input: { command: `python3 make_context.py --current "${marker}"` }, content: [{ type: "text", text: "ok" }] } }] }, 3]]];
+    const xdgOne = join(root, "xdg-one"), env = (x) => ({ HOME: join(root, "home-oc"), XDG_DATA_HOME: x });
+    mkdirSync(join(root, "home-oc"), { recursive: true });
+    ocDb(join(xdgOne, "opencode", "opencode.db"), Object.fromEntries([withMarker("ses_feedfeedfeedAAAAAAAA"), ["ses_quietquietquiet01", [["user", { text: "nothing" }, 3]]]]));
+    const found = py(["--current", marker, join(root, "oc", "cur1")], env(xdgOne));
+    assert.equal(found.status, 0, found.stderr + found.stdout);
+    assert.match(found.stdout, /current session: ses_feedfeedfeedAAAAAAAA/); assert.match(found.stdout, /roundtrip IDENTICAL/); assert.match(found.stdout, /opencode --prompt "Citește/);
+    const none = py(["--current", "handoff-marker-0-000000000000", join(root, "oc", "cur2")], env(xdgOne));
+    assert.notEqual(none.status, 0); assert.match(none.stderr, /0 transcripts contain the marker/);
+    const xdgTwo = join(root, "xdg-two");
+    ocDb(join(xdgTwo, "opencode", "opencode.db"), Object.fromEntries([withMarker("ses_twotwotwotwo0000001"), withMarker("ses_twotwotwotwo0000002")]));
+    const two = py(["--current", marker, join(root, "oc", "cur3")], env(xdgTwo));
+    assert.notEqual(two.status, 0); assert.match(two.stderr, /2 sessions contain the marker.*0 Claude Code transcripts, 2 OpenCode sessions/);
+    const sid = "77777777-7777-4777-8777-777777777777";
+    write(join(root, "home-oc", ".claude", "projects", "p", `${sid}.jsonl`), transcript(sid, [["Bash", { command: `python3 make_context.py --current "${marker}"` }, "ok"]]));
+    const mixed = py(["--current", marker, join(root, "oc", "cur4")], env(xdgOne));
+    assert.notEqual(mixed.status, 0); assert.match(mixed.stderr, /2 sessions contain the marker.*1 Claude Code transcripts, 1 OpenCode sessions/);
+    const skipped = py(["--current", marker, join(root, "oc", "cur5"), "--no-opencode"], env(xdgOne));   // the Claude Code transcript alone decides
+    assert.equal(skipped.status, 0, skipped.stderr + skipped.stdout); assert.match(skipped.stdout, new RegExp(`current session: ${sid}`)); assert.match(skipped.stdout, /claude "Citește/);
+  });
+
+  it("an OpenCode database that exists but cannot be read stops --current with an error that names the cause and --no-opencode; a missing database is skipped", () => {
+    const marker = py(["--marker"]).stdout.trim();
+    const xdgBad = join(root, "xdg-bad"); mkdirSync(join(xdgBad, "opencode"), { recursive: true });
+    writeFileSync(join(xdgBad, "opencode", "opencode.db"), "this is not a database\n".repeat(200));
+    const env = { HOME: join(root, "home-oc"), XDG_DATA_HOME: xdgBad };
+    const bad = py(["--current", marker, join(root, "oc", "cur6")], env);
+    assert.notEqual(bad.status, 0); assert.match(bad.stderr, /cannot be read/); assert.match(bad.stderr, /--no-opencode/); assert.match(bad.stderr, /Report this to the user/);
+    const skipped = py(["--current", "handoff-marker-0-000000000000", join(root, "oc", "cur7"), "--no-opencode"], env);
+    assert.notEqual(skipped.status, 0); assert.match(skipped.stderr, /0 transcripts contain the marker/); assert.equal(/cannot be read/.test(skipped.stderr), false);
+    const missing = py(["--current", "handoff-marker-0-000000000000", join(root, "oc", "cur8")], { HOME: join(root, "home-oc"), XDG_DATA_HOME: join(root, "xdg-nothing") });
+    assert.notEqual(missing.status, 0); assert.match(missing.stderr, /0 transcripts contain the marker/);
   });
 });

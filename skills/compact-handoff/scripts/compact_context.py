@@ -18,6 +18,8 @@ A record is replaced by ONE marker line with a short preview, and its full text 
       its marker preview names the skill. Without `meta_uuids` (this command line) the rule is off; a message the user typed is never moved by it.
   (4) blob mode only: it is a notification of a background task (agent, command, monitor): a user record that the harness wrote (origin kind task-notification in the session .jsonl, whose uuid the caller passes in
       `notice_uuids`) that starts with `<task-notification>` and is longer than the tool_result limit; its marker preview shows the text of its <summary>. Without `notice_uuids` the rule is off.
+  (5) blob mode only: the caller names records that always go to a blob (`forced`, {uuid: marker label}; make_context.py uses it for the image files and the `recent` texts of an OpenCode session), and, for a session whose
+      tool calls are not Claude's, the uuids of the calls that only read (`readonly_uuids`, decided from the structured input; they count for rule (2)). Without them (this command line) both rules are off.
 A command that may change state (rm, git commit/push, redirects into files, sed -i, service restarts, API calls ...) is never moved by rule (2); neither is a message of the user.
 expand() puts every blob back. Nothing is summarised, translated or cut: the marker only points at the full text, and `check` proves expand(compact(x)) == x."""
 import glob, hashlib, itertools, json, os, re, sys, tempfile
@@ -184,26 +186,30 @@ def count_moved_notices(text, notice_uuids, limits, blobs=True):
     return sum(moved_notice(r, notice_uuids, limits, blobs) for r in split_records(text)[1])
 
 
-def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset(), notice_uuids=frozenset()):
+def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None):
     """-> (compact text without header, {blob name: full record text}, marker pair or None). A record that is too long for its kind, or (readonly) a tool call that only reads, is replaced by a marker line pointing at blobs/Rnnnn.txt
     (blobs=True; raises ValueError when no marker pair is free) or is cut to its first characters (blobs=False: the rest is not kept). `stats["readonly"]` counts the records moved only by the read-only rule; `stats["skill"]` the injected skill texts
-    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker); `stats["notice"]` the notifications of background tasks (see moved_notice)."""
+    (blobs=True only: a user record whose uuid is in `meta_uuids` and that starts with SKILL_PREFIX; longer than its marker); `stats["notice"]` the notifications of background tasks (see moved_notice).
+    `readonly_uuids`: tool_use records (by uuid) that the caller knows only read; they are moved by the read-only rule like a Claude call that reads. `forced` {uuid: label}: blob mode only, these records always go to a blob whatever
+    their length, and the marker preview is the label (`stats["forced"]` counts them). Both default to nothing, and then the output is exactly what it was without them."""
     pair = pick_pair(text) if blobs else None
     head, recs = split_records(text); out, blob_map = [head], {}
     for r in recs:
         k = kind_of(r); lim = limits.get(k)
         by_length = lim is not None and len(r) > lim
-        by_rule = readonly and k == "tool_use" and len(r) > preview + 25 and is_readonly_call(r)   # shorter than its marker: moving it would save nothing
+        by_rule = readonly and k == "tool_use" and len(r) > preview + 25 and (r[1:37] in readonly_uuids or is_readonly_call(r))   # shorter than its marker: moving it would save nothing
+        label = forced.get(r[1:37]) if (forced and blobs) else None
         sk = SKILL_REC.match(r) if (blobs and meta_uuids and k == "user_text") else None
         by_skill = bool(sk) and sk.group(1) in meta_uuids and len(r) > preview + 25
         by_notice = moved_notice(r, notice_uuids, limits, blobs)
-        if not (by_length or by_rule or by_skill or by_notice): out.append(r); continue
+        if not (by_length or by_rule or by_skill or by_notice or label is not None): out.append(r); continue
         if not blobs:
             c = cut_record(r, preview); out.append(c)
             if c != r and stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
             continue
         if stats is not None and by_skill: stats["skill"] = stats.get("skill", 0) + 1
         elif stats is not None and by_notice: stats["notice"] = stats.get("notice", 0) + 1
+        elif stats is not None and label is not None: stats["forced"] = stats.get("forced", 0) + 1
         elif stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
         name = "R%04d" % len(blob_map); blob_map[name] = r
         p = UUID.sub(r"[\1] ", r, count=1)[:preview]   # the uuid is no use in a preview
@@ -211,6 +217,7 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
         if by_notice:
             sm = NOTE_SUMMARY.search(r)
             if sm and sm.group(1).strip(): p = "[user] task: " + sm.group(1)[:80]   # the default preview would show only the tag and the task id
+        if label is not None and not (by_skill or by_notice): p = label   # a forced record shows its label
         p = p.replace("\n", "⏎").replace(pair[1], "·")
         out.append("%s%s|%d|%s%s%s" % (pair[0], name, len(r), p, pair[1], "\n" if r.endswith("\n") else ""))
     return "".join(out), blob_map, pair
@@ -256,9 +263,9 @@ def read_out(out_dir):
 def sha(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 
-def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset()):
+def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None):
     text = read_chunks(chunk_dir); stats = {}
-    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids)
+    compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids, readonly_uuids, forced)
     if blobs: write_out(out_dir, compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name)
     else:
         os.makedirs(out_dir, exist_ok=True)
@@ -266,17 +273,19 @@ def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", na
     return text, compact, blob_map, stats.get("readonly", 0)
 
 
-def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset()):
-    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids, notice_uuids)
+def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None, original=None):
+    """`original`: the size printed as the original and used for the percentage (default: the length of the prepared text; an OpenCode session names the length of its database rows)."""
+    text, compact, blob_map, moved = cmd_compact(chunk_dir, out_dir, limits, preview, readonly, intro, name, blobs, meta_uuids, notice_uuids, readonly_uuids, forced)
+    orig = len(text) if original is None else original
     size = len(open(os.path.join(out_dir, name), encoding="utf-8", newline="").read()); label = describe(limits) + (" + read-only rule" if readonly else "")
     if blobs:
         c2, b2, p2 = read_out(out_dir); ok = sha(expand_text(c2, b2, p2)) == sha(text)
         print("%s | original %7d chars | %s %7d chars (%.1f%% of original) | blobs %3d (%d chars, %d by the read-only rule) | roundtrip %s" % (
-            label, len(text), name, size, 100 * size / len(text), len(blob_map), sum(map(len, blob_map.values())), moved, "IDENTICAL" if ok else "DIFFERENT"))
+            label, orig, name, size, 100 * size / orig, len(blob_map), sum(map(len, blob_map.values())), moved, "IDENTICAL" if ok else "DIFFERENT"))
         return ok
     ok, cut, omitted, intact, texts = verify_cut(text, compact, preview)
     print("%s | original %7d chars | %s %7d chars (%.1f%% of original) | %d records cut (%d chars omitted, %d by the read-only rule) | user and assistant text intact %d of %d | check %s" % (
-        label, len(text), name, size, 100 * size / len(text), cut, omitted, moved, intact, texts, "PASSED" if ok and intact == texts else "FAILED"))
+        label, orig, name, size, 100 * size / orig, cut, omitted, moved, intact, texts, "PASSED" if ok and intact == texts else "FAILED"))
     return ok and intact == texts
 
 
@@ -421,6 +430,52 @@ def selftest():
     mk, pr, r = note_marker("a" + PAIRS[0][1] + "b\nline two"); n += 1; assert mk.endswith("[user] task: a·b⏎line two" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1]   # the closer is escaped and a line break shown
     mk, pr, r = note_marker(None); n += 1; assert mk.startswith(pr[0] + "R0000|%d|[user] <task-notification>" % len(r)) and "task:" not in mk   # no summary: the default preview
     mk, pr, r = note_marker("  "); n += 1; assert "task:" not in mk   # an empty summary is no summary
+    # (8) forced records (a caller names them): role x uuid in `forced` x length around the preview threshold (T-1, T, T+1) x blob or cut mode = 24 combinations, exhaustive (t=4, all four conditions);
+    #     it moves only for uuid in the set and blob mode, whatever the role and the length; the marker shows the label (escaped), and expand gives the text back
+    for role, inset, size, blobs in itertools.product(("user", "assistant"), (True, False), (T - 1, T, T + 1), (True, False)):
+        head = "[%s %s] [tool_result file]\n" % (uid, role); rec = head + "z" * (size - len(head) - 1) + "\n"; assert len(rec) == size
+        text = "[%s user] first\n" % ("2" * 8 + uid[8:]) + rec + "[%s user] last\n" % ("1" * 8 + uid[8:]); stats = {}   # the record under test is the only one with the uuid `uid`
+        c, b, pr = compact_text(text, nlim, PV, False, stats, blobs, frozenset(), frozenset(), frozenset(), {uid: "[file image/png x.png, %d chars]" % size} if inset else None); n += 1
+        expect = inset and blobs
+        assert (c == text) == (not expect) and len(b) == (1 if expect else 0) and stats.get("forced", 0) == (1 if expect else 0) and stats.get("readonly", 0) == 0, (role, inset, size, blobs)
+        if blobs: assert expand_text(c, b, pr) == text and (not expect or (list(b.values()) == [rec] and ("R0000|%d|[file image/png x.png, %d chars]" % (size, size)) in c))
+        else: assert b == {} and verify_cut(text, c, PV)[0]
+    lab = "[a%sb\nline two]" % PAIRS[0][1]   # the closer in a label is escaped and a line break shown
+    rec = "[%s assistant] forced text\n" % uid; c, b, pr = compact_text(rec, nlim, PV, False, None, True, frozenset(), frozenset(), frozenset(), {uid: lab}); n += 1
+    mk = c.rstrip("\n"); assert mk == pr[0] + "R0000|%d|[a·b⏎line two]" % len(rec) + pr[1] and expand_text(c, b, pr) == rec and "\n" not in mk
+    c, b, pr = compact_text(rec, nlim, PV, False, None, True, frozenset(), frozenset(), frozenset(), {"1" * 8 + uid[8:]: "x"}); n += 1; assert c == rec and b == {}   # another uuid: nothing moves
+    # (9) read-only uuids (the caller knows a call only reads, as for OpenCode's tools): category x uuid in the set x size around the threshold (T-1, T, T+1, 400) x rule on or off x blob or cut mode = 7 x ... exhaustive
+    def oc_call(cat, size):
+        pre = {"tool_use": "[%s assistant] [tool_use read] path: /" % uid, "tool_result": "[%s user] [tool_result] " % uid, "assistant_text": "[%s assistant] " % uid, "user_text": "[%s user] " % uid}[cat]
+        return pre + "p" * (size - len(pre) - 1) + "\n"
+    for cat, inset, size, ro, blobs in itertools.product(("tool_use", "tool_result", "assistant_text", "user_text"), (True, False), (T - 1, T, T + 1, 400), (True, False), (True, False)):
+        rec = oc_call(cat, size); assert len(rec) == size
+        text = "[%s user] first\n" % ("2" * 8 + uid[8:]) + rec; stats = {}
+        c, b, pr = compact_text(text, nlim, PV, ro, stats, blobs, frozenset(), frozenset(), frozenset([uid]) if inset else frozenset()); n += 1
+        if blobs:
+            expect = cat == "tool_use" and inset and ro and size > T
+            assert (c == text) == (not expect) and len(b) == (1 if expect else 0) and stats.get("readonly", 0) == (1 if expect else 0) and expand_text(c, b, pr) == text, (cat, inset, size, ro)
+        else:
+            keep = UUID.match(rec).end() + PV; expect = cat == "tool_use" and inset and ro and size > T and len(rec.rstrip("\n")) > keep
+            ok, ncut, omitted, intact, texts = verify_cut(text, c, PV)
+            assert ok and b == {} and ncut == (1 if expect else 0) and intact == texts, (cat, inset, size, ro, ncut)
+    # without the new arguments, or with empty ones, or with uuids that match nothing: the very same output on a mixed text (the Claude flow cannot change)
+    mix = "".join(record(k, 400, False, True) for k in KINDS) + call("bash_read", 300, True) + call("read_tool", 300, True)
+    for blobs in (True, False):
+        base_out = compact_text(mix, DEFAULT_LIMITS, PV, True, None, blobs)
+        assert compact_text(mix, DEFAULT_LIMITS, PV, True, None, blobs, frozenset(), frozenset(), frozenset(), None) == base_out
+        assert compact_text(mix, DEFAULT_LIMITS, PV, True, None, blobs, frozenset(), frozenset(), frozenset(["1" * 8 + uid[8:]]), {"1" * 8 + uid[8:]: "x"}) == base_out; n += 2
+    # the printed original: the length of the text by default, the given number otherwise (the percentage follows it)
+    dd = tempfile.mkdtemp(); os.makedirs(os.path.join(dd, "transcript")); open(os.path.join(dd, "transcript", "chunk-0000.txt"), "w", encoding="utf-8").write(mix)
+    import io, contextlib
+    def printed(**kw):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): ok = cmd_check(dd, os.path.join(dd, "o%d" % len(os.listdir(dd))), DEFAULT_LIMITS, PV, True, "", "HANDOFF.md", True, **kw)
+        return buf.getvalue(), ok
+    o1, ok1 = printed(); o2, ok2 = printed(original=len(mix)); o3, ok3 = printed(original=2 * len(mix)); n += 3
+    assert ok1 and ok2 and ok3 and o1 == o2 and "original %7d chars" % len(mix) in o1 and "original %7d chars" % (2 * len(mix)) in o3 and ("roundtrip IDENTICAL" in o3)
+    pc = lambda o: float(re.search(r"\(\s*([\d.]+)% of original\)", o).group(1))
+    assert abs(pc(o3) * 2 - pc(o1)) < 0.2, (pc(o1), pc(o3))
     big = "".join(record(k, 400, False, True) for k in KINDS)
     c, b_, pr = compact_text(big, {k: 40 for k in KINDS}, 20, False, None, False); n += 1   # a limit on a text kind would cut a message: the check must refuse that
     assert verify_cut(big, c, 20)[0] is False
@@ -429,7 +484,9 @@ def selftest():
     assert verify_cut(big, c.replace("caractere omise", "caractere omise "), 20)[0] is False   # a tampered note fails the check
     assert verify_cut(big, c.replace("[…", "[ …"), 20)[0] is False; n += 2
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
-          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none" % (n, len(reading) + len(mutating)))
+          "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none; "
+          "forced records: role 2 x uuid in the set 2 x length around the threshold 3 x blob or cut mode 2 = 24 exhaustive (t=4), the label escaped; read-only uuids: category 4 x uuid in the set 2 x size 4 x rule on or off 2 x blob or cut mode 2 = 128 exhaustive (t=5); "
+          "defaults and unrelated uuids give the same output; the printed original" % (n, len(reading) + len(mutating)))
 
 
 if __name__ == "__main__":
