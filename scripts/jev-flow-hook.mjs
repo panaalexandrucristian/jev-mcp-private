@@ -46,6 +46,17 @@ try {
   } catch {
     process.stderr.write("[logic-test-debug] activation unavailable\n");
   }
+  // class-graph nudge (default on, JEV_CLASS_GRAPH_NUDGE=off turns it off): records a bare /jev:class-graph for the session,
+  // then reminds on later prompts and notes a Bash or Grep-tool text search for a class or member name. Context only, never a decision.
+  // Same guarded dynamic import, and only for the events and tool it reads, so no other call pays for loading it.
+  try {
+    if (name === "UserPromptSubmit" || (name === "PreToolUse" && (input?.tool_name === "Bash" || input?.tool_name === "Grep"))) {
+      const nudge = await import("../private/class-graph-nudge/hook.mjs");
+      output = nudge.composeNudge(output, nudge.handleNudgeHook(name, input, process.env));
+    }
+  } catch {
+    process.stderr.write("[class-graph-nudge] unavailable\n");
+  }
   const line = output ? `${JSON.stringify(output)}\n` : "";
   // After a Jev check exit as soon as the output is flushed, so no child process can hold the prompt.
   if (ran) process.stdout.write(line, () => process.exit(0));
