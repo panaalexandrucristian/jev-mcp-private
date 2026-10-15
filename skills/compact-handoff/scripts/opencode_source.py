@@ -355,14 +355,15 @@ def find_parents(first_calls, pattern):
 
 
 # ---- the self-check ------------------------------------------------------------------------------------------------------------------------------
-def selfcheck(R, expanded, blob_texts):
+def selfcheck(R, expanded, blob_texts, norm=None):
     """After the round trip: every record sits in the expanded output where it was rendered. A record that the sanitizer left unchanged holds every whole string it was rendered from (user text, assistant text part,
     tool-input string) at least as often as the source has it; records the sanitizer changed are not string-checked (its rules depend on the context, e.g. an input key `token`). For a file block the ORIGINAL uri
-    from the database occurs unchanged in its place and in a blob. -> a list of problems (empty = fine)."""
+    from the database occurs unchanged in its place and in a blob. `norm`: the function that the written file applies to a rendered record (it cuts the record id), used for the position check only. -> a list of problems (empty = fine)."""
     bad, pos = [], 0
     for r in R.recs:
-        seg = expanded[pos:pos + len(r.text)]; pos += len(r.text)
-        if seg != r.text: bad.append("record %s is not where it was rendered" % r.uuid); continue
+        rt = norm(r.text) if norm else r.text
+        seg = expanded[pos:pos + len(rt)]; pos += len(rt)
+        if seg != rt: bad.append("record %s is not where it was rendered" % r.uuid); continue
         if r.uri is not None:
             if r.uri not in seg: bad.append("record %s: the uri of the file block is not unchanged in the output" % r.uuid)
             if r.text not in blob_texts: bad.append("record %s: the file block is not whole in a blob" % r.uuid)

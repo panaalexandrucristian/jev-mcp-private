@@ -63,6 +63,24 @@ describe("make_context.py on an invented transcript", () => {
     assert.equal(text.includes(longEdit), false, "and not in HANDOFF.md");
   });
 
+  it("starts every inline record with a short id that the file declares, one per uuid, and keeps the whole uuid in the blobs", () => {
+    const declared = /the first (\d+) characters of the record's uuid/.exec(text);
+    assert.ok(declared, "the header says how long the ids are");
+    const n = Number(declared[1]);
+    assert.ok(n >= 8 && n <= 36);
+    const heads = text.split("\n").filter((l) => /^\[[0-9a-f-]+ (user|assistant)\] /.test(l));
+    assert.ok(heads.length >= 4, "inline records are there");
+    for (const h of heads) assert.equal(/^\[([0-9a-f-]+) /.exec(h)[1].length, n, `id of ${n} characters: ${h.slice(0, 50)}`);
+    assert.equal(/^\[[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12} (user|assistant)\]/m.test(text), n === 36 ? true : false, "no whole uuid in a header unless the ids are whole");
+    const ids = heads.map((h) => /^\[([0-9a-f-]+) /.exec(h)[1]);
+    const whole = [...new Set(readdirSync(join(folder, "blobs")).flatMap((f) => [...readFileSync(join(folder, "blobs", f), "utf8").matchAll(/^\[([0-9a-f-]{36}) (?:user|assistant)\]/gm)].map((m) => m[1])))];
+    assert.ok(whole.length >= 2, "a blob holds a record with its whole uuid");
+    for (const w of whole) assert.ok(w.length === 36);
+    const uuids = readFileSync(join(root, "s1.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).uuid);
+    assert.equal(new Set(uuids.map((u) => u.slice(0, n))).size, new Set(uuids).size, "two uuids of the session never share an id");
+    for (const id of ids) assert.ok(uuids.some((u) => u.startsWith(id)), "every inline id is the start of a uuid of the session");
+  });
+
   it("puts every instruction in the introduction, with a reading plan that covers the file and no absolute path of the handoff", () => {
     const head = intro(text);
     for (const part of ["## Cum citești fișierul", "## Ce conține", "## Ce faci după ce l-ai citit", "## Reguli", "maximum 8 rânduri", "Nu repeta nimic din ele", "relative la folderul"]) assert.ok(head.includes(part), part);

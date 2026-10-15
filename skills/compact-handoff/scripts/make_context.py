@@ -324,7 +324,7 @@ def build_opencode(db, session, rest):
         got = open(final, encoding="utf-8").read().split("\n")
         assert len(got) == lines and tuple(reading_plan(got)) == chunks, "the reading plan does not match the final file"
         c2, b2, p2 = cc.read_out(folder)
-        problems = oc.selfcheck(R, cc.expand_text(c2, b2, p2), set(b2.values()))
+        n_id = cc.read_idlen(folder); problems = oc.selfcheck(R, cc.short_ids(cc.expand_text(c2, b2, p2), n_id) if n_id else cc.expand_text(c2, b2, p2), set(b2.values()), (lambda t: cc.short_ids(t, n_id)) if n_id else None)
         if problems: sys.exit("the converter self-check failed: " + "; ".join(problems))
         print("sanitized records: %d of %d (their strings are not compared one by one; every file block's uri is identical in its blob)" % (R.sanitized, len(R.recs)))
         final_text = open(final, encoding="utf-8").read(); intro_text = final_text[:final_text.index("\n---\n")]

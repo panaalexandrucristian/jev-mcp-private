@@ -11,6 +11,7 @@
   --intro FILE puts that text before the transcript in the output file; --name sets the file name (default CONTEXT.md; make_context.py uses HANDOFF.md).
 
 CHUNK_DIR is the --out directory of prepare.py / prepare_all.py (it holds transcript/chunk-*.txt); the chunk texts are joined in order. User and assistant text stay whole.
+In blob mode the header of an inline record `[uuid role]` is written `[id role]`, id = the first 8 characters of the uuid (more when two uuids of the session would look alike; the file's header declares the length); the blobs keep the whole record and the check compares both sides with the ids cut to that length.
 A record is replaced by ONE marker line with a short preview, and its full text goes to OUT_DIR/blobs/Rnnnn.txt, when
   (1) it is a tool_use or tool_result longer than the limit of its kind, or
   (2) it is a tool call that only READS (Read, Grep, Glob, ToolSearch, a Bash made only of read-only commands: ls, cat, grep, sed -n, git log/status/diff, ...) and is longer than its marker, or
@@ -45,6 +46,10 @@ SEP = "----- transcript (compact) -----\n"
 FILE_NAMES = ("HANDOFF.md", "CONTEXT.md")   # read_out takes the first one that exists
 HEADER = ("This is a session transcript made smaller for a new session. A line `%sRnnnn|chars|preview%s` stands for ONE record that was longer than the limit of its kind (%s)%s: "
           "its full text is in `blobs/Rnnnn.txt` next to this file (open it only when you need the detail). Every other record is complete. Nothing was cut or summarised.\n")
+ID_FLOOR = 8   # blob mode: a record header `[uuid role]` is written `[id role]`, id = the first ID_FLOOR characters of the uuid (more only when two uuids of the session would then look alike)
+REC_ID = re.compile(r"(?m)^\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?:user|assistant)\]")
+ID_NOTE = "Each record starts with `[id user]` or `[id assistant]`; id is the first %d characters of the record's uuid in the session transcript (search for it there).\n"
+ID_NOTE_RE = re.compile(r"the first (\d+) characters of the record's uuid")
 
 
 # ---- the rule: a tool call that only reads -------------------------------------------------------------------------------------------------------
@@ -133,12 +138,24 @@ def pick_pair(text):
     raise ValueError("every marker pair already occurs in the text; refusing to compact")
 
 
+def id_length(text, floor=ID_FLOOR):
+    """The shortest id length, at least `floor`, with which the distinct uuids of the record headers of `text` stay distinct."""
+    ids = {m.group(1) for m in REC_ID.finditer(text)}; n = floor
+    while n < 36 and len({i[:n] for i in ids}) < len(ids): n += 1
+    return n
+
+
+def short_ids(text, n):
+    """`text` with the uuid of every record header (a line that starts `[uuid user]` or `[uuid assistant]`) cut to its first n characters; nothing else changes."""
+    return REC_ID.sub(lambda m: m.group(0).replace(m.group(1), m.group(1)[:n], 1), text)
+
+
 def describe(limits): return ", ".join("%s > %s" % (k, limits[k]) for k in KINDS if limits.get(k) is not None) or "none"
 
 
-def header(pair, limits, moved=0):
+def header(pair, limits, moved=0, idlen=None):
     extra = ", or that is a tool call that only reads (Read, search, listing, git log/status/diff; %d records, never a command that may change state)" % moved if moved else ""
-    return "MARKER-PAIR: %s%s\n" % pair + HEADER % (pair[0], pair[1], describe(limits), extra)
+    return "MARKER-PAIR: %s%s\n" % pair + HEADER % (pair[0], pair[1], describe(limits), extra) + (ID_NOTE % idlen if idlen else "")
 
 
 def read_chunks(chunk_dir):
@@ -259,10 +276,17 @@ def expand_text(compact, blobs, pair):
     return mark_re(pair).sub(lambda m: blobs["R" + m.group(1)], compact)
 
 
-def write_out(out_dir, compact, blobs, limits, pair, moved=0, intro="", name="CONTEXT.md"):
+def write_out(out_dir, compact, blobs, limits, pair, moved=0, intro="", name="CONTEXT.md", idlen=None):
     os.makedirs(os.path.join(out_dir, "blobs"), exist_ok=True)
     for blob, body in blobs.items(): open(os.path.join(out_dir, "blobs", blob + ".txt"), "w", encoding="utf-8", newline="").write(body)
-    open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="").write(intro + header(pair, limits, moved) + SEP + compact)
+    open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="").write(intro + header(pair, limits, moved, idlen) + SEP + compact)
+
+
+def read_idlen(out_dir):
+    """The id length that a written file declares in its header (None when its record headers carry the whole uuid)."""
+    path = next(os.path.join(out_dir, n) for n in FILE_NAMES if os.path.exists(os.path.join(out_dir, n)))
+    m = ID_NOTE_RE.search(open(path, encoding="utf-8", newline="").read().split(SEP, 1)[0])
+    return int(m.group(1)) if m else None
 
 
 def read_out(out_dir):
@@ -283,7 +307,9 @@ def sha(t): return hashlib.sha256(t.encode("utf-8")).hexdigest()
 def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", name="CONTEXT.md", blobs=False, meta_uuids=frozenset(), notice_uuids=frozenset(), readonly_uuids=frozenset(), forced=None, sdk_uuids=frozenset()):
     text = read_chunks(chunk_dir); stats = {}
     compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids, readonly_uuids, forced, sdk_uuids)
-    if blobs: write_out(out_dir, compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name)
+    if blobs:
+        idlen = id_length(text) if REC_ID.search(text) else None
+        write_out(out_dir, short_ids(compact, idlen) if idlen else compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name, idlen)
     else:
         os.makedirs(out_dir, exist_ok=True)
         open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="").write(intro + header_cut(limits, stats.get("readonly", 0)) + SEP + compact)
@@ -296,7 +322,8 @@ def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True
     orig = len(text) if original is None else original
     size = len(open(os.path.join(out_dir, name), encoding="utf-8", newline="").read()); label = describe(limits) + (" + read-only rule" if readonly else "")
     if blobs:
-        c2, b2, p2 = read_out(out_dir); ok = sha(expand_text(c2, b2, p2)) == sha(text)
+        c2, b2, p2 = read_out(out_dir); n = read_idlen(out_dir); back = expand_text(c2, b2, p2)
+        ok = sha(short_ids(back, n) if n else back) == sha(short_ids(text, n) if n else text)   # the way back is exact except that each record id is cut to n characters (n keeps the ids of the session distinct)
         print("%s | original %7d chars | %s %7d chars (%.1f%% of original) | blobs %3d (%d chars, %d by the read-only rule) | roundtrip %s" % (
             label, orig, name, size, 100 * size / orig, len(blob_map), sum(map(len, blob_map.values())), moved, "IDENTICAL" if ok else "DIFFERENT"))
         return ok
@@ -535,16 +562,41 @@ def selftest():
     ok, ncut, omitted, intact, texts = verify_cut(big, c, 20); assert ok and ncut == 2 and intact == texts == 2
     assert verify_cut(big, c.replace("caractere omise", "caractere omise "), 20)[0] is False   # a tampered note fails the check
     assert verify_cut(big, c.replace("[…", "[ …"), 20)[0] is False; n += 2
+    # record ids (blob mode): the header [uuid role] becomes [id role]; the id is the first 8 characters of the uuid, longer only when two uuids of the session would look alike
+    U1, U2, U3 = "0a1b2c3d-1111-4222-8333-444455556666", "0a1b2c3d-1111-4222-8333-444455557777", "ffeeddcc-aaaa-4bbb-8ccc-ddddeeeeffff"
+    R = lambda u, r, body: "[%s %s] %s\n" % (u, r, body)
+    plain = R(U1, "user", "hello") + R(U3, "assistant", "[tool_use Bash] {\"command\": \"echo " + U1 + "\"}") + R(U2, "user", "bye")
+    assert id_length(R(U1, "user", "a") + R(U3, "assistant", "b")) == 8; assert id_length("") == 8; assert id_length(R(U1, "user", "a")) == 8; n += 3   # distinct at 8 characters, nothing, one record
+    assert id_length(plain) == next(k for k in range(8, 37) if len({U1[:k], U2[:k], U3[:k]}) == 3) == 33; n += 1   # U1 and U2 differ only in the 4th character from the end (the 33rd): 33 characters are needed
+    sh = short_ids(plain, 8); assert sh == R(U1[:8], "user", "hello") + R(U3[:8], "assistant", "[tool_use Bash] {\"command\": \"echo " + U1 + "\"}") + R(U2[:8], "user", "bye"); n += 1   # only the headers; the uuid inside a command stays
+    assert short_ids(sh, 8) == sh and short_ids(plain, 36) == plain and short_ids("no header here " + U1, 8) == "no header here " + U1 and short_ids(" [%s user] indented\n" % U1, 8) == " [%s user] indented\n" % U1; n += 3
+    for rows, want in (((U1, U3), 8), ((U1, U2, U3), 33)):   # a whole run in blob mode: the file declares the length, inline headers are short, blobs keep the whole record, the check passes
+        txt = "".join(R(u, "user", "x" * (10 + i)) + R(u, "assistant", "[tool_result] " + "y" * 400) for i, u in enumerate(rows))
+        d2 = tempfile.mkdtemp(); os.makedirs(os.path.join(d2, "transcript")); open(os.path.join(d2, "transcript", "chunk-0000.txt"), "w", encoding="utf-8").write(txt)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): ok2 = cmd_check(d2, os.path.join(d2, "o"), DEFAULT_LIMITS, PV, True, "", "HANDOFF.md", True)
+        out_ = open(os.path.join(d2, "o", "HANDOFF.md"), encoding="utf-8").read()
+        assert ok2 and "roundtrip IDENTICAL" in buf.getvalue() and read_idlen(os.path.join(d2, "o")) == want and ("the first %d characters of the record's uuid" % want) in out_
+        assert all(("[%s user] " % u[:want]) in out_ for u in rows) and all(("[%s user] " % u) not in out_ for u in rows)
+        assert all(("[%s assistant] " % u) in open(os.path.join(d2, "o", "blobs", "R%04d.txt" % i), encoding="utf-8").read() for i, u in enumerate(rows))   # the blobs keep the whole header
+        tampered = out_.replace("x" * 10, "z" + "x" * 9, 1); open(os.path.join(d2, "o", "HANDOFF.md"), "w", encoding="utf-8").write(tampered)
+        c2_, b2_, p2_ = read_out(os.path.join(d2, "o")); nn = read_idlen(os.path.join(d2, "o"))
+        assert sha(short_ids(expand_text(c2_, b2_, p2_), nn)) != sha(short_ids(txt, nn)); n += 5   # a changed word fails the comparison
+    d3 = tempfile.mkdtemp(); os.makedirs(os.path.join(d3, "transcript")); open(os.path.join(d3, "transcript", "chunk-0000.txt"), "w", encoding="utf-8").write(plain)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf): ok3 = cmd_check(d3, os.path.join(d3, "o"), DEFAULT_LIMITS, PV, True, "", "CONTEXT.md", False)
+    cut_out = open(os.path.join(d3, "o", "CONTEXT.md"), encoding="utf-8").read(); n += 1
+    assert ok3 and "characters of the record's uuid" not in cut_out and ("[%s user] " % U1) in cut_out   # cut mode keeps the whole uuid
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
           "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none; prompt of the SDK: blob or cut mode 2 x uuid in sdk_uuids or not 2 x user text or tool result 2 x length 300 or 301 2 = 16 exhaustive (t=4), no tool_result limit, the preview (whitespace, 80 characters, a closer), skill before sdk, only the uuid in the set; "
           "forced records: role 2 x uuid in the set 2 x length around the threshold 3 x blob or cut mode 2 = 24 exhaustive (t=4), the label escaped; read-only uuids: category 4 x uuid in the set 2 x size 4 x rule on or off 2 x blob or cut mode 2 = 128 exhaustive (t=5); "
-          "defaults and unrelated uuids give the same output; the printed original" % (n, len(reading) + len(mutating)))
+          "defaults and unrelated uuids give the same output; the printed original; record ids: length for 0, 1, 2 and 3 uuids with a shared prefix, only line-start headers cut, idempotent, a whole run for two id lengths with a tampered word, cut mode keeps the uuid" % (n, len(reading) + len(mutating)))
 
 
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["selftest"]: selftest()
-    elif a[:1] == ["expand"]: c, b, pr = read_out(a[1]); sys.stdout.write(expand_text(c, b, pr))
+    elif a[:1] == ["expand"]: c, b, pr = read_out(a[1]); t = expand_text(c, b, pr); k = read_idlen(a[1]); sys.stdout.write(short_ids(t, k) if k else t)
     elif a[:1] in (["check"], ["compact"]):
         lims = dict(DEFAULT_LIMITS); pre = DEFAULT_PREVIEW; ro = True; intro = ""; name = "CONTEXT.md"; blobs = False; i = 3
         while i < len(a):
