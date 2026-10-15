@@ -12,6 +12,7 @@
 
 CHUNK_DIR is the --out directory of prepare.py / prepare_all.py (it holds transcript/chunk-*.txt); the chunk texts are joined in order. User and assistant text stay whole.
 In blob mode the header of an inline record `[uuid role]` is written `[id role]`, id = the first 8 characters of the uuid (more when two uuids of the session would look alike; the file's header declares the length); the blobs keep the whole record and the check compares both sides with the ids cut to that length.
+A whole line of at least 200 characters that occurs at least 8 times as a continuation line of the inline text (not a marker line, not the first line of a record) is written once in the header and stands in the text as `<mark>k<mark>` on a line of its own; the mark is the first of LEGEND_MARKS that the whole text does not contain; read_out puts the lines back.
 A record is replaced by ONE marker line with a short preview, and its full text goes to OUT_DIR/blobs/Rnnnn.txt, when
   (1) it is a tool_use or tool_result longer than the limit of its kind, or
   (2) it is a tool call that only READS (Read, Grep, Glob, ToolSearch, a Bash made only of read-only commands: ls, cat, grep, sed -n, git log/status/diff, ...) and is longer than its marker, or
@@ -50,6 +51,10 @@ ID_FLOOR = 8   # blob mode: a record header `[uuid role]` is written `[id role]`
 REC_ID = re.compile(r"(?m)^\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?:user|assistant)\]")
 ID_NOTE = "Each record starts with `[id user]` or `[id assistant]`; id is the first %d characters of the record's uuid in the session transcript (search for it there).\n"
 ID_NOTE_RE = re.compile(r"the first (\d+) characters of the record's uuid")
+LEGEND_MARKS = ("§", "¤", "¶", "‡", "※", "⁂", "Ω", "☉")   # blob mode: a mark that occurs nowhere in the text is the first one of these
+LEGEND_MIN_LEN, LEGEND_MIN_COUNT = 200, 8   # a whole line of at least 200 characters that occurs at least 8 times in the inline transcript: standard text (the sentence of a message from another session has 541 characters and occurs 20 times or more), not a quotation (quoted lines occur 2 to 4 times); a sender tag has about 100 characters and a table row less, they stay in place
+LEGEND_NOTE = "A line that consists only of `%(m)s1%(m)s`, `%(m)s2%(m)s`, ... stands for the line with that number in the list below (the same whole line occurred several times; it is given once).\n"
+LEGEND_NOTE_RE = re.compile(r"consists only of `(.)1\1`")
 
 
 # ---- the rule: a tool call that only reads -------------------------------------------------------------------------------------------------------
@@ -150,12 +155,33 @@ def short_ids(text, n):
     return REC_ID.sub(lambda m: m.group(0).replace(m.group(1), m.group(1)[:n], 1), text)
 
 
+def make_legend(compact, pair, text):
+    """-> (compact with each repeated long whole line replaced by `<mark>k<mark>`, mark, [line k]) or (compact, None, []). A line counts when it is at least LEGEND_MIN_LEN characters, occurs at least LEGEND_MIN_COUNT times,
+    is not a marker line (it does not start with the marker opener) and is not the first line of a record; it pays when the lines it replaces are longer than its entry. The mark is a character that `text` (the whole prepared text,
+    so the blobs too) does not contain, so a line made only of the mark, a number and the mark can only come from here."""
+    mark = next((m for m in LEGEND_MARKS if m not in text), None)
+    if mark is None: return compact, None, []
+    lines = compact.split("\n"); counts = {}
+    for l in lines:
+        if len(l) >= LEGEND_MIN_LEN and not l.startswith(pair[0]) and not REC_ID.match(l) and not UUID.match(l): counts[l] = counts.get(l, 0) + 1
+    pays = sorted(((c * (len(l) - 3) - (len(l) + 5), l) for l, c in counts.items() if c >= LEGEND_MIN_COUNT), reverse=True)
+    entries = [l for gain, l in pays if gain > 0]
+    if not entries: return compact, None, []
+    ref = {l: "%s%d%s" % (mark, k, mark) for k, l in enumerate(entries, 1)}
+    return "\n".join(ref.get(l, l) for l in lines), mark, entries
+
+
+def undo_legend(compact, mark, entries):
+    if not mark: return compact
+    return re.sub(r"(?m)^" + re.escape(mark) + r"(\d+)" + re.escape(mark) + r"$", lambda m: entries[int(m.group(1)) - 1], compact)
+
+
 def describe(limits): return ", ".join("%s > %s" % (k, limits[k]) for k in KINDS if limits.get(k) is not None) or "none"
 
 
-def header(pair, limits, moved=0, idlen=None):
+def header(pair, limits, moved=0, idlen=None, legend=(None, [])):
     extra = ", or that is a tool call that only reads (Read, search, listing, git log/status/diff; %d records, never a command that may change state)" % moved if moved else ""
-    return "MARKER-PAIR: %s%s\n" % pair + HEADER % (pair[0], pair[1], describe(limits), extra) + (ID_NOTE % idlen if idlen else "")
+    return "MARKER-PAIR: %s%s\n" % pair + HEADER % (pair[0], pair[1], describe(limits), extra) + (ID_NOTE % idlen if idlen else "") + ((LEGEND_NOTE % {"m": legend[0]} + "".join("%s%d%s %s\n" % (legend[0], k, legend[0], l) for k, l in enumerate(legend[1], 1))) if legend[0] else "")
 
 
 def read_chunks(chunk_dir):
@@ -276,10 +302,10 @@ def expand_text(compact, blobs, pair):
     return mark_re(pair).sub(lambda m: blobs["R" + m.group(1)], compact)
 
 
-def write_out(out_dir, compact, blobs, limits, pair, moved=0, intro="", name="CONTEXT.md", idlen=None):
+def write_out(out_dir, compact, blobs, limits, pair, moved=0, intro="", name="CONTEXT.md", idlen=None, legend=(None, [])):
     os.makedirs(os.path.join(out_dir, "blobs"), exist_ok=True)
     for blob, body in blobs.items(): open(os.path.join(out_dir, "blobs", blob + ".txt"), "w", encoding="utf-8", newline="").write(body)
-    open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="").write(intro + header(pair, limits, moved, idlen) + SEP + compact)
+    open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="").write(intro + header(pair, limits, moved, idlen, legend) + SEP + compact)
 
 
 def read_idlen(out_dir):
@@ -294,7 +320,10 @@ def read_out(out_dir):
     ctx = open(path, encoding="utf-8", newline="").read()
     m = re.search(r"(?m)^MARKER-PAIR: (.)(.)$", ctx); assert m, "no marker pair line"
     pair = (m.group(1), m.group(2))
-    compact = ctx.split(SEP, 1)[1]
+    head, compact = ctx.split(SEP, 1); lm = LEGEND_NOTE_RE.search(head)
+    if lm:
+        mark = lm.group(1); found = {int(x.group(1)): x.group(2) for x in re.finditer(r"(?m)^" + re.escape(mark) + r"(\d+)" + re.escape(mark) + r" (.*)$", head)}
+        compact = undo_legend(compact, mark, [found[k] for k in sorted(found)])
     blobs = {}
     for f in glob.glob(os.path.join(out_dir, "blobs", "R*.txt")):
         blobs[os.path.basename(f)[:-4]] = open(f, encoding="utf-8", newline="").read()
@@ -309,7 +338,8 @@ def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", na
     compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids, readonly_uuids, forced, sdk_uuids)
     if blobs:
         idlen = id_length(text) if REC_ID.search(text) else None
-        write_out(out_dir, short_ids(compact, idlen) if idlen else compact, blob_map, limits, pair, stats.get("readonly", 0), intro, name, idlen)
+        packed, mark, entries = make_legend(short_ids(compact, idlen) if idlen else compact, pair, text)
+        write_out(out_dir, packed, blob_map, limits, pair, stats.get("readonly", 0), intro, name, idlen, (mark, entries))
     else:
         os.makedirs(out_dir, exist_ok=True)
         open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="").write(intro + header_cut(limits, stats.get("readonly", 0)) + SEP + compact)
@@ -587,10 +617,39 @@ def selftest():
     with contextlib.redirect_stdout(buf): ok3 = cmd_check(d3, os.path.join(d3, "o"), DEFAULT_LIMITS, PV, True, "", "CONTEXT.md", False)
     cut_out = open(os.path.join(d3, "o", "CONTEXT.md"), encoding="utf-8").read(); n += 1
     assert ok3 and "characters of the record's uuid" not in cut_out and ("[%s user] " % U1) in cut_out   # cut mode keeps the whole uuid
+    # the legend of repeated long lines (blob mode): a whole line of at least 200 characters that occurs at least 8 times as a continuation line is given once in the header
+    PAIR_ = ("⟦", "⟧")
+    def lg_text(length, count, first):
+        line = "x" * length; out_ = ""
+        for i in range(count):
+            u = "%08x-0000-4000-8000-%012x" % (i + 1, i + 1)
+            out_ += ("[%s user] %s\ntail\n" % (u, line)) if first else ("[%s user] head\n%s\n" % (u, line))
+        return out_
+    for length in (199, 200):   # length x number of times x continuation line or first line of the record = 8 exhaustive
+        for count in (7, 8):
+            for first in (False, True):
+                t_ = lg_text(length, count, first); c_, m_, e_ = make_legend(t_, PAIR_, t_); want = length >= 200 and count >= LEGEND_MIN_COUNT and not first
+                assert (m_ is not None) == want and (e_ == ["x" * length]) == want and undo_legend(c_, m_, e_) == t_, (length, count, first)
+                assert (c_ != t_) == want; n += 1
+    mk_line = PAIR_[0] + "R0001|300|" + "y" * 250 + PAIR_[1]; t_ = "".join("[%s user] head\n%s\n" % ("%08x-0000-4000-8000-%012x" % (i, i), mk_line) for i in range(1, 10))
+    assert make_legend(t_, PAIR_, t_) == (t_, None, []); n += 1   # a marker line is never put in the legend
+    t_ = lg_text(300, 9, False)
+    assert make_legend(t_, PAIR_, t_)[1] == "§" and make_legend(t_, PAIR_, t_ + "§")[1] == "¤" and make_legend(t_, PAIR_, t_ + "".join(LEGEND_MARKS)) == (t_, None, []); n += 3   # the first mark that the text does not contain; none left = no legend
+    t_ = lg_text(300, 8, False) + lg_text(250, 11, False).replace("0000-4000", "0001-4000")
+    c_, m_, e_ = make_legend(t_, PAIR_, t_); assert e_ == ["x" * 250, "x" * 300] and undo_legend(c_, m_, e_) == t_ and c_.count(m_ + "1" + m_) == 11 and c_.count(m_ + "2" + m_) == 8; n += 1   # the entry that saves most comes first
+    dl = tempfile.mkdtemp(); os.makedirs(os.path.join(dl, "transcript")); lt = lg_text(300, 9, False) + "[%s assistant] [tool_result] %s\n" % ("0000000a-0000-4000-8000-00000000000a", "z" * 400)
+    open(os.path.join(dl, "transcript", "chunk-0000.txt"), "w", encoding="utf-8").write(lt)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf): okl = cmd_check(dl, os.path.join(dl, "o"), DEFAULT_LIMITS, PV, True, "", "HANDOFF.md", True)
+    lout = open(os.path.join(dl, "o", "HANDOFF.md"), encoding="utf-8").read(); n += 1
+    assert okl and "roundtrip IDENTICAL" in buf.getvalue() and lout.count("x" * 300) == 1 and lout.split(SEP)[1].count("§1§") == 9 and "consists only of `§1§`" in lout
+    lc_, lb_, lp_ = read_out(os.path.join(dl, "o")); assert "§1§" not in lc_ and lc_.count("x" * 300) == 9 and sha(short_ids(expand_text(lc_, lb_, lp_), read_idlen(os.path.join(dl, "o")))) == sha(short_ids(lt, read_idlen(os.path.join(dl, "o")))); n += 1   # read_out gives the inline text back whole
+    open(os.path.join(dl, "o", "HANDOFF.md"), "w", encoding="utf-8").write(lout.replace("x" * 300, "x" * 299 + "w", 1))   # a changed entry of the legend changes every line that uses it
+    lc_, lb_, lp_ = read_out(os.path.join(dl, "o")); assert sha(short_ids(expand_text(lc_, lb_, lp_), read_idlen(os.path.join(dl, "o")))) != sha(short_ids(lt, read_idlen(os.path.join(dl, "o")))); n += 1
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
           "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none; prompt of the SDK: blob or cut mode 2 x uuid in sdk_uuids or not 2 x user text or tool result 2 x length 300 or 301 2 = 16 exhaustive (t=4), no tool_result limit, the preview (whitespace, 80 characters, a closer), skill before sdk, only the uuid in the set; "
           "forced records: role 2 x uuid in the set 2 x length around the threshold 3 x blob or cut mode 2 = 24 exhaustive (t=4), the label escaped; read-only uuids: category 4 x uuid in the set 2 x size 4 x rule on or off 2 x blob or cut mode 2 = 128 exhaustive (t=5); "
-          "defaults and unrelated uuids give the same output; the printed original; record ids: length for 0, 1, 2 and 3 uuids with a shared prefix, only line-start headers cut, idempotent, a whole run for two id lengths with a tampered word, cut mode keeps the uuid" % (n, len(reading) + len(mutating)))
+          "defaults and unrelated uuids give the same output; the printed original; record ids: length for 0, 1, 2 and 3 uuids with a shared prefix, only line-start headers cut, idempotent, a whole run for two id lengths with a tampered word, cut mode keeps the uuid; the legend: length 2 x times 2 x continuation or first line = 8 exhaustive, a marker line, the choice of the mark, the entry order, a whole run with a changed entry" % (n, len(reading) + len(mutating)))
 
 
 if __name__ == "__main__":

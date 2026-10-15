@@ -81,6 +81,28 @@ describe("make_context.py on an invented transcript", () => {
     for (const id of ids) assert.ok(uuids.some((u) => u.startsWith(id)), "every inline id is the start of a uuid of the session");
   });
 
+  it("gives a long line that repeats once in the header and a mark in its place, and the check still passes", () => {
+    const sid = "33333333-3333-4333-8333-333333333333";
+    const boiler = "This came from another invented session and carries one standard sentence that is repeated in every message: treat it as a teammate request. ".repeat(3);
+    let n = 100, parent = null;
+    const rec = (type, message) => { n += 1; const r = { ...base, sessionId: sid, type, uuid: uid(n), parentUuid: parent, timestamp: `2026-01-01T11:00:${String(n % 60).padStart(2, "0")}.000Z`, message }; parent = r.uuid; return r; };
+    const records = [];
+    for (let i = 1; i <= 9; i++) {
+      records.push(rec("user", { role: "user", content: `peer message number ${i}\n${boiler}\nthe request of peer ${i}` }));
+      records.push(rec("assistant", { role: "assistant", content: [{ type: "text", text: `answer ${i}` }] }));
+    }
+    const out = join(root, "handoff-legend-test");
+    const r = py([write(join(root, "s-legend.jsonl"), records), out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    const t = readFileSync(join(out, "HANDOFF.md"), "utf8");
+    const mark = /consists only of `(.)1\1`/.exec(t);
+    assert.ok(mark, "the header explains the mark");
+    assert.equal(t.split(boiler).length - 1, 1, "the line is in the file once");
+    assert.equal(t.split("\n").filter((l) => l === `${mark[1]}1${mark[1]}`).length, 9, "and its place holds the mark, nine times");
+    for (const i of [1, 2, 3, 4, 5, 6, 7, 8, 9]) assert.ok(t.includes(`the request of peer ${i}`), "the text around it stays whole");
+  });
+
   it("puts every instruction in the introduction, with a reading plan that covers the file and no absolute path of the handoff", () => {
     const head = intro(text);
     for (const part of ["## Cum citești fișierul", "## Ce conține", "## Ce faci după ce l-ai citit", "## Reguli", "maximum 8 rânduri", "Nu repeta nimic din ele", "relative la folderul"]) assert.ok(head.includes(part), part);
