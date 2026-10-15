@@ -48,6 +48,8 @@ FILE_NAMES = ("HANDOFF.md", "CONTEXT.md")   # read_out takes the first one that 
 HEADER = ("This is a session transcript made smaller for a new session. A line `%sRnnnn|chars|preview%s` stands for ONE record that was longer than the limit of its kind (%s)%s: "
           "its full text is in `blobs/Rnnnn.txt` next to this file (open it only when you need the detail). Every other record is complete. Nothing was cut or summarised.\n")
 ROLE_LABEL = re.compile(r"^\[(?:assistant|user)\] (?=\[tool_(?:use|result)\b)")   # the preview of a tool call or result: `[assistant] [tool_use X] ...` is shown as `[tool_use X] ...`
+TOOL_REC = re.compile(r"^\[[0-9a-f-]{36} assistant\] (\[tool_use ([^\]\n]+)\]) (\{.*)\Z", re.S)
+PRIMARY_KEYS = ("command", "file_path", "notebook_path", "pattern", "query", "url", "path")   # first keys that the tool name already implies: their name is left out of the preview
 ID_FLOOR = 8   # blob mode: a record header `[uuid role]` is written `[id role]`, id = the first ID_FLOOR characters of the uuid (more only when two uuids of the session would then look alike)
 REC_ID = re.compile(r"(?m)^\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?:user|assistant)\]")
 ID_NOTE = "Each record starts with `[id user]` or `[id assistant]`; id is the first %d characters of the record's uuid in the session transcript (search for it there).\n"
@@ -177,6 +179,28 @@ def undo_legend(compact, mark, entries):
     return re.sub(r"(?m)^" + re.escape(mark) + r"(\d+)" + re.escape(mark) + r"$", lambda m: entries[int(m.group(1)) - 1], compact)
 
 
+def one_line(p):
+    """A preview on one line: each line break with the blanks around it becomes one space (a character that costs a third of the line break mark ⏎, and indentation tells nothing in a preview); no space at the end."""
+    return re.sub(r"\s*\n\s*", " ", p).rstrip(" ")
+
+
+def tool_preview(r, preview):
+    """The preview of a moved tool call written for reading: `[tool_use Bash] cd /x && ...; description: ...` instead of `[tool_use Bash] {"command": "cd /x && ...`. It shows the same number of characters of content as the raw
+    preview did (only the JSON syntax and the name of a first key that the tool name implies are left out). None (the caller keeps the raw preview) when the record is not a tool call whose input is a JSON object with a string as first value."""
+    m = TOOL_REC.match(r.rstrip("\n"))
+    if not m: return None
+    try: obj = json.loads(m.group(3))
+    except ValueError: return None
+    if not isinstance(obj, dict) or not obj or not isinstance(next(iter(obj.values())), str): return None
+    pieces = []
+    for i, (k_, v_) in enumerate(obj.items()):
+        t_ = v_ if isinstance(v_, str) else json.dumps(v_, ensure_ascii=False)
+        pieces.append(t_ if (i == 0 and k_ in PRIMARY_KEYS) else "%s: %s" % (k_, t_))
+    budget = preview - len("[assistant] ") - len(m.group(1)) - 1 - len('{"%s": "' % next(iter(obj)))
+    if budget < 20: return None
+    return m.group(1) + " " + "; ".join(pieces)[:budget]
+
+
 def describe(limits): return ", ".join("%s > %s" % (k, limits[k]) for k in KINDS if limits.get(k) is not None) or "none"
 
 
@@ -279,8 +303,9 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
             if sm and sm.group(1).strip(): p = "[user] task: " + sm.group(1)[:80]   # the default preview would show only the tag and the task id
         if by_sdk and not (by_skill or by_notice): p = "[user] sdk: " + re.sub(r"\s+", " ", r[UUID.match(r).end():])[:80]   # the default preview would show only the start of the text, with line breaks
         if label is not None and not (by_skill or by_notice or by_sdk): p = label   # a forced record shows its label
-        if k in ("tool_use", "tool_result") and not (by_skill or by_notice or by_sdk or label is not None): p = ROLE_LABEL.sub("", p, count=1)   # the kind in brackets already says who wrote it
-        p = p.replace("\n", "⏎").replace(pair[1], "·")
+        if k in ("tool_use", "tool_result") and not (by_skill or by_notice or by_sdk or label is not None):
+            p = (tool_preview(r, preview) if k == "tool_use" else None) or ROLE_LABEL.sub("", p, count=1)   # the kind in brackets already says who wrote it; a readable form of the input when it can be made
+        p = one_line(p).replace(pair[1], "·")
         out.append("%s%s|%d|%s%s%s" % (pair[0], name, len(r), p, pair[1], "\n" if r.endswith("\n") else ""))
     return "".join(out), blob_map, pair
 
@@ -503,7 +528,7 @@ def selftest():
     mk, pr, r = note_marker("Agent \"Read the paper\" finished"); n += 1
     assert mk == pr[0] + 'R0000|%d|[user] task: Agent "Read the paper" finished' % len(r) + pr[1]
     mk, pr, r = note_marker("s" * 200); n += 1; assert mk.endswith("[user] task: " + "s" * 80 + pr[1]) and "s" * 81 not in mk   # cut at exactly 80
-    mk, pr, r = note_marker("a" + PAIRS[0][1] + "b\nline two"); n += 1; assert mk.endswith("[user] task: a·b⏎line two" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1]   # the closer is escaped and a line break shown
+    mk, pr, r = note_marker("a" + PAIRS[0][1] + "b\nline two"); n += 1; assert mk.endswith("[user] task: a·b line two" + pr[1]) and "\n" not in mk and pr[1] not in mk[:-1]   # the closer is escaped and a line break shown
     mk, pr, r = note_marker(None); n += 1; assert mk.startswith(pr[0] + "R0000|%d|[user] <task-notification>" % len(r)) and "task:" not in mk   # no summary: the default preview
     mk, pr, r = note_marker("  "); n += 1; assert "task:" not in mk   # an empty summary is no summary
     # (7b) the prompt of the SDK: four conditions joined by AND, so all 2^4 = 16 combinations (t=4): blob or cut mode x uuid in sdk_uuids or not x a user text or a tool result x length 300 or 301 (limit of tool_result 300, read-only rule off);
@@ -553,7 +578,7 @@ def selftest():
         else: assert b == {} and verify_cut(text, c, PV)[0]
     lab = "[a%sb\nline two]" % PAIRS[0][1]   # the closer in a label is escaped and a line break shown
     rec = "[%s assistant] forced text\n" % uid; c, b, pr = compact_text(rec, nlim, PV, False, None, True, frozenset(), frozenset(), frozenset(), {uid: lab}); n += 1
-    mk = c.rstrip("\n"); assert mk == pr[0] + "R0000|%d|[a·b⏎line two]" % len(rec) + pr[1] and expand_text(c, b, pr) == rec and "\n" not in mk
+    mk = c.rstrip("\n"); assert mk == pr[0] + "R0000|%d|[a·b line two]" % len(rec) + pr[1] and expand_text(c, b, pr) == rec and "\n" not in mk
     c, b, pr = compact_text(rec, nlim, PV, False, None, True, frozenset(), frozenset(), frozenset(), {"1" * 8 + uid[8:]: "x"}); n += 1; assert c == rec and b == {}   # another uuid: nothing moves
     # (9) read-only uuids (the caller knows a call only reads, as for OpenCode's tools): category x uuid in the set x size around the threshold (T-1, T, T+1, 400) x rule on or off x blob or cut mode = 7 x ... exhaustive
     def oc_call(cat, size):
@@ -649,16 +674,31 @@ def selftest():
     open(os.path.join(dl, "o", "HANDOFF.md"), "w", encoding="utf-8").write(lout.replace("x" * 300, "x" * 299 + "w", 1))   # a changed entry of the legend changes every line that uses it
     lc_, lb_, lp_ = read_out(os.path.join(dl, "o")); assert sha(short_ids(expand_text(lc_, lb_, lp_), read_idlen(os.path.join(dl, "o")))) != sha(short_ids(lt, read_idlen(os.path.join(dl, "o")))); n += 1
     # the preview of a moved tool call or result has no role label (`[tool_use X] ...`, `[tool_result] ...`): the kind in brackets already says who wrote it; the rest of the preview is what it was
-    for role, kind_txt, body in (("assistant", "[tool_use Bash] ", '{"command": "' + "a" * 900 + '"}'), ("user", "[tool_result] ", "b" * 400)):
+    for role, kind_txt, body in (("assistant", "[tool_use Bash] ", '{"items": [' + '"a", ' * 300 + '"b"]}'), ("user", "[tool_result] ", "b" * 400)):
         rec_ = "[%s %s] %s%s\n" % (U1, role, kind_txt, body); c_, b_, pr_ = compact_text(rec_, DEFAULT_LIMITS, PV, False, None, True)
         shown = c_.split("|", 2)[2].rstrip("\n")[:-1]
         assert shown == (("[%s] " % role) + kind_txt + body)[:PV][len("[%s] " % role):] and "[%s]" % role not in c_ and shown.startswith(kind_txt), (shown, c_[:80]); n += 3   # same text as before without the label: the first PV characters of "[role] kind body" minus the label
+    # a preview is one line: a line break with the blanks around it is one space, nothing at the end
+    for raw_, want_ in (("a\nb", "a b"), ("a\n    b", "a b"), ("a  \n\tb", "a b"), ("a\n\nb", "a b"), ("a\r\nb", "a b"), ("a\n", "a"), ("a \n \n", "a"), ("plain  text", "plain  text"), ("", "")):
+        assert one_line(raw_) == want_, (raw_, one_line(raw_)); n += 1
+    rec_ = "[%s user] [tool_result] first line\n    indented line\n\nthird\n" % U1 + "q" * 400 + "\n"; c_, b_, pr_ = compact_text(rec_, DEFAULT_LIMITS, 60, False, None, True)
+    assert c_.split("|", 2)[2] == "[tool_result] first line indented line third qqqqqqqqqqqqqqqqqqqqqqqqq⟧\n" or c_.split("|", 2)[2].startswith("[tool_result] first line indented line third q") and "\n" not in c_.rstrip("\n"); n += 1
+    # the readable preview of a tool call: the input as `value; key: value`, the JSON syntax and a first key that the tool name implies left out, the same number of characters of content as the raw preview
+    TP = lambda name, obj_: "[%s assistant] [tool_use %s] %s\n" % (U1, name, json.dumps(obj_, ensure_ascii=False))
+    assert tool_preview(TP("Bash", {"command": 'cd /x && ls "q"\nnext', "description": "list"}), 100) == '[tool_use Bash] cd /x && ls "q"\nnext; description: list'; n += 1   # decoded; the other keys follow
+    pv_ = tool_preview(TP("Bash", {"command": "c" * 300}), 100); assert pv_ == "[tool_use Bash] " + "c" * (100 - 12 - 16 - 13); n += 1   # 59 characters of content = what the raw preview showed after `[assistant] [tool_use Bash] {"command": "`
+    pv_ = tool_preview(TP("mcp__x__y", {"request": "h" * 300}), 100); assert pv_ == "[tool_use mcp__x__y] request: " + "h" * (100 - 12 - 20 - 1 - 13 - len("request: ")) and pv_.startswith("[tool_use mcp__x__y] request: hhh"); n += 1   # a first key that is not implied keeps its name
+    for bad in (TP("Bash", {"items": ["a", "b"]}), TP("Bash", {"n": 5}), TP("Bash", {}), TP("Bash", ["x"]), "[%s assistant] [tool_use Bash] {not json\n" % U1, "[%s assistant] just text\n" % U1, "[%s user] [tool_result] {\"command\": \"x\"}\n" % U1, TP("t" * 80, {"command": "x"})):
+        assert tool_preview(bad, 100) is None, bad[:60]; n += 1   # not a string first, empty, not an object, not JSON, not a tool call, a result, no room: the caller keeps the raw preview
+    big_ = "[%s assistant] [tool_use Bash] %s\n" % (U1, json.dumps({"command": "echo one\n" + "x" * 900, "description": "d"}))
+    c_, b_, pr_ = compact_text(big_, DEFAULT_LIMITS, 100, False, None, True); assert c_ == "⟦R0000|%d|" % len(big_) + one_line(tool_preview(big_, 100)) + "⟧\n"; n += 1   # the marker carries it, on one line
+    rr_ = "[%s user] [tool_result] %s\n" % (U1, '{"command": "' + "z" * 400); c_, b_, pr_ = compact_text(rr_, DEFAULT_LIMITS, 100, False, None, True); assert c_.split("|", 2)[2].startswith('[tool_result] {"command": "zzz'); n += 1   # a result keeps its raw preview
     c_, b_, pr_ = compact_text("[%s user] Base directory for this skill: /p/skills/demo\n%s\n" % (U1, "y" * 300), DEFAULT_LIMITS, PV, False, None, True, frozenset([U1])); n += 1
     assert "|[user] skill: " in c_   # the other previews keep their label (the role is not given by the kind there)
     print("selftest OK: %d cases = limits: kind 4 x limit set or none 2 x size around the limit 3 x single/multi-line 2 x ending newline 2 = 96 exhaustive; mixed texts, marker pairs (first taken, all taken, "
           "none, read back from the file); %d commands that must count as reading or not; rule inside the compaction: category 7 x size around the threshold 3 x ending newline 2 = 42 exhaustive, rule off; cut mode (no blobs): category 7 x size around the cut point 4 x ending newline 2 = 56 exhaustive, limits, a tampered note; injected skill text: role 2 x prefix at start or later 2 x uuid in meta_uuids or not 2 x length preview+25 or +26 2 x blob or cut mode 2 = 32 exhaustive (t=5), a tool result, a typed record, rule off without uuids, the preview; notification of a background task: role 2 x prefix at start or later 2 x uuid in notice_uuids or not 2 x length 300 or 301 2 x blob or cut mode 2 = 32 exhaustive (t=5), no tool_result limit, no uuids, a tool result, a typed record, the preview with a long summary, a closer, a line break, none; prompt of the SDK: blob or cut mode 2 x uuid in sdk_uuids or not 2 x user text or tool result 2 x length 300 or 301 2 = 16 exhaustive (t=4), no tool_result limit, the preview (whitespace, 80 characters, a closer), skill before sdk, only the uuid in the set; "
           "forced records: role 2 x uuid in the set 2 x length around the threshold 3 x blob or cut mode 2 = 24 exhaustive (t=4), the label escaped; read-only uuids: category 4 x uuid in the set 2 x size 4 x rule on or off 2 x blob or cut mode 2 = 128 exhaustive (t=5); "
-          "defaults and unrelated uuids give the same output; the printed original; record ids: length for 0, 1, 2 and 3 uuids with a shared prefix, only line-start headers cut, idempotent, a whole run for two id lengths with a tampered word, cut mode keeps the uuid; the legend: length 2 x times 2 x continuation or first line = 8 exhaustive, a marker line, the choice of the mark, the entry order, a whole run with a changed entry; the preview of a tool call and of a tool result without the role label, the skill preview with it" % (n, len(reading) + len(mutating)))
+          "defaults and unrelated uuids give the same output; the printed original; record ids: length for 0, 1, 2 and 3 uuids with a shared prefix, only line-start headers cut, idempotent, a whole run for two id lengths with a tampered word, cut mode keeps the uuid; the legend: length 2 x times 2 x continuation or first line = 8 exhaustive, a marker line, the choice of the mark, the entry order, a whole run with a changed entry; the preview of a tool call and of a tool result without the role label, the skill preview with it; the readable preview of a tool call: decoding, the other keys, the budget, a first key that is not implied, 8 inputs that keep the raw preview, the marker, a result unchanged" % (n, len(reading) + len(mutating)))
 
 
 if __name__ == "__main__":
