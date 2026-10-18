@@ -8,11 +8,11 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8");
 
 describe("logic-test-debug is wired into the plugin without touching the existing components", () => {
-  it("both manifests carry 0.13.7 and keep the MCP server entry", () => {
+  it("both manifests carry 0.13.8 and keep the MCP server entry", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.13.7");
-    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.13.7");
+    assert.equal(plugin.version, "0.13.8");
+    assert.equal(market.plugins.find((p) => p.name === "jev").version, "0.13.8");
     assert.equal(plugin.name, "jev");
     assert.ok(plugin.mcpServers?.jev, "MCP server entry preserved");
   });
