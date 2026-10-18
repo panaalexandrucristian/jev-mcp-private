@@ -53,6 +53,12 @@ describe("the SDK prompt rule", () => {
   });
 });
 
+describe("the active goal", () => {
+  it("is explained in SKILL.md: the option that switches it off, the last printed line, the goal of this session that stays active, the long-goal fallback and what makes a goal active", () => {
+    for (const part of ["`--no-goal`", "`active goal:` line", "as the LAST line, `claude '/goal …'`", "until the user types `/goal clear` here", "too long for the command", "`goal_status`", "`met` false", "\"Goal activ (/goal)\"", "`--cut` carries the goal too", "an OpenCode session has no goal"]) assert.ok(body.includes(part), part);
+  });
+});
+
 describe("the OpenCode section", () => {
   const section = /\n## În OpenCode\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
   it("exists, names the option that skips a broken database and says to report the error to the user first", () => {

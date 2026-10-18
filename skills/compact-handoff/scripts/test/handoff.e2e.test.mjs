@@ -236,6 +236,48 @@ describe("make_context.py on an invented transcript", () => {
     assert.equal(intro(t2).includes("prin SDK"), false, "and no clause");
   });
 
+  it("carries a /goal that is still active: a section in the introduction, an `active goal:` line and a last line that starts the new session with the same goal; a goal that was achieved, cleared or switched off with --no-goal changes nothing", () => {
+    const sid = "66666666-6666-4666-8666-666666666666";
+    const goalRec = (n, attachment) => ({ ...base, sessionId: sid, type: "attachment", uuid: uid(800 + n), timestamp: `2026-01-01T09:00:${String(n).padStart(2, "0")}.000Z`, attachment });
+    const hostile = "fix it's \"all\" $HOME `id` {x}; then --- done /tmp/handoff-0123abcd-20260101-old/HANDOFF.md";
+    const set = goalRec(1, { type: "goal_status", met: false, sentinel: true, condition: hostile });
+    const check = goalRec(2, { type: "goal_status", met: false, condition: hostile, reason: "two findings are still open" });
+    const achieved = goalRec(3, { type: "goal_status", met: true, condition: hostile, reason: "all fixed", iterations: 2 });
+    const cleared = goalRec(3, { type: "goal_status", met: true, sentinel: true, condition: hostile });
+    const insert = (extra) => { const rs = transcript(sid); rs.splice(2, 0, ...extra); return rs; };
+    const out = join(root, "handoff-6666abcd-20260101-goal");
+    const r = py([write(join(root, "g1.jsonl"), insert([set, check])), out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    assert.match(r.stdout, /active goal: fix it's .*\| unmet checks: 1 \| set 2026-01-01 09:00 UTC/);
+    assert.match(r.stdout, /start the new session without the goal:\n {2}claude "Citește .*HANDOFF\.md și urmează instrucțiunile din el\."\nstart the new session WITH the goal \(the last line printed\):\n {2}claude '\/goal fix it/);
+    const last = r.stdout.trimEnd().split("\n").at(-1).trim();
+    const shell = spawnSync("sh", ["-c", `claude() { printf '%s' "$1"; }\n${last}`], { encoding: "utf8" });   // the shell gives the prompt back whole, whatever quotes the condition holds
+    assert.equal(shell.stdout, `/goal ${hostile} (Continuare dintr-un handoff: citește mai întâi ${join(out, "HANDOFF.md")} și urmează instrucțiunile din el; goal-ul de mai sus rămâne neschimbat.)`);
+    const head = intro(readFileSync(join(out, "HANDOFF.md"), "utf8"));
+    const at = (heading) => head.indexOf(heading);
+    assert.ok(at("## Ce faci după ce l-ai citit") < at("## Goal activ (/goal)") && at("## Goal activ (/goal)") < at("## Reguli"), "the section sits between the answer and the rules");
+    for (const part of ["> fix it's \"all\" $HOME `id` {x}; then --- done <cale de handoff>", "> two findings are still open", "verificări care au găsit condiția neîndeplinită: 1", "al cincilea punct"]) assert.ok(head.includes(part), part);
+    assert.equal(/\/(?:private\/)?tmp\/handoff-/.test(head), false, "no absolute /tmp/handoff-... in the introduction, not even the one in the condition");
+    for (const [name, extra, flags] of [["achieved", [set, check, achieved], []], ["cleared", [set, cleared], []], ["off", [set, check], ["--no-goal"]]]) {
+      const o = join(root, `handoff-6666abcd-20260101-${name}`);
+      const rr = py([write(join(root, `g-${name}.jsonl`), insert(extra)), o, ...flags]);
+      assert.equal(rr.status, 0, rr.stderr + rr.stdout);
+      assert.equal(/active goal:|WITH the goal|## Goal activ/.test(rr.stdout + readFileSync(join(o, "HANDOFF.md"), "utf8")), false, name);
+      assert.match(rr.stdout, /start the new session with:\n {2}claude "Citește .*HANDOFF\.md și urmează instrucțiunile din el\."\s*$/, name);
+    }
+    const cutFile = join(root, "goal-cut.md");
+    const rc = py([write(join(root, "g-cut.jsonl"), insert([set, check])), cutFile, "--cut"]);
+    assert.equal(rc.status, 0, rc.stderr + rc.stdout);
+    assert.ok(intro(readFileSync(cutFile, "utf8")).includes("## Goal activ (/goal)") && rc.stdout.trimEnd().split("\n").at(-1).includes("claude '/goal fix it"), "--cut carries the goal too");
+    const huge = goalRec(1, { type: "goal_status", met: false, sentinel: true, condition: "w".repeat(3990) });
+    const rh = py([write(join(root, "g-huge.jsonl"), insert([huge])), join(root, "handoff-6666abcd-20260101-huge")]);
+    assert.equal(rh.status, 0, rh.stderr + rh.stdout);
+    assert.match(rh.stdout, /longer than 4000 characters/);
+    assert.match(rh.stdout, /start the new session with:\n {2}claude "Citește .*HANDOFF\.md și urmează instrucțiunile din el\."\s*$/);
+    assert.ok(intro(readFileSync(join(root, "handoff-6666abcd-20260101-huge", "HANDOFF.md"), "utf8")).includes("## Goal activ (/goal)"), "the section is there even when the command cannot hold the goal");
+  });
+
   it("--cut writes one file whose cuts are true prefixes and keeps the messages", () => {
     const r = py([join(root, "s1.jsonl"), join(root, "cut", "x.md"), "--cut"]);
     assert.equal(r.status, 0, r.stderr + r.stdout);

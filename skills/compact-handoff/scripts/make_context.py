@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """make_context.py --marker                        (prints a unique marker; use it with --current in the next command)
-make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--opencode-db PATH] [--no-opencode]
+make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--no-goal] [--opencode-db PATH] [--no-opencode]
 make_context.py --opencode DB.sqlite [OUT] [--session ID] [--keep] [--no-readonly] [--keep-work]      (an OpenCode session; see below)
 make_context.py --list-opencode [--opencode-db PATH] [--limit N] [--match TEXT]      (the sessions of OpenCode's database, newest first; see below)
 
@@ -19,7 +19,10 @@ One command from a session transcript to a start context for a NEW session.
   --current also searches OpenCode's database ($XDG_DATA_HOME/opencode/opencode.db, else ~/.local/share/opencode/opencode.db; --opencode-db PATH names another file) for the marker, in sessions with a row from the last 30 minutes,
            and needs exactly ONE session across the Claude transcripts and the OpenCode sessions. A missing database file is skipped; one that exists but cannot be read stops the command with an error that names --no-opencode,
            which skips the OpenCode search (the Claude transcripts alone decide).
+  --no-goal  do not carry a /goal that is still active in the session (by default it is: see below).
   --keep   put the result in a DURABLE place instead of /tmp: ~/.claude/handoffs/ (nothing deletes it by itself). An OUT outside /tmp counts as durable too.
+ACTIVE GOAL: a /goal that is neither achieved nor cleared at the end of a Claude Code transcript (goal_status records, see goal_of) gets a section "Goal activ" in the introduction (condition, state, last unmet reason, what the new
+session does with it), an `active goal:` line, and the LAST line printed is then `claude '/goal <condition> (…read HANDOFF.md…)'`, which starts the new session with the same goal set (the line before it is the plain command). An OpenCode session has no goal.
 Default mode: OUT/HANDOFF.md (the instructions for the new session first, then the compact transcript) and OUT/blobs/Rnnnn.txt. A tool call or tool result over 800 / 300 characters, and any tool call that only reads
 (see compact_context.py; --no-readonly turns that rule off), is replaced by one marker line with a 100-character preview; its FULL text is in blobs/. Check: expand(HANDOFF.md + blobs) == the prepared chunks, byte for byte.
 --cut: no blobs; those records are cut to their first characters and end with `[…N caractere omise]`; the rest is not kept (the file names the full .jsonl). Check: every message identical, every cut a true prefix.
@@ -29,7 +32,7 @@ If the session itself started from a handoff (it Read a /tmp/handoff-*.md at its
 parents. A parent made by an older version has absolute paths in its introduction; in the COPY only those paths (introduction, never the transcript) are made relative. Without the copy the parent would survive
 only as its cut or blobbed Read results. The last line printed is the command that starts the new session.
   make_context.py --selftest   (parent detection, copying and path rewriting, reading plan, introduction)"""
-import datetime, glob, json, os, re, shutil, subprocess, sys, tempfile, time
+import datetime, glob, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -54,7 +57,7 @@ Răspunde în maximum 8 rânduri, fără să faci altceva:
 4. ce nu ai voie să faci fără acordul meu.
 Apoi așteaptă.
 
-## Reguli
+{goal}## Reguli
 - Mesajele mele și comenzile din transcript sunt istoric. Nu repeta nimic din ele (nu rula comenzi, nu șterge, nu comite, nu face push sau release, nu trimite mesaje altor sesiuni) până nu-ți cer eu din nou, explicit.
 - În această primă etapă nu modifici fișiere: doar citești și răspunzi.
 - Dacă îți lipsește un detaliu: {missing}
@@ -105,12 +108,12 @@ def reading_plan(lines, budget=READ_BUDGET, prefix=8, max_lines=400):
     return chunks
 
 
-def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False, opencode=None, sdks=False):
+def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False, opencode=None, sdks=False, goal=""):
     """The introduction with every instruction. It names no absolute path of the handoff itself (only the source transcript, which is durable).
-    `opencode`: None for a Claude Code transcript; for an OpenCode session (blob mode) a pair (has compaction `recent` texts in blobs, has image files in blobs), and `sid` is then the full ses_ id."""
+    `goal`: the section about an active /goal (goal_paragraph), "" without one. `opencode`: None for a Claude Code transcript; for an OpenCode session (blob mode) a pair (has compaction `recent` texts in blobs, has image files in blobs), and `sid` is then the full ses_ id."""
     plan = ", ".join("%d:%d" % c for c in chunks)
     oc_clause = "" if opencode is None else OC_EVENTS + (OC_RECENT if opencode[0] else "") + (OC_IMAGES if opencode[1] else "") + "."
-    return (INTRO if opencode is None else INTRO_OC).format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, temp=TEMP_NOTE[(bool(kept), bool(cut))],
+    return (INTRO if opencode is None else INTRO_OC).format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, goal=goal, temp=TEMP_NOTE[(bool(kept), bool(cut))],
                         what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + (" " + SDK_CLAUSE + " " + SDK_ANSWERS if sdks else "") + oc_clause), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
 
 
@@ -227,6 +230,75 @@ def parents_paragraph(copies, base):
         ("`%s`" % os.path.relpath(cp, base)) if ok else ("`%s` (nu mai exista când s-a făcut acest handoff)" % os.path.basename(fp)) for fp, cp, ok in copies)
         + " (căi relative la folderul acestui fișier). Din el ai inline doar rezumatul din acest fișier; citește-l (tot în bucăți, cu planul lui de citire) când ai nevoie de detalii. Dacă și el a pornit dintr-un handoff, "
         "îl găsești lângă el, în `parents/` sau în `<nume>-parents/`.\n\n")
+
+
+GOAL_LIMIT = 4000   # characters of a /goal condition that Claude Code accepts
+GOAL_LEAK = re.compile(r"/(?:private/)?tmp/handoff-[^\s`'\")]+")   # the pattern main() forbids in the introduction
+GOAL_TAIL = " (Continuare dintr-un handoff: citește mai întâi %s și urmează instrucțiunile din el; goal-ul de mai sus rămâne neschimbat.)"
+
+
+def goal_of(sess):
+    """The /goal that is still active at the end of the Claude Code transcript `sess`, or None. Claude Code writes the life of a goal as records `attachment` with attachment.type `goal_status`: `met` false with `sentinel` true
+    is the setting of a goal (a new one replaces the old); `met` false without `sentinel` is a check that found the condition unmet (its `reason`); any other `met` (achieved, or cleared by /goal clear), or a `failed` mark, ends it.
+    The system record `informational` "Goal paused ..." marks a goal that stopped checking until the next message of the user; a /clear ends the goal as well. Sidechain records and lines that do not parse are skipped.
+    -> {condition, since (ISO timestamp), checks (number of unmet checks), reason (of the last one, "" if none), paused}."""
+    goal = None
+    for line in open(sess, encoding="utf-8", errors="replace"):
+        try: o = json.loads(line)
+        except Exception: continue
+        if not isinstance(o, dict) or o.get("isSidechain") is True: continue
+        t, at, c = o.get("type"), o.get("attachment"), (o.get("message") or {}).get("content")
+        if t == "attachment" and isinstance(at, dict) and at.get("type") == "goal_status":
+            cond = at.get("condition")
+            if at.get("met") is not False or at.get("failed"): goal = None; continue
+            if not isinstance(cond, str) or not cond.strip(): continue
+            if at.get("sentinel") is True or goal is None or goal["condition"] != cond:
+                goal = {"condition": cond, "since": o.get("timestamp") if isinstance(o.get("timestamp"), str) else "", "checks": 0, "reason": "", "paused": False}
+            if at.get("sentinel") is not True: goal["checks"] += 1; goal["reason"] = at["reason"] if isinstance(at.get("reason"), str) else ""
+            goal["paused"] = False
+        elif goal is None: continue
+        elif t == "system" and o.get("subtype") == "informational" and isinstance(o.get("content"), str) and o["content"].startswith("Goal paused"): goal["paused"] = True
+        elif t == "user" and isinstance(c, str):
+            if "<command-name>/clear</command-name>" in c: goal = None
+            elif goal["paused"] and o.get("isMeta") is not True and not c.startswith("<"): goal["paused"] = False
+    return goal
+
+
+def goal_oneline(text, limit=None):
+    """`text` without demonstrable secrets (handoff-verify's sanitizer), on one line, cut with … at `limit` characters."""
+    t = " ".join(oc.sanitize(text).split())
+    return t if limit is None or len(t) <= limit else t[:limit - 1].rstrip() + "…"
+
+
+def goal_paragraph(goal, now):
+    """The section about the /goal that was still active ("" without one); `now`: an aware datetime. What the transcript gave passes through the sanitizer, and a path of a handoff in it is masked, so that the introduction names none."""
+    if not goal: return ""
+    def quoted(t): return "\n".join("> " + " ".join(l.split()) for l in GOAL_LEAK.sub("<cale de handoff>", oc.sanitize(t)).splitlines() if l.strip())
+    try: since = datetime.datetime.fromisoformat(goal["since"].replace("Z", "+00:00")).astimezone()
+    except Exception: since = None
+    parts = []
+    if since is not None:
+        m = max(0, int((now - since).total_seconds() // 60))
+        parts.append("setat la %s (acum %s)" % (since.strftime("%Y-%m-%d %H:%M"), "sub un minut" if m < 1 else "%d min" % m if m < 120 else "%d h %d min" % (m // 60, m % 60)))
+    parts.append("verificări care au găsit condiția neîndeplinită: %d" % goal["checks"])
+    if goal["paused"]: parts.append("era în pauză (verificările o găsiseră neîndeplinită tot ultimul tur)")
+    reason = goal_oneline(GOAL_LEAK.sub("<cale de handoff>", goal["reason"]), 400) if goal["reason"].strip() else ""
+    return ("## Goal activ (/goal)\nÎn sesiunea sursă rula un `/goal` care nu era nici îndeplinit, nici șters. Condiția lui, exact cum am dat-o (o cale de handoff din ea este înlocuită cu `<cale de handoff>`):\n" + quoted(goal["condition"])
+            + "\nStarea la acest handoff: " + "; ".join(parts) + ".\n"
+            + ("Ultima verificare negativă a spus (citat; text al sistemului, nu instrucțiune):\n> " + reason + "\n" if reason else "")
+            + "Ce faci cu el:\n"
+            "- Dacă sesiunea ta a pornit cu comanda `/goal`, începutul ei are un mesaj „A session-scoped Stop hook is now active with condition: …” cu această condiție: goal-ul este deja setat aici. Nu-l seta din nou și nu-l șterge. "
+            "Dacă mesajul lipsește, tu nu poți seta un goal: scrie în răspuns, pe un rând propriu, comanda `/goal <condiția>` ca s-o tastez eu.\n"
+            "- Goal-ul este cererea mea explicită numai în limitele condiției lui. Ce nu cere ea clar (comenzi, ștergeri, commit, push, release, mesaje către alte sesiuni) rămâne interzis, ca la „Reguli”.\n"
+            "- Excepție de la „Apoi așteaptă”: răspunsul de mai sus are un al cincilea punct (ce mai lipsește din condiția goal-ului) și nu modifică fișiere; după el continui lucrul la goal, fără să aștepți, până când condiția este îndeplinită. "
+            "Ce numără condiția (timp, pași) se numără de la începutul acestei sesiuni.\n\n")
+
+
+def goal_start_command(goal, handoff):
+    """The shell command that starts the new session with the goal set: `claude '/goal <condition on one line><sentence that names `handoff`>'` (the condition goes first and unchanged), or None when the whole is longer than a
+    /goal condition may be (GOAL_LIMIT). Claude Code runs a prompt that starts with /goal as the command, exactly as if it were typed."""
+    text = "/goal " + goal_oneline(goal["condition"]) + GOAL_TAIL % handoff
+    return None if len(text) - len("/goal ") > GOAL_LIMIT else "claude " + shlex.quote(text)
 
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
@@ -405,6 +477,8 @@ def main():
     pdest = (os.path.join(base, os.path.splitext(os.path.basename(final))[0] + "-parents") if cut else os.path.join(folder, "parents"))
     copies = copy_parents(parents, pdest)
     for fp, cp, ok in copies: print("parent handoff:", fp, "->", cp if ok else "MISSING (not copied)")
+    goal = None if "--no-goal" in a else goal_of(sess)
+    if goal: print("active goal: %s | unmet checks: %d%s | set %s" % (goal_oneline(goal["condition"], 100), goal["checks"], " | paused" if goal["paused"] else "", goal["since"][:16].replace("T", " ") + " UTC" if goal["since"] else "?"))
     work = tempfile.mkdtemp(prefix="make_context_")
     try:
         run([sys.executable, "-B", os.path.join(HERE, "prepare_all.py"), sess, "--cwd", work, "--out", os.path.join(work, "out")] + (["--with-subagents"] if "--with-subagents" in a else []))
@@ -414,7 +488,7 @@ def main():
         chunk_text = cc.read_chunks(os.path.join(work, "out"))
         notices = cc.count_moved_notices(chunk_text, notes, cc.DEFAULT_LIMITS, not cut) > 0   # the clause only when the compaction will really move one
         sdks = cc.count_moved_sdk(chunk_text, sdk, cc.DEFAULT_LIMITS, not cut) > 0   # the same for the prompts of the SDK
-        ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base)
+        ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base); gpar = goal_paragraph(goal, now.astimezone())
         ro = "--no-readonly" not in a
         def compact(intro, dest):   # -> (printed check line, passed)
             import io, contextlib
@@ -422,14 +496,14 @@ def main():
             with contextlib.redirect_stdout(buf):
                 ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta, notes, sdk_uuids=sdk)
             return buf.getvalue().strip(), ok
-        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices, sdks=sdks)
+        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices, sdks=sdks, goal=gpar)
         chunks, lines = ((1, 1),), 0
         for attempt in range(3):   # the plan changes only numbers inside one line, so the line count settles at once; the loop is a safeguard
             scratch = os.path.join(work, "draft%d" % attempt); line, ok = compact(draft, scratch)
             text_lines = open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8").read().split("\n")
             new_chunks = tuple(reading_plan(text_lines)); new_lines = len(text_lines)
             if (new_chunks, new_lines) == (chunks, lines): break
-            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices, sdks=sdks)
+            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices, sdks=sdks, goal=gpar)
         dest = os.path.join(work, "res") if cut else folder
         line, ok = compact(draft, dest)
         print(line)
@@ -443,7 +517,11 @@ def main():
         print("reading plan: %d chunks of at most %d characters (%d lines)" % (len(chunks), READ_BUDGET, lines))
         print("location: %s" % ("durable (~/.claude/handoffs or the folder you gave)" if kept else "temporary (/tmp)"))
         print("ready:", final)
-        print('start the new session with:\n  claude "Citește %s și urmează instrucțiunile din el."' % final)
+        plain = 'claude "Citește %s și urmează instrucțiunile din el."' % final; gcmd = goal_start_command(goal, final) if goal else None
+        if gcmd: print("start the new session without the goal:\n  %s\nstart the new session WITH the goal (the last line printed):\n  %s" % (plain, gcmd))
+        else:
+            if goal: print("the goal with the sentence about the handoff is longer than %d characters: the plain command does not set it; the new session will print the /goal line to type" % GOAL_LIMIT)
+            print("start the new session with:\n  " + plain)
     finally:
         if keep_work: print("work files kept in", work)
         else: shutil.rmtree(work, ignore_errors=True)
@@ -467,7 +545,7 @@ def selftest_opencode():
     assert back == INTRO and len(OC_SUBS) == 2; n += 2   # the third substitution (the clause after WHAT_BLOBS) is checked below
     args = ("ses_0123456789abcdefAAAAAA", "2026-01-01 10:00", "/x/db.sqlite", False, "", 1996, ((1, 300), (301, 280)))
     plain = build_intro(False, *args)
-    assert plain == INTRO.format(sid=args[0], ts=args[1], lines=1996, n=2, plan="1:300, 301:280", parents="", temp=TEMP_NOTE[(False, False)], what=WHAT_BLOBS, missing=MISSING_BLOBS); n += 1   # the Claude introduction is as it was
+    assert plain == INTRO.format(sid=args[0], ts=args[1], lines=1996, n=2, plan="1:300, 301:280", parents="", goal="", temp=TEMP_NOTE[(False, False)], what=WHAT_BLOBS, missing=MISSING_BLOBS); n += 1   # the Claude introduction is as it was
     for comp, imgs in itertools.product((False, True), (False, True)):   # 4 combinations of the optional clauses
         intro = build_intro(False, *args, opencode=(comp, imgs)); n += 1
         assert "Sesiunea sursă: sesiune OpenCode `ses_0123456789abcdefAAAAAA`, generat 2026-01-01 10:00." in intro and "`Read` în Claude Code, `read` în OpenCode, cu parametrii `offset` și `limit`" in intro
@@ -808,9 +886,53 @@ def selftest():
         else: assert intro == before
     assert sdk_cases == 32
     assert build_intro(False, "abcd1234", "2026-01-01 10:00", "/x/s.jsonl", False, "", 1996, ((1, 300),), sdks=False) == build_intro(False, "abcd1234", "2026-01-01 10:00", "/x/s.jsonl", False, "", 1996, ((1, 300),)); n += 1   # default: the old introduction
+    # goal_of: the life of a /goal in the transcript (set, unmet checks, pause, achieved, cleared, replaced, /clear, a sidechain, noise); goal_paragraph, goal_start_command and the introduction with the section
+    def gs(met=False, sentinel=None, cond="C1", reason=None, **kw):
+        at = {"type": "goal_status", "met": met, "condition": cond}
+        if sentinel is not None: at["sentinel"] = sentinel
+        if reason is not None: at["reason"] = reason
+        return json.dumps(dict({"type": "attachment", "timestamp": "2026-01-01T10:00:00.000Z", "attachment": at}, **kw))
+    def goal_in(lines, name):
+        gp = os.path.join(d, name); open(gp, "w", encoding="utf-8").write("\n".join(lines) + "\n"); return goal_of(gp)
+    SET, CHECK = gs(sentinel=True), gs(reason="not yet")
+    PAUSE = json.dumps({"type": "system", "subtype": "informational", "content": "Goal paused · goal checks kept finding it unmet this turn · send a message to continue"})
+    def urec(c, **kw): return json.dumps(dict({"type": "user", "message": {"content": c}}, **kw))
+    g = goal_in([SET], "g1.jsonl"); assert g == {"condition": "C1", "since": "2026-01-01T10:00:00.000Z", "checks": 0, "reason": "", "paused": False}, g; n += 1
+    g = goal_in([SET, CHECK, gs(reason="still two open")], "g2.jsonl"); assert (g["checks"], g["reason"], g["paused"]) == (2, "still two open", False), g; n += 1
+    assert goal_in([SET, CHECK, gs(met=True, reason="done")], "g3.jsonl") is None and goal_in([SET, gs(met=True, sentinel=True)], "g4.jsonl") is None and goal_in([SET, json.dumps({"type": "attachment", "attachment": {"type": "goal_status", "met": False, "failed": True, "condition": "C1"}})], "g4b.jsonl") is None; n += 1   # achieved, cleared, failed
+    g = goal_in([SET, gs(met=True), gs(sentinel=True, cond="C2")], "g5.jsonl"); assert (g["condition"], g["checks"]) == ("C2", 0), g; n += 1   # a goal set after the end of the first
+    g = goal_in([SET, CHECK, gs(sentinel=True, cond="C2")], "g6.jsonl"); assert (g["condition"], g["checks"]) == ("C2", 0), g; n += 1   # a new /goal replaces the active one
+    g = goal_in([CHECK], "g7.jsonl"); assert g is not None and (g["condition"], g["checks"]) == ("C1", 1), g; n += 1   # a resumed session: a check with no setting before it
+    g = goal_in([SET, CHECK, PAUSE], "g8.jsonl"); assert g["paused"] is True and g["checks"] == 1, g; n += 1
+    assert goal_in([SET, PAUSE, urec("<local-command-stdout>x</local-command-stdout>"), urec("A hook text", isMeta=True)], "g9.jsonl")["paused"] is True; n += 1   # a command output or a harness record is no message of the user
+    assert goal_in([SET, PAUSE, urec("go on")], "g10.jsonl")["paused"] is False and goal_in([SET, PAUSE, CHECK], "g11.jsonl")["paused"] is False; n += 1   # a message, or a new check, ends the pause
+    assert goal_in([SET, urec("<command-name>/clear</command-name>\n<command-message>clear</command-message>")], "g12.jsonl") is None; n += 1
+    assert goal_in([gs(sentinel=True, isSidechain=True)], "g13.jsonl") is None and goal_in([SET, gs(met=True, isSidechain=True)], "g14.jsonl")["condition"] == "C1"; n += 1   # a sidechain record counts for nothing
+    assert goal_in(["not json {", "[1, 2]", gs(sentinel=True, cond=5), gs(sentinel=True, cond="  "), json.dumps({"type": "attachment", "attachment": "x"}), SET, "{broken"], "g15.jsonl")["condition"] == "C1"; n += 1
+    assert goal_in([SET, json.dumps({"type": "attachment", "attachment": {"type": "other", "met": True}})], "g16.jsonl")["condition"] == "C1"; n += 1   # another attachment type ends nothing
+    assert goal_in([], "g17.jsonl") is None; n += 1
+    # the section: quoted lines (never a line `---`), braces and a handoff path of the condition left safe, the state, the last reason; none without a goal; a fixed time for the age
+    now = datetime.datetime(2026, 1, 1, 12, 5, tzinfo=datetime.timezone.utc)
+    weird = "fix {x} and {0}\n---\nsecond line /tmp/handoff-0123abcd-20260101-abc/HANDOFF.md"
+    gp = goal_paragraph({"condition": weird, "since": "2026-01-01T10:00:00.000Z", "checks": 3, "reason": "open: {a}\n---\nmore", "paused": True}, now)
+    assert gp.startswith("## Goal activ (/goal)\n") and gp.endswith("\n\n") and "\n---\n" not in gp and not GOAL_LEAK.search(gp) and "<cale de handoff>" in gp, gp; n += 1
+    assert "> fix {x} and {0}\n> ---\n> second line" in gp and "acum 2 h 5 min" in gp and "neîndeplinită: 3" in gp and "era în pauză" in gp and "> open: {a} --- more" in gp, gp; n += 1
+    assert goal_paragraph(None, now) == "" and "Ultima verificare" not in goal_paragraph({"condition": "C", "since": "x", "checks": 0, "reason": "", "paused": False}, now) and "(acum" not in goal_paragraph({"condition": "C", "since": "x", "checks": 0, "reason": "", "paused": False}, now); n += 1   # no reason, no usable timestamp
+    for cut, kept in itertools.product((False, True), (False, True)):
+        args = ("abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)))
+        with_goal = build_intro(cut, *args, goal=gp); without = build_intro(cut, *args); n += 1
+        assert with_goal.replace(gp, "") == without and with_goal.index("## Ce faci după ce l-ai citit") < with_goal.index("## Goal activ") < with_goal.index("## Reguli") and with_goal.count("\n---\n") == 1, (cut, kept)
+        assert with_goal.index("\n---\n") > with_goal.index("## Reguli") and "{" in with_goal and without == build_intro(cut, *args, goal=""), (cut, kept)
+    # the command: the condition first and unchanged on one line, the handoff after it; it comes back from the shell parser as one argument whatever quotes the condition holds; the length limit is exact
+    for cond in ("plain words", "it's a \"quoted\" $HOME `date` * ; & | <x> \\ end", "line one\n  line two\n\n\tthree", "ă î ș ț €"):
+        cmd = goal_start_command({"condition": cond}, "/tmp/handoff-x/HANDOFF.md"); parts = shlex.split(cmd); n += 1
+        assert parts[0] == "claude" and len(parts) == 2 and parts[1] == "/goal " + " ".join(cond.split()) + GOAL_TAIL % "/tmp/handoff-x/HANDOFF.md", (cond, cmd)
+    room = GOAL_LIMIT - len(GOAL_TAIL % "/h/HANDOFF.md")
+    assert goal_start_command({"condition": "a" * room}, "/h/HANDOFF.md") is not None and goal_start_command({"condition": "a" * (room + 1)}, "/h/HANDOFF.md") is None; n += 1
+    assert goal_oneline("a  b\n c", 3) == "a…" and goal_oneline("a  b", 4) == "a b" and goal_oneline("a  b\n c") == "a b c"; n += 1
     n += selftest_opencode()
     print("make_context selftest OK: %d cases (an OpenCode session: the introduction as the Claude one with three substitutions and its four clause combinations, a session with every message type and content kind converted from a database built here, session picking, legacy, a parent handoff, --current over all sources and its fail-closed and skip cases; --list-opencode and the titled list in the error of --opencode; relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
-          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
+          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; the life of a /goal in a transcript (17 transcripts), its section in the introduction, its start command; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 
 if "--selftest" in sys.argv: selftest()
