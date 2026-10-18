@@ -25,8 +25,9 @@ Do not read `PRIVATE.md` whole (about 100,000 characters: a design and measureme
 
 ## Tests
 
-- Plugin and hooks (about 2 minutes): `node --test $(ls private/*/test/*.mjs skills/*/scripts/test/*.mjs)`. In a fresh worktree from `origin/main` it gave 1648 tests, 0 failures (measured, 2026-10-16). In two older worktrees the file `private/jev-flow/test/gate-run.test.mjs` failed 8 tests with the same code; the cause is not established. If it fails, rerun it in a fresh worktree before looking for a bug.
+- Plugin and hooks (about 2 minutes): `node --test $(ls private/*/test/*.mjs skills/*/scripts/test/*.mjs)`. In a fresh worktree from `origin/main` it gave 1648 tests, 0 failures (measured, 2026-10-16). Before 0.13.9 `gate-run.test.mjs` and `receipt.test.mjs` failed 9 tests in a checkout whose folder name contains digits (the sanitizer took the path for a secret); 0.13.9 fixes that.
 - `handoff-verify` (stdlib only, about 3 minutes): `npm run test:py`.
+- `omlx` (stdlib only, about 30 seconds): `npm run test:omlx`. CI runs it.
 - `compact-handoff` self tests: `python3 -B skills/compact-handoff/scripts/compact_context.py selftest` and `python3 -B skills/compact-handoff/scripts/make_context.py --selftest`.
 - Upstream part, as CI runs it (needs `npm ci`): `npm run typecheck`, `npm run build`, `npm test`.
 - `gh` defaults to the upstream repository. Always pass `-R panaalexandrucristian/jev-mcp-private`.

@@ -142,24 +142,43 @@ function shannonEntropy(token) {
 
 const SUSPICIOUS_CONTEXT = /(?:key|secret|token|passw|credential|private|auth)/i;
 const TOKEN_CANDIDATE = /[A-Za-z0-9+/=_-]{24,}/g;
+// A path segment made of words: lower-case or digits, or capitalised words (Users,
+// AndroidStudioProjects), or capitals only (README). A base64 chunk such as
+// wJalrXUtnFEMI is not: it has a capital that is not followed by a lower-case letter.
+const WORD_PART = /^(?:[a-z0-9]+|[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]+)*|[A-Z0-9]+)$/;
+
+/**
+ * A token with two or more slashes whose every segment is made of words is a
+ * file path (/Users/me/app2/private/src/auth), not a credential. Its segments
+ * are still checked one by one when they are long enough to be a token.
+ */
+function pathSegments(token) {
+  if ((token.match(/\//g) ?? []).length < 2) return null;
+  const segments = token.split("/").filter((segment) => segment !== "");
+  return segments.every((segment) => segment.split(/[-_]/).every((part) => part === "" || WORD_PART.test(part)))
+    ? segments.filter((segment) => segment.length >= 24)
+    : null;
+}
 
 /**
  * A line is suspicious when a leftover PEM header survives, or when it names a
  * credential-like thing next to a long mixed, high-entropy token that is not
- * a plain hex digest.
+ * a plain hex digest or a file path.
  */
 export function isSuspiciousLine(line) {
   if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(line)) return true;
   if (!SUSPICIOUS_CONTEXT.test(line)) return false;
-  for (const token of line.match(TOKEN_CANDIDATE) ?? []) {
-    if (token.includes("REDACTED")) continue;
-    if (/^[0-9a-fA-F]+$/.test(token)) continue;
-    if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) continue;
-    if (/^[a-z_]+$/i.test(token.replace(/[0-9]/g, ""))) {
-      // Identifier-shaped (snake/camel case with a few digits): not a secret.
-      if (/[_-]/.test(token) && (token.match(/[0-9]/g) ?? []).length < 4) continue;
+  for (const candidate of line.match(TOKEN_CANDIDATE) ?? []) {
+    for (const token of pathSegments(candidate) ?? [candidate]) {
+      if (token.includes("REDACTED")) continue;
+      if (/^[0-9a-fA-F]+$/.test(token)) continue;
+      if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) continue;
+      if (/^[a-z_]+$/i.test(token.replace(/[0-9]/g, ""))) {
+        // Identifier-shaped (snake/camel case with a few digits): not a secret.
+        if (/[_-]/.test(token) && (token.match(/[0-9]/g) ?? []).length < 4) continue;
+      }
+      if (shannonEntropy(token) >= 3.5) return true;
     }
-    if (shannonEntropy(token) >= 3.5) return true;
   }
   return false;
 }

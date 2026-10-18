@@ -23,6 +23,9 @@ jobs:
           python-version: "3.12"
       - name: handoff-verify (offline Python suite)
         run: npm run test:py
+      # Offline Python suite of the omlx skill: fake servers on 127.0.0.1, temporary directories, real sleep processes; no model, no network.
+      - name: omlx (offline Python suite)
+        run: npm run test:omlx
       # Live end-to-end tests run only when a TYPESAFE_API_KEY secret is configured.
       - name: End-to-end (optional)
         env:

@@ -80,4 +80,4 @@ Read a file only when the step needs it:
 - `reference/settings.md`: when a call returns 422 or an unknown field, or you need a flag, a setting name or an admin-API endpoint: CLI flags, global and per-model setting names, endpoints, files and logs.
 - `reference/memory-and-offload.md`: when a load is refused, the user asks why a fraction or guard was chosen, or before changing the fraction: guard tiers, the dynamic ceiling, how the budget is computed, offload mechanics, measured numbers with their hardware, what is verified and what is not.
 
-Tests: `python3 -B -W ignore::ResourceWarning -m unittest discover -s skills/omlx/scripts -p 'test_*.py'`.
+Tests: `npm run test:omlx` from the plugin repository, or `python3 -B -W ignore::ResourceWarning -m unittest discover -s skills/omlx/scripts -p 'test_*.py'`.
