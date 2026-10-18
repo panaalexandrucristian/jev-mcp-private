@@ -36,27 +36,6 @@ try {
   } catch (error) {
     process.stderr.write(`[prompt-check] hook error: ${String(error?.message ?? error).slice(0, 200)}\n`);
   }
-  // logic-test-debug (default on, JEV_LOGIC_TEST_DEBUG=off turns it off) adds its own directive on code prompts only.
-  // It is loaded by a guarded dynamic import so that a failure, even at load time, leaves the output above unchanged.
-  try {
-    if (name === "UserPromptSubmit") {
-      const logic = await import("../private/logic-test-debug/hook.mjs");
-      output = logic.composeOutput(output, logic.handleLogicHook(name, input, process.env));
-    }
-  } catch {
-    process.stderr.write("[logic-test-debug] activation unavailable\n");
-  }
-  // class-graph nudge (default on, JEV_CLASS_GRAPH_NUDGE=off turns it off): records a bare /jev:class-graph for the session,
-  // then reminds on later prompts and notes a Bash or Grep-tool text search for a class or member name. Context only, never a decision.
-  // Same guarded dynamic import, and only for the events and tool it reads, so no other call pays for loading it.
-  try {
-    if (name === "UserPromptSubmit" || (name === "PreToolUse" && (input?.tool_name === "Bash" || input?.tool_name === "Grep"))) {
-      const nudge = await import("../private/class-graph-nudge/hook.mjs");
-      output = nudge.composeNudge(output, nudge.handleNudgeHook(name, input, process.env));
-    }
-  } catch {
-    process.stderr.write("[class-graph-nudge] unavailable\n");
-  }
   const line = output ? `${JSON.stringify(output)}\n` : "";
   // After a Jev check exit as soon as the output is flushed, so no child process can hold the prompt.
   if (ran) process.stdout.write(line, () => process.exit(0));

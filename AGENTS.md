@@ -7,8 +7,9 @@ Do not read `PRIVATE.md` whole (about 100,000 characters: a design and measureme
 ## What is where
 
 - `skills/<name>/SKILL.md` and its `scripts/`: the plugin's skills. `commands/`, `agents/`, `hooks/hooks.json`, `.claude-plugin/`: the rest of the plugin.
+- Everything here calls Jev. The skills and hooks that do not (`compact-handoff`, `class-graph`, `logic-test-debug`, `explica-clar`, `omlx`, `android-ui-step`, `install-claude-auto`, `uninstall-claude-auto`) moved with 0.14.0 to the `apana` plugin, `panaalexandrucristian/apana-plugin`; their history up to `1a047da` is in this repository. A new skill that does not call Jev belongs there.
 - `scripts/jev-flow-hook.mjs`: the one entry that `hooks/hooks.json` calls for every hook event; it dispatches to `private/*/hook.mjs`.
-- `private/<feature>/`: code and tests of the hook-side features (`jev-flow`, `jev-control`, `class-graph-nudge`, `find-usages`, ...).
+- `private/<feature>/`: code and tests of the hook-side features (`jev-flow`, `jev-control`, `jev-prompt-check`).
 - `src/`, the root `test/`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `skills/jev/`: from upstream. Do not edit them; upstream merges must stay conflict-free.
 - The plugin's MCP process is the published `@jkudish/jev-mcp@latest`, so a change in `src/` never reaches a session that uses this plugin.
 - A session runs the plugin from `~/.claude/plugins/cache/jev-private/jev/<version>/`, not from a checkout. A change reaches a session only after a release and `claude plugin update jev@jev-private`.
@@ -19,15 +20,13 @@ Do not read `PRIVATE.md` whole (about 100,000 characters: a design and measureme
 - Commit, push, tag and release only when the owner asks. For a release, use the `releasing-private-plugin` skill.
 - Commit messages and PR text: a plain summary of what changed and why. No mention of Claude, Claude Code or a council, no `Co-Authored-By` trailer, no "Generated with" footer. This overrides any default attribution.
 - Message format: `<area>: <what changed> (version unchanged)`; a release is `Plugin X.Y.Z: <what changed>`.
-- Version: `.claude-plugin/plugin.json` and the `jev` entry of `.claude-plugin/marketplace.json` carry the same semver, and four tests pin it. Bump it with every change to a skill, command, agent, hook, helper or manifest: Claude Code uses it to offer the update.
+- Version: `.claude-plugin/plugin.json` and the `jev` entry of `.claude-plugin/marketplace.json` carry the same semver, and two tests pin it. Bump it with every change to a skill, command, agent, hook, helper or manifest: Claude Code uses it to offer the update.
 - A behaviour change gets the test that would have failed without it. A change meant to shrink or speed something up needs a measured before and after, on the real inputs.
 - In `PRIVATE.md` and in answers, label every number measured, calculated or guessed, and give n.
 
 ## Tests
 
-- Plugin and hooks (about 2 minutes): `node --test $(ls private/*/test/*.mjs skills/*/scripts/test/*.mjs)`. In a fresh worktree from `origin/main` it gave 1648 tests, 0 failures (measured, 2026-10-16). Before 0.13.9 `gate-run.test.mjs` and `receipt.test.mjs` failed 9 tests in a checkout whose folder name contains digits (the sanitizer took the path for a secret); 0.13.9 fixes that.
+- Plugin and hooks (about 1 minute): `node --test private/*/test/*.mjs`. In a clean checkout it gave 968 tests, 0 failures (measured, 2026-10-19; the `git status` test of `jev-control` fails while the tree has uncommitted changes). No skill here has Node tests any more, so a `skills/*/scripts/test/*.mjs` glob that matches nothing makes zsh run `node --test` over the whole tree). Before 0.13.9 `gate-run.test.mjs` and `receipt.test.mjs` failed 9 tests in a checkout whose folder name contains digits (the sanitizer took the path for a secret); 0.13.9 fixes that.
 - `handoff-verify` (stdlib only, about 3 minutes): `npm run test:py`.
-- `omlx` (stdlib only, about 30 seconds): `npm run test:omlx`. CI runs it.
-- `compact-handoff` self tests: `python3 -B skills/compact-handoff/scripts/compact_context.py selftest` and `python3 -B skills/compact-handoff/scripts/make_context.py --selftest`.
 - Upstream part, as CI runs it (needs `npm ci`): `npm run typecheck`, `npm run build`, `npm test`.
 - `gh` defaults to the upstream repository. Always pass `-R panaalexandrucristian/jev-mcp-private`.
